@@ -258,7 +258,7 @@ async def test_observed_quote_coverage_survives_model_failure(monkeypatch,worker
     transport(monkeypatch,handle)
     report=(await scan.run(['nba'],25))['nba']
     assert report['status']=='degraded' and report['completed_events']==0
-    assert report['failures']==[{'stage':'event_evaluation','event_id':'nba0','error_type':'TimeoutError'}]
+    assert report['failures']==[{'stage':'event_evaluation','operation':'model_evaluation','event_id':'nba0','error_type':'TimeoutError'}]
     assert report['coverage']['nba0']['quotes']==2
     assert report['coverage']['nba0']['source_committed_quotes']==2
     assert report['coverage']['nba0']['model_status']=='pending'
@@ -448,3 +448,103 @@ async def test_targeted_distant_scan_keeps_the_full_reserve(monkeypatch,worker):
     report=(await scan.run(['nfl'],20,frozenset({'nfl0'})))['nfl']
     assert report['budget_reasons']=={'pregame_credit_reserve':1}
     assert report['attempted_events']==0 and not evaluated
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('model_fails',[False,True])
+async def test_cache_cleanup_failure_preserves_primary_result_and_continues(monkeypatch,worker,model_fails):
+    from psycopg.errors import ConnectionFailure
+    stored,events,evaluated,pool=worker
+    cache=pool.provider_cache
+    release=cache.release
+    def fail_release(key,provider,sport,owner):
+        if 'nba0' in key: raise ConnectionFailure('secret database credential')
+        return release(key,provider,sport,owner)
+    monkeypatch.setattr(cache,'release',fail_release)
+    evaluate=scan.evaluate_event
+    async def maybe_fail(pool,event,*args):
+        if model_fails and event['id']=='nba0': raise TimeoutError('secret provider URL')
+        return await evaluate(pool,event,*args)
+    monkeypatch.setattr(scan,'evaluate_event',maybe_fail)
+    requests=[]
+    def handle(request):
+        requests.append(request.url.path)
+        if request.url.path.endswith('/events'): return httpx.Response(200,json=events['nba'])
+        return httpx.Response(200,json=next(e for e in events['nba'] if e['id'] in request.url.path))
+    transport(monkeypatch,handle)
+    report=(await scan.run(['nba'],25))['nba']
+    assert report['status']=='degraded'
+    assert report['completed_events']==(1 if model_fails else 2)
+    states={e['game_id']:e['state'] for e in report['events']}
+    assert states=={'nba0':'failed' if model_fails else 'evaluated','nba1':'evaluated'}
+    assert report['failures'][-1]==dict(stage='cache_release',event_id='nba0',error_type='ConnectionFailure',sqlstate='08006')
+    if model_fails:
+        assert report['failures'][0]['operation']=='model_evaluation'
+        assert report['failures'][0]['error_type']=='TimeoutError'
+    assert len([path for path in requests if path.endswith('/odds')])==2
+    assert 'secret' not in str(report) and 'test-key' not in str(stored)
+    assert stored['scan:nba']==report
+    pool.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('operation',['cache_read','credit_reservation','attempt_checkpoint'])
+async def test_prequote_database_failure_does_not_spend_or_abort_later_event(monkeypatch,worker,operation):
+    from psycopg.errors import ConnectionFailure
+    stored,events,evaluated,pool=worker
+    cache=pool.provider_cache
+    if operation=='cache_read':
+        read=scan.unprocessed_cached_event
+        def failing_read(cache,event,*args):
+            if event['id']=='nba0': raise ConnectionFailure('secret')
+            return read(cache,event,*args)
+        monkeypatch.setattr(scan,'unprocessed_cached_event',failing_read)
+    elif operation=='credit_reservation':
+        ledger=scan.Ledger();reserve=ledger.reserve_api_credits_with_reason;calls=0
+        def failing_reserve(*args,**kwargs):
+            nonlocal calls
+            calls+=1
+            if calls==1: raise ConnectionFailure('secret')
+            return reserve(*args,**kwargs)
+        monkeypatch.setattr(ledger,'reserve_api_credits_with_reason',failing_reserve)
+    else:
+        publish=scan.publish_snapshot;failed=False
+        def failing_publish(key,payload):
+            nonlocal failed
+            if key=='scan:nba' and payload.get('attempted_events')==1 and not failed:
+                failed=True
+                raise ConnectionFailure('secret')
+            return publish(key,payload)
+        monkeypatch.setattr(scan,'publish_snapshot',failing_publish)
+    requests=[]
+    def handle(request):
+        requests.append(request.url.path)
+        if request.url.path.endswith('/events'): return httpx.Response(200,json=events['nba'])
+        return httpx.Response(200,json=next(e for e in events['nba'] if e['id'] in request.url.path))
+    transport(monkeypatch,handle)
+    report=(await scan.run(['nba'],25))['nba']
+    assert report['status']=='degraded' and evaluated==['nba1']
+    assert report['failures']==[dict(stage='event_evaluation',operation=operation,event_id='nba0',
+        error_type='ConnectionFailure',sqlstate='08006')]
+    assert len([path for path in requests if path.endswith('/odds')])==1
+    assert not cache.leases
+    assert 'secret' not in str(stored)
+
+
+@pytest.mark.asyncio
+async def test_fatal_report_failure_records_safe_operation_and_closes_pool(monkeypatch,worker):
+    from unittest.mock import Mock
+    from psycopg.errors import ConnectionFailure
+    stored,events,evaluated,pool=worker
+    transport(monkeypatch,lambda request:httpx.Response(200,json=[]))
+    def fail_report(*args,**kwargs):raise ConnectionFailure('private connection string')
+    monkeypatch.setattr(scan.Ledger(),'report',fail_report)
+    warning=Mock();monkeypatch.setattr(scan.log,'warning',warning)
+    with pytest.raises(ConnectionFailure): await scan.run(['nba'],20)
+    warning.assert_called_once()
+    args,fields=warning.call_args
+    assert args==('scan_failed',)
+    assert fields['operation']=='metrics_publication' and fields['sqlstate']=='08006'
+    assert fields['error_type']=='ConnectionFailure'
+    assert 'private' not in str(fields)
+    pool.close.assert_awaited_once()
