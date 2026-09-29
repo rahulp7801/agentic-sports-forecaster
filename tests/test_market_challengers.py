@@ -154,3 +154,9 @@ def test_offline_ledger_cannot_create_or_write_and_closes(tmp_path):
         assert connection.execute('SELECT COUNT(*) FROM example').fetchone()==(0,)
         with pytest.raises(sqlite3.OperationalError):connection.execute('INSERT INTO example VALUES (1)')
     with pytest.raises(sqlite3.ProgrammingError):connection.execute('SELECT 1')
+
+
+def test_same_name_with_different_player_id_cannot_supply_opposite():
+    over=without_retained_baseline(payload(prediction_id='over'))
+    under=without_retained_baseline(payload('under','under',player_id='00-2'))
+    assert research.observations([over,under],'nfl','empirical-jeffreys-v4')[0]==[]

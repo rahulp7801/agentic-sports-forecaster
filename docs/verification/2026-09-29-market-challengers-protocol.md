@@ -21,3 +21,13 @@ These archived outcomes were already inspected. Chronological fitting prevents f
 ## Verification
 
 The targeted challenger, exact-baseline and priced-audit tests pass (27 tests). They exercise genuine quote proof, forged proof rejection, future opposite receipts, unverified outcomes, past-only fitting, equal player/game training weights, duplicate suppression, same-line/source constraints, stale and post-kickoff quotes, own-book exclusion, ambiguous prices, one selection per player/game, missing labels, clustered uncertainty, and read-only file enforcement. No private replay metrics are included in this document.
+
+## Frozen forward test
+
+`cross-book-forward-v1` starts at 2026-09-30T00:00:00Z. The corrected NFL and CFB history models and the current NBA v4 model are evaluated separately. Captures, model generation and quotes must be at or after the freeze; history and recommendation policy identities are enforced. Changed evaluator dependencies fail closed by normalized source digest. New model identities or dependency changes require a new protocol.
+
+Run `python -m sportsbet.quant.cross_book_forward --ledger-path PRIVATE_SNAPSHOT.sqlite3 --output PRIVATE_FORWARD_REPORT.json`. Omitting the ledger path uses the configured hosted ledger inside a read-only repeatable-read snapshot. It never requests provider quotes. The existing follow-up process can run this against naturally collected records; no paid collection or workflow schedule is added.
+
+Forward reports retain offer IDs, reference IDs, exact source response commitments and decision times so later checks can reconstruct each selection. They exclude outcomes authenticated after the audit time. Historical experiment selections cannot enter the forward sample. A sample needs at least 50 paired settled games, 100 decided selections and 30 selection games, a strictly positive lower 95% game-cluster ROI bound, and a strictly negative upper 95% probability-error difference versus matching offered-book market prices before requesting review. Passing still never promotes a model or creates production picks automatically.
+
+All 38 focused tests pass, including immutable dependency enforcement, freeze boundaries, policy/model separation, future receipt rejection, private selection manifests, pending settlements, and a synthetic sufficient-evidence case that still requires review. The initial forward audit was executed against the existing private archive; all sports correctly await the future start. This is code/protocol publication only; historical research metrics and artifacts remain private.

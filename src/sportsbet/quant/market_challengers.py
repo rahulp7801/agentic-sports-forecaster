@@ -59,10 +59,10 @@ def observations(rows, sport, version):
         eligible.append(row)
     pairs=defaultdict(lambda:defaultdict(list))
     for row in eligible:
-        pairs[(audit._quote_key(row), row['quote_source_sha256'])][row['direction']].append(row)
+        pairs[(audit._quote_key(row), row['player_id'], row['quote_source_sha256'])][row['direction']].append(row)
     result=[]
     for row in sorted(eligible,key=lambda r:(utc_timestamp(r['captured_at']),r['prediction_id'])):
-        opposite_rows=pairs[(audit._quote_key(row), row['quote_source_sha256'])]['under' if row['direction']=='over' else 'over']
+        opposite_rows=pairs[(audit._quote_key(row), row['player_id'], row['quote_source_sha256'])]['under' if row['direction']=='over' else 'over']
         opposite={other['american_odds'] for other in opposite_rows
             if utc_timestamp(other['captured_at']) <= utc_timestamp(row['captured_at'])}
         q=verified_recorded_market_baseline(row)
@@ -180,7 +180,9 @@ def cross_book_candidates(observed):
             ev=prob*(profit+1)-1
             if ev>=PROTOCOL['cross_book_minimum_expected_return']:
                 proposals.append(dict(x=x,decision=decision,ev=ev,probability=prob,
-                    reference_books=len(others),profit=profit))
+                    reference_books=len(others),profit=profit,
+                    reference_prediction_ids=sorted({o['row']['prediction_id']
+                        for b,xs in books.items() if b!=book and b in reference for o in xs})))
     # At most one hypothetical selection per player/game, earliest qualifying batch;
     # within that instant, highest estimated EV, then stable identity. No outcomes.
     proposals.sort(key=lambda c:(c['decision'],-c['ev'],c['x']['row']['prediction_id']))
