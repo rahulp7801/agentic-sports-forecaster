@@ -13,6 +13,7 @@ import httpx
 import structlog
 from sportsbet.config import settings, DEFAULT_DAILY_CREDIT_LIMIT
 from sportsbet.dashboard import publish_snapshot, load_snapshot
+from sportsbet.diagnostics import error_fields
 from sportsbet.db.connection import create_async_pool
 from sportsbet.graph.graph import create_graph
 from sportsbet.ingestion.prop_odds import PlayerPropSnapshotCreate, parse_event_quotes, write_player_prop_snapshots
@@ -608,9 +609,11 @@ async def run(sports: list[str], daily_credit_limit: int, event_ids: frozenset[s
     queues={}
     screens={sport:[] for sport in sports}
     held=prop_credit_holdback(sports,daily_credit_limit)
+    operation='scan_initialization'
     try:
         async with httpx.AsyncClient(base_url='https://api.the-odds-api.com/v4',timeout=20,follow_redirects=False) as client:
             for sport in sports:
+                operation='scan_initialization'
                 previous=load_snapshot('scan:'+sport) or {}
                 report=dict(scan_id=scan_id,sport=sport,started_at=now.isoformat(),finished_at=None,status='running',
                     eligible_events=None,attempted_events=0,completed_events=0,budget_skipped_events=0,budget_reasons={},
@@ -644,7 +647,7 @@ async def run(sports: list[str], daily_credit_limit: int, event_ids: frozenset[s
                         *prior_quality_sort(priorities[e['id']]),
                         report['attempts'].get(e['id'],''),timestamp(e['commence_time']),e['id']))
                 except Exception as exc:
-                    report['failures'].append(dict(stage='event_discovery',error_type=type(exc).__name__))
+                    report['failures'].append(dict(stage='event_discovery',**error_fields(exc)))
                     queues[sport]=[]
             # Alternate leagues, starting with the least recently attempted league.
             # Within each league, rotate past previous attempts before spending again.
@@ -655,62 +658,68 @@ async def run(sports: list[str], daily_credit_limit: int, event_ids: frozenset[s
                 report=reports[sport]
                 event_state=next(item for item in report['events'] if item['game_id']==event['id'])
                 quote_key=cache_key('event',sport,event['id'])
-                cached=unprocessed_cached_event(cache,event,sport,datetime.now(timezone.utc))
                 cache_owned=False
-                quoted=None
-                if cached:
-                    if cache.claim(quote_key,'the_odds_api',sport,scan_id,datetime.now(timezone.utc)):
-                        cache_owned=True
-                        quoted=cached[1]
-                        event_state['cache']='hit'
-                        report['cache_hits']=report.get('cache_hits',0)+1
-                    else:
-                        event_state['state']='provider_busy'
-                        report['coalesced_events']=report.get('coalesced_events',0)+1
-                        continue
-                check=next_quote_check(event,report['attempts'].get(event['id']),datetime.now(timezone.utc))
-                if quoted is None and event_ids is None and check>datetime.now(timezone.utc):
-                    event_state.update(state='scheduled',next_refresh_at=check.isoformat())
-                    report['cadence_deferred_events']+=1
-                    if not report['next_refresh_at'] or check<timestamp(report['next_refresh_at']):
-                        report['next_refresh_at']=check.isoformat()
-                    continue
-                if quoted is None:
-                    if not cache.claim(quote_key,'the_odds_api',sport,scan_id,datetime.now(timezone.utc)):
-                        event_state['state']='provider_busy'
-                        report['coalesced_events']=report.get('coalesced_events',0)+1
-                        continue
-                    cache_owned=True
-                    reserved,budget_reason=ledger.reserve_api_credits_with_reason(
-                        len(MARKETS[sport]),daily_credit_limit,
-                        holdback=event_credit_holdback(event,held,datetime.now(timezone.utc)))
-                    if not reserved:
-                        cache.release(quote_key,'the_odds_api',sport,scan_id)
-                        cache_owned=False
-                        event_state.update(state='api_budget',budget_reason=budget_reason)
-                        if budget_reason=='pregame_credit_reserve':
-                            release=next_reserve_release(event,held,datetime.now(timezone.utc))
-                            if release is not None:
-                                event_state['next_reserve_release_at']=release.isoformat()
-                        report['budget_skipped_events']+=1
-                        report['budget_reasons'][budget_reason]=report['budget_reasons'].get(budget_reason,0)+1
-                        continue
-                    report['attempted_events']+=1
-                event_state['state']='evaluating'
-                if quoted is None:
-                    report['attempts'][event['id']]=datetime.now(timezone.utc).isoformat()
-                    # Persist before I/O so interrupted runs don't repeatedly consume the same game's budget.
-                    publish_snapshot('scan:'+sport,report)
+                operation='cache_read'
                 try:
+                    cached=unprocessed_cached_event(cache,event,sport,datetime.now(timezone.utc))
+                    quoted=None
+                    operation='cache_claim'
+                    if cached:
+                        if cache.claim(quote_key,'the_odds_api',sport,scan_id,datetime.now(timezone.utc)):
+                            cache_owned=True
+                            quoted=cached[1]
+                            event_state['cache']='hit'
+                            report['cache_hits']=report.get('cache_hits',0)+1
+                        else:
+                            event_state['state']='provider_busy'
+                            report['coalesced_events']=report.get('coalesced_events',0)+1
+                            continue
+                    check=next_quote_check(event,report['attempts'].get(event['id']),datetime.now(timezone.utc))
+                    if quoted is None and event_ids is None and check>datetime.now(timezone.utc):
+                        event_state.update(state='scheduled',next_refresh_at=check.isoformat())
+                        report['cadence_deferred_events']+=1
+                        if not report['next_refresh_at'] or check<timestamp(report['next_refresh_at']):
+                            report['next_refresh_at']=check.isoformat()
+                        continue
+                    operation='cache_claim'
                     if quoted is None:
+                        if not cache.claim(quote_key,'the_odds_api',sport,scan_id,datetime.now(timezone.utc)):
+                            event_state['state']='provider_busy'
+                            report['coalesced_events']=report.get('coalesced_events',0)+1
+                            continue
+                        cache_owned=True
+                        operation='credit_reservation'
+                        reserved,budget_reason=ledger.reserve_api_credits_with_reason(
+                            len(MARKETS[sport]),daily_credit_limit,
+                            holdback=event_credit_holdback(event,held,datetime.now(timezone.utc)))
+                        if not reserved:
+                            event_state.update(state='api_budget',budget_reason=budget_reason)
+                            if budget_reason=='pregame_credit_reserve':
+                                release=next_reserve_release(event,held,datetime.now(timezone.utc))
+                                if release is not None:
+                                    event_state['next_reserve_release_at']=release.isoformat()
+                            report['budget_skipped_events']+=1
+                            report['budget_reasons'][budget_reason]=report['budget_reasons'].get(budget_reason,0)+1
+                            continue
+                        report['attempted_events']+=1
+                    event_state['state']='evaluating'
+                    if quoted is None:
+                        report['attempts'][event['id']]=datetime.now(timezone.utc).isoformat()
+                        # Persist before I/O so interrupted runs don't repeatedly consume the same game's budget.
+                        operation='attempt_checkpoint'
+                        publish_snapshot('scan:'+sport,report)
+                    if quoted is None:
+                        operation='quote_collection'
                         response=await client.get(f'/sports/{SPORT_KEYS[sport]}/events/{event["id"]}/odds',params={
                             'apiKey':settings.odds_api_key,'regions':'us','markets':','.join(MARKETS[sport]),'oddsFormat':'american'})
                         if response.status_code!=200: raise RuntimeError(f'Quote provider returned HTTP {response.status_code}')
                         quoted=validate_provider_event(response.json(),event)
                         captured=datetime.now(timezone.utc)
                         # Retain the paid response before downstream work so a crashed model can resume it.
+                        operation='quote_cache_write'
                         cache.store(quote_key,'the_odds_api',sport,scan_id,quoted,captured,
                             captured+PROVIDER_CACHE_TTL,release=False)
+                    operation='quote_screening'
                     quotes=quotes_from_event(quoted,sport)
                     sportsbook_screen=screen_sportsbooks(quoted,sport,quotes,datetime.now(timezone.utc))
                     screened=screen_cross_venue(quoted,sport,quotes,
@@ -721,23 +730,31 @@ async def run(sports: list[str], daily_credit_limit: int, event_ids: frozenset[s
                     screens[sport].append(dict(status=screened['status'],
                         coverage=screened['coverage'],
                         comparisons=sportsbook_screen['comparisons']+screened['comparisons']))
+                    operation='availability'
                     availability=await fetch_event_availability(quoted,sport,
                         player_names={quote.player_name for quote in quotes})
+                    operation='model_evaluation'
                     result=await asyncio.wait_for(evaluate_event(pool,quoted,sport,ledger,scan_id,availability),timeout=120)
                     result['cross_venue']=screened
                     result['sportsbook_arb']=sportsbook_screen
+                    operation='forecast_publication'
                     publish_snapshot(f'signals:{sport}:{event["id"]}',result)
-                    cache.release(quote_key,'the_odds_api',sport,scan_id)
-                    cache_owned=False
                     report['completed_events']+=1
                     report['coverage'][event['id']]=result['coverage']|{'cross_venue':screened['coverage']}
                     event_state['state']='evaluated'
                 except Exception as exc:
-                    if cache_owned:
-                        cache.release(quote_key,'the_odds_api',sport,scan_id)
                     event_state['state']='failed'
-                    report['failures'].append(dict(stage='event_evaluation',event_id=event['id'],error_type=type(exc).__name__))
+                    report['failures'].append(dict(stage='event_evaluation',operation=operation,
+                        event_id=event['id'],**error_fields(exc)))
+                finally:
+                    if cache_owned:
+                        try:
+                            cache.release(quote_key,'the_odds_api',sport,scan_id)
+                        except Exception as exc:
+                            report['failures'].append(dict(stage='cache_release',
+                                event_id=event['id'],**error_fields(exc)))
             for sport,report in reports.items():
+                operation='scan_publication'
                 model_statuses=Counter(item.get('model_status') for item in report['coverage'].values())
                 report['model_complete_events']=model_statuses['complete']
                 report['model_partial_events']=model_statuses['partial']
@@ -778,6 +795,7 @@ async def run(sports: list[str], daily_credit_limit: int, event_ids: frozenset[s
                         kalshi_non_direct_cost_below_one=sum(Decimal(row['exchange_fee_scenarios']['combined_cost']['non_direct'])<1
                             for row in comparisons if 'exchange_fee_scenarios' in row)),
                     comparisons=comparisons,execution_ready=False))
+        operation='metrics_publication'
         publish_snapshot('metrics:all',ledger.report(model_version=MODEL_VERSION))
         publish_snapshot('metrics:recommendations',ledger.report(True,model_version=MODEL_VERSION))
         prediction_rows=ledger.predictions()
@@ -791,9 +809,14 @@ async def run(sports: list[str], daily_credit_limit: int, event_ids: frozenset[s
             from sportsbet.quant.nfl_role_shadow_audit import publish_role_history_shadow
             publish_role_history_shadow(prediction_rows,sport,publish_snapshot)
         return reports
+    except Exception as exc:
+        log.warning('scan_failed',scan_id=scan_id,operation=operation,**error_fields(exc))
+        raise
     finally:
-        cache.close()
-        await pool.close()
+        try:
+            cache.close()
+        finally:
+            await pool.close()
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)

@@ -13,6 +13,7 @@ from typing import TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from sportsbet.dashboard import load_snapshot, publish_snapshot
+from sportsbet.diagnostics import error_fields
 from sportsbet.market_watch import run as watch, DEFAULT_GAME_LIMIT
 from sportsbet.ledger import Ledger
 from sportsbet.model_contract import MODEL_VERSION
@@ -151,7 +152,7 @@ def create_daily_graph():
                 results.update(await scan(ready,state['daily_credit_limit']))
             except Exception as exc:
                 for sport in ready:
-                    result=dict(status='failed',error_type=type(exc).__name__,sport=sport,
+                    result=dict(status='failed',**error_fields(exc),sport=sport,
                         finished_at=datetime.now(timezone.utc).isoformat(),execution_ready=False)
                     publish_snapshot('scan:'+sport,result)
                     results[sport]=result
