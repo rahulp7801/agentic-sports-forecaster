@@ -47,10 +47,15 @@ export const requiredCssMarkers = [
 
 export const requiredHtmlMarkers = [
   'id="results"',
-  'Above 60% in both periods',
+  'Compare with constant directions',
+  'Same-record direction comparison',
+  'Always Under',
+  'Always Over',
+  '85.0%',
+  '77.0%',
   '84.5%',
   '82.0%',
-  'not betting profit',
+  'prospective profitability remains unproven',
 ];
 
 export const publicSecurityProbes = [
