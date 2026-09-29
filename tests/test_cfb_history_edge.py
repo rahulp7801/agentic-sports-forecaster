@@ -11,7 +11,8 @@ NOW=datetime(2026,9,29,5,tzinfo=timezone.utc)
 def new_forecast(**changes):
     return forecast('cfb','2026-09-29T04:15:00+00:00',
         game_date='2026-09-29',game_start_time='2026-09-30T00:00:00+00:00',
-        model_version=CFB_MODEL_VERSION,history_policy_version=CFB_HISTORY_POLICY,**changes)
+        model_version=CFB_MODEL_VERSION,history_policy_version=CFB_HISTORY_POLICY,
+        history_observed_before='2026-09-29T04:15:00+00:00',**changes)
 
 
 def test_new_cohort_does_not_mix_or_mutate_frozen_baseline(tmp_path):
@@ -29,7 +30,8 @@ def test_new_cohort_does_not_mix_or_mutate_frozen_baseline(tmp_path):
 
 @pytest.mark.parametrize('changes', [dict(history_policy_version=None),dict(history_policy_version='other'),
     dict(sport='nfl'),dict(model_generated_at='2026-09-29T04:14:59+00:00'),
-    dict(model_generated_at='2026-09-29T04:16:00+00:00')])
+    dict(model_generated_at='2026-09-29T04:16:00+00:00'),dict(history_observed_before=None),
+    dict(history_observed_before='2026-09-29T04:14:59+00:00')])
 def test_new_model_requires_exact_policy_sport_and_generation_window(changes):
     p=new_forecast()
     assert quote_evidence_valid(p)

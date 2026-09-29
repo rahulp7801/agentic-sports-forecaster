@@ -135,8 +135,9 @@ def quote_evidence_valid(payload: dict) -> bool:
         if payload.get('model_version') == CFB_MODEL_VERSION:
             captured=utc_timestamp(payload['captured_at'])
             generated=utc_timestamp(payload['model_generated_at'])
-            if (not forecast_version_valid(payload,generated)
-                    or sport!='cfb' or generated>captured):
+            history_cutoff=utc_timestamp(payload['history_observed_before'])
+            if (not forecast_version_valid(payload,history_cutoff)
+                    or sport!='cfb' or not history_cutoff<=generated<=captured):
                 return False
         markets=PROP_MARKETS[sport]
         provider_markets=[market for market,prop in markets.items() if prop==payload['prop_type']]

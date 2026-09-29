@@ -402,7 +402,7 @@ async def evaluate_event(pool, event: dict, sport: str, ledger: Ledger, scan_id:
                 state=await graph.ainvoke(dict(session_id=scan_id,request_type='nba_prop_analysis' if sport=='nba' else 'prop_analysis',
                 game_id=event['id'],home_team=event['home_team'],away_team=event['away_team'],season=season-2,week=1,
                 receiver_gsis_id=player_id,player_name=player,sport=sport,prop_type=MARKETS[sport][market],
-                prop_line=line,prop_side=side.lower(),as_of_date=game_date,observed_before=now,last_n_games=40,player_prop_snapshots=[quote]))
+                prop_line=line,prop_side=side.lower(),as_of_date=game_date,observed_before=selection_time,last_n_games=40,player_prop_snapshots=[quote]))
             except Exception as exc:
                 log.warning('selection_model_failed',sport=sport,error_type=type(exc).__name__)
                 state={'error':'model_evaluation_failed'}
@@ -513,7 +513,7 @@ async def evaluate_event(pool, event: dict, sport: str, ledger: Ledger, scan_id:
             quote_source_provider=quote.source_provider,quote_source_sha256=quote.source_sha256,
             quote_source_record_sha256=quote.source_record_sha256,accepted=accepted,gate_reason=reason,
             stake_fraction=float(signal.kelly_fraction) if accepted else 0,model_version=model_version_for(sport),
-            **({'history_policy_version':CFB_HISTORY_POLICY} if sport=='cfb' else {}),
+            **({'history_policy_version':CFB_HISTORY_POLICY,'history_observed_before':selection_time.isoformat()} if sport=='cfb' else {}),
             recommendation_policy_version=RECOMMENDATION_POLICY_VERSION,
             **paired_market_baseline(quote, quotes))
         if player in identity_evidence:

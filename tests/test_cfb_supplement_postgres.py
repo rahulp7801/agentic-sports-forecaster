@@ -63,7 +63,7 @@ def test_atomic_supplement_view_replay_and_source_refresh_invalidation():
             assert sample(available-timedelta(microseconds=1))[0]==0
             assert sample(available)==(1,0,0,0)
             game=dict(provider_event_id=EVENT,game_time='2026-09-26T16:00:00Z',
-                home_abbreviation='IU',away_abbreviation='NU',home_name='Indiana Hoosiers',away_name='Northwestern Wildcats')
+                home_abbr='IU',away_abbr='NU',home_name='Indiana Hoosiers',away_name='Northwestern Wildcats')
             value,proof=_actual(Session(),dict(player_id=PLAYER,prop_type='rec_yds'),'cfb','2026-09-26',game)
             assert value==0 and proof['provider']=='sportsdataverse_espn_supplement'
             assert valid_supplement(proof['record'],proof['supplement_manifest'],proof['sha256'],proof['observed_at'],game['game_time'])

@@ -39,6 +39,6 @@ def forecast_version_valid(payload: dict, captured) -> bool:
     if captured.utcoffset() is None:
         return False
     if version == MODEL_VERSION:
-        return captured < cutoff
+        return True  # Retained v4 picks remain valid, including deployment overlap.
     return (version == CFB_MODEL_VERSION and captured >= cutoff
         and payload.get('history_policy_version') == CFB_HISTORY_POLICY)
