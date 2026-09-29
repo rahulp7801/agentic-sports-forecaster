@@ -2,19 +2,24 @@ import { NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
 import {createHash} from 'crypto';
-import {unstable_cache} from 'next/cache';
+import {BoundedReadCache} from '@/lib/boundedReadCache';
 import {databaseQuery,hosted} from '@/lib/database';
 import {forecastPage,forecastRequest,FORECAST_PAGE_QUERY,type ForecastPageInput} from '@/lib/forecastPage';
 import {NO_STORE_HEADERS,signalCacheHeaders} from '@/lib/publicCache';
 
 export const dynamic='force-dynamic';
 
-const cachedForecastPage=unstable_cache(async(pattern:string,profileKeys:string[],view:string,limit:number,offset:number,player:string)=>{
-  const result=await databaseQuery<{data:ForecastPageInput}>(FORECAST_PAGE_QUERY,
-    [pattern,profileKeys,view,view==='library' ? limit : 5001,offset,player],'forecast_page');
-  if(!result.rows[0]?.data) throw new Error('Missing forecast page');
-  return result.rows[0].data;
-},['forecast-page-v2-player-search'],{revalidate:60});
+// Search strings and page offsets are visitor-controlled: bound cardinality,
+// memory and concurrent misses; hard expiry never serves a stale success on error.
+const pages=new BoundedReadCache<ForecastPageInput>({maxEntries:64,maxBytes:16*1024*1024,maxEntryBytes:4*1024*1024,maxPending:18});
+async function cachedForecastPage(pattern:string,profileKeys:string[],view:string,limit:number,offset:number,player:string){
+  const args=[pattern,profileKeys,view,view==='library' ? limit : 5001,offset,player];
+  return pages.read(JSON.stringify(args),view==='qualified' ? 15_000 : 60_000,async()=>{
+    const result=await databaseQuery<{data:ForecastPageInput}>(FORECAST_PAGE_QUERY,args,'forecast_page');
+    if(!result.rows[0]?.data)throw new Error('Missing forecast page');
+    return result.rows[0].data;
+  });
+}
 
 export async function GET(request:Request) {
   let options:ReturnType<typeof forecastRequest>;
