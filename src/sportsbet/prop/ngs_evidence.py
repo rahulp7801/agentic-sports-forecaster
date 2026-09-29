@@ -58,7 +58,9 @@ _EVIDENCE_QUERY = """
            MAX(source_observed_at) AS source_observed_at,
            COUNT(DISTINCT source_provider) AS source_provider_count,
            COUNT(DISTINCT source_url) AS source_url_count,
-           COUNT(DISTINCT source_sha256) AS source_version_count
+           COUNT(DISTINCT source_sha256) AS source_version_count,
+           COUNT(*) FILTER (WHERE source_provider IS NULL OR source_url IS NULL
+             OR source_sha256 IS NULL OR source_observed_at IS NULL) AS invalid_source_rows
     FROM prior
 """
 
@@ -71,8 +73,12 @@ async def load_ngs_evidence(
     game_date: date,
     team: str,
     prop_type: str,
+    observed_before: datetime | None = None,
 ) -> dict | None:
     """Return prior weekly tracking context without modifying model probability."""
+    if observed_before is not None and (not isinstance(observed_before, datetime)
+            or observed_before.utcoffset() is None):
+        raise ValueError('Tracking observation cutoff requires an aware timestamp')
     stat_type = PROP_STAT_TYPE.get(prop_type)
     if (
         stat_type is None
@@ -100,8 +106,12 @@ async def load_ngs_evidence(
             return None
         if type(cutoff_week) is not int or not 1 <= cutoff_week <= 22:
             return None
+        query = _EVIDENCE_QUERY
+        if observed_before is not None:
+            query = query.replace('AND week >= 1', 'AND week >= 1 AND source_observed_at <= $5')
         row = await conn.fetchrow(
-            _EVIDENCE_QUERY, player_gsis_id, stat_type, season, cutoff_week
+            query, player_gsis_id, stat_type, season, cutoff_week,
+            *([observed_before] if observed_before is not None else [])
         )
     if row is None or not row["sample_weeks"]:
         return None
@@ -110,7 +120,9 @@ async def load_ngs_evidence(
         f"nextgen_stats/ngs_{stat_type}.parquet"
     )
     if (
-        row["source_provider_count"] != 1
+        type(row["sample_weeks"]) is not int or not 1 <= row["sample_weeks"] <= MAX_SAMPLE_WEEKS
+        or row.get("invalid_source_rows", 0) != 0
+        or row["source_provider_count"] != 1
         or row["source_url_count"] != 1
         or row["source_version_count"] != 1
         or row["source_provider"] != "nflverse_ngs"
@@ -119,6 +131,7 @@ async def load_ngs_evidence(
         or re.fullmatch(r"[0-9a-f]{64}", row["source_sha256"]) is None
         or not isinstance(row["source_observed_at"], datetime)
         or row["source_observed_at"].utcoffset() is None
+        or (observed_before is not None and row["source_observed_at"] > observed_before)
     ):
         return None
     values = {
@@ -141,4 +154,5 @@ async def load_ngs_evidence(
         "source_sha256": row["source_sha256"],
         "source_observed_at": row["source_observed_at"].isoformat(),
         "probability_adjusted": False,
+        **({"observed_before": observed_before.isoformat()} if observed_before is not None else {}),
     }
