@@ -160,3 +160,17 @@ test('initial failures, cancellation and inconsistent coverage cannot become a u
   const result=await fetchForecasts('nfl',undefined,'qualified',async()=>({ok:true,json:async()=>forecastPage(input([base],5002),options,now)}));
   assert.deepEqual(result.signals,[]);assert.equal(result.complete,false);
 });
+
+
+test('paged forecasts cannot attach a same-name profile for another roster athlete',()=>{
+  const original={...base,availability:{...base.availability,player_id:'123'}};
+  for(const id of ['123','456']) {
+    const data=input([original]);data.profiles={'player-profiles:nfl':{profiles:[{
+      player:'A',name:'A',team:'KC',player_id:id,image_url:`https://a.espncdn.com/i/headshots/nfl/players/full/${id}.png`,
+      captured_at:stamp,source_url:base.availability.roster_source_url,source_sha256:'c'.repeat(64)}]}};
+    const projected=forecastPage(data,request(),now).signals[0];
+    assert.equal(projected.player_profile?.player_id,id==='123' ? '123' : undefined);
+    assert.equal(projected.true_prob,base.true_prob);
+    assert.equal(projected.availability.player_id,'123');
+  }
+});

@@ -27,7 +27,8 @@ ORDER BY game_id,player LIMIT 1000'''
 
 def profile(context, player, player_id, now):
     evidence, _ = player_availability(context, player, now, player_id=player_id)
-    if evidence['status'] != 'observed' or not evidence.get('player_id'):
+    if (evidence['status'] != 'observed' or not evidence.get('player_id')
+            or not evidence.get('player_image_url')):
         return None
     return dict(player=player, name=evidence.get('roster_player_name', player),
         team=evidence['team'], player_id=evidence['player_id'],

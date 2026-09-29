@@ -136,3 +136,18 @@ test('accepts the exact Python publisher contract including a verified zero resu
   assert.equal(value.history[0].actual_value,0);
   assert.deepEqual(value.summary,fixture.board.summary);
 });
+
+
+test('current roster profiles must match the forecast roster athlete, not just the name',()=>{
+  const original={...signal,availability:{...signal.availability,player_id:'123'}};
+  const profile=id=>({player:'Player',name:'Player',team:'KC',player_id:id,
+    image_url:`https://a.espncdn.com/i/headshots/nfl/players/full/${id}.png`,captured_at:new Date(now).toISOString(),
+    source_url:signal.availability.roster_source_url,source_sha256:'c'.repeat(64)});
+  for(const id of ['123','456']) {
+    const projected=publicPickBoard(board([original]),{profiles:[profile(id)]},'nfl',now).current[0];
+    assert.equal(projected.player_profile?.player_id,id==='123' ? '123' : undefined);
+    assert.equal(projected.true_prob,signal.true_prob);
+    assert.equal(projected.kelly_fraction,signal.kelly_fraction);
+  }
+  assert.equal(publicPickBoard(board(),{profiles:[profile('123')]},'nfl',now).current[0].player_profile,undefined);
+});

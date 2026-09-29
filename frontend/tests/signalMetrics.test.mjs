@@ -71,16 +71,16 @@ test('current player presentation requires source and ID commitments and cannot 
   const profile={player:'Player',name:'Player',team:'KC',player_id:'123',jersey:'0',position:'QB',
     image_url:'https://a.espncdn.com/i/headshots/nfl/players/full/123.png',captured_at:new Date(now).toISOString(),
     source_url:quote.availability.roster_source_url,source_sha256:'c'.repeat(64),private:'secret',gated:false};
-  assert.equal(publicPlayerProfile(profile,'nfl','Player',now).jersey,'0');
+  assert.equal(publicPlayerProfile(profile,'nfl','Player',now,'123').jersey,'0');
   for(const patch of [{player:'Other'},{name:'Alias'},{source_url:profile.source_url+'?secret=x'},
     {image_url:profile.image_url.replace('123.png','456.png')},{captured_at:new Date(now+120000).toISOString()},
-    {captured_at:new Date(now-15*86400000).toISOString()}]) assert.equal(publicPlayerProfile({...profile,...patch},'nfl','Player',now),undefined);
-  const signal=publicSignals([{...publicQuote,player_profile:profile,gated:true,gate_reason:'risk_gate'}],now).signals[0];
+    {captured_at:new Date(now-15*86400000).toISOString()}]) assert.equal(publicPlayerProfile({...profile,...patch},'nfl','Player',now,'123'),undefined);
+  const signal=publicSignals([{...publicQuote,availability:{...publicQuote.availability,player_id:'123'},player_profile:profile,gated:true,gate_reason:'risk_gate'}],now).signals[0];
   assert.equal(signal.gated,true);assert.equal(signal.kelly_fraction,0);
   assert.equal(signal.player_profile.private,undefined);assert.equal(signal.player_profile.gated,undefined);
   assert.equal(signal.true_prob,publicQuote.true_prob);
   assert.equal(signal.availability.captured_at,publicQuote.availability.captured_at);
-  assert.equal(publicPlayerProfile({...profile,jersey:'<1>',position:'<script>'},'nfl','Player',now).jersey,undefined);
+  assert.equal(publicPlayerProfile({...profile,jersey:'<1>',position:'<script>'},'nfl','Player',now,'123').jersey,undefined);
 });
 test('portraits require an exact ESPN URL tied to the roster athlete and league',()=>{
   const a={...quote.availability,player_id:'123',player_image_url:'https://a.espncdn.com/i/headshots/nfl/players/full/123.png'};
@@ -495,5 +495,27 @@ test('public roster IDs survive missing or invalid images without exposing anoth
   for(const player_id of ['0','-1','00-0000001','123<script>',123]) {
     const result=publicSignals([{...publicQuote,availability:{...quote.availability,player_id}}],now).signals[0];
     assert.equal(result.availability.player_id,undefined);assert.equal(result.availability.player_image_url,undefined);
+  }
+});
+
+
+test('embedded profiles require the same captured ESPN identity across supported sports',()=>{
+  for(const sport of ['nfl','nba','cfb']) {
+    const root=sport==='nba' ? 'basketball/nba' : sport==='cfb' ? 'football/college-football' : 'football/nfl';
+    const league=sport==='cfb'?'college-football':sport;
+    const availability={...quote.availability,player_id:'123',
+      source_url:`https://site.api.espn.com/apis/site/v2/sports/${root}/injuries`,
+      roster_source_url:`https://site.api.espn.com/apis/site/v2/sports/${root}/teams/12/roster`};
+    // NBA.com and GSIS model IDs are different namespaces from ESPN roster IDs.
+    const original={...publicQuote,sport,player_id:sport==='nfl'?'00-0037248':sport==='nba'?'999':'123',
+      prop_type:sport==='nba'?'points':'pass_yds',market_type:sport==='nba'?'player_points':'player_pass_yds',availability};
+    for(const id of ['123','456']) {
+      const profile={player:'Player',name:'Player',team:'KC',player_id:id,
+        image_url:`https://a.espncdn.com/i/headshots/${league}/players/full/${id}.png`,captured_at:new Date(now).toISOString(),
+        source_url:availability.roster_source_url,source_sha256:'c'.repeat(64)};
+      const projected=publicSignals([{...original,player_profile:profile}],now).signals[0];
+      assert.equal(projected.player_profile?.player_id,id==='123'?'123':undefined,`${sport}:${id}`);
+      assert.equal(projected.true_prob,original.true_prob);
+    }
   }
 });
