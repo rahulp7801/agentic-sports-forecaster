@@ -80,8 +80,9 @@ def existing_supplements(db, evidence):
     players = sorted({int(e['player_id']) for e in evidence})
     fields = ('athlete_id', 'game_id', 'primary_record_sha256', 'source_sha256',
         'effective_record_sha256', 'bundle_sha256')
-    rows = db.execute('SELECT ' + ','.join(fields)
-        + ' FROM public.cfb_receiving_supplements WHERE athlete_id=ANY(?)', (players,)).fetchall()
+    rows = db.execute('SELECT athlete_id,game_id,primary_record_sha256,source_sha256,'
+        'effective_record_sha256,bundle_sha256 FROM public.cfb_receiving_supplements '
+        'WHERE athlete_id=ANY(?)', (players,)).fetchall()
     return [dict(zip(fields, row, strict=True)) for row in rows]
 
 
@@ -118,10 +119,12 @@ def apply_bundle(conn, raw, *, expected_count, expected_plan_sha256, now=None):
     count = 0
     for item in plan['updates']:
         values = dict(item, primary_row=Jsonb(item['primary_row']), manifest=Jsonb(item['manifest']))
-        columns = tuple(values)  # Internal schema only, never caller-supplied identifiers.
-        cursor = conn.execute('INSERT INTO public.cfb_receiving_supplements ('
-            + ','.join(columns) + ') VALUES (' + ','.join(['%s'] * len(columns)) + ')',
-            tuple(values[c] for c in columns))
+        cursor = conn.execute('''INSERT INTO public.cfb_receiving_supplements
+            (athlete_id,game_id,primary_record_sha256,bundle_sha256,primary_row,receiving_yards,
+             receptions,effective_record_sha256,source_sha256,manifest,observed_at)
+            VALUES (%(athlete_id)s,%(game_id)s,%(primary_record_sha256)s,%(bundle_sha256)s,
+                %(primary_row)s,%(receiving_yards)s,%(receptions)s,%(effective_record_sha256)s,
+                %(source_sha256)s,%(manifest)s,%(observed_at)s)''', values)
         count += cursor.rowcount
     if count != expected_count:
         raise ValueError('Unexpected supplement write count')
