@@ -377,6 +377,7 @@ test('corrected CFB model requires its policy and preserves historical validatio
   assert.equal(signalMetrics({...signal,sport:'nfl'},current).gate_reason,'legacy_model');
   assert.equal(signalMetrics({...signal,model_version:'empirical-jeffreys-v4'},current).gate_reason,'legacy_model');
   assert.equal(signalMetrics({...quote,sport:'cfb'},now).gated,false);
+  assert.equal(signalMetrics({...signal,model_version:'empirical-jeffreys-v4'},current,true).gated,false);
   const projected=publicSignals([{...publicQuote,...signal}],current).signals[0];
   assert.equal(projected.history_policy_version,'cfb-explicit-receiving-v1');
 });

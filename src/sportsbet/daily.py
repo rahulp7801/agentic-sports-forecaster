@@ -16,7 +16,7 @@ from sportsbet.dashboard import load_snapshot, publish_snapshot
 from sportsbet.diagnostics import error_fields
 from sportsbet.market_watch import run as watch, DEFAULT_GAME_LIMIT
 from sportsbet.ledger import Ledger
-from sportsbet.model_contract import MODEL_VERSION, model_version_for, CFB_HISTORY_POLICY
+from sportsbet.model_contract import MODEL_VERSION, model_version_for
 from sportsbet.picks import build_pick_board
 from sportsbet.refresh import refresh_history
 from sportsbet.scan import run as scan, timestamp, prop_credit_holdback, MARKETS

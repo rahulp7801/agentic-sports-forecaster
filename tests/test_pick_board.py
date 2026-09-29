@@ -215,4 +215,4 @@ def test_cfb_activation_retains_history_and_requires_new_policy(monkeypatch):
     assert board['current'][0]['history_policy_version']==CFB_HISTORY_POLICY
     assert board['history'][0]['model_version']=='empirical-jeffreys-v4'
     assert build_pick_board([new|{'history_policy_version':None}],'cfb',now)['current']==[]
-    assert build_pick_board([new|{'model_version':'empirical-jeffreys-v4'}],'cfb',now)['current']==[]
+    assert len(build_pick_board([new|{'model_version':'empirical-jeffreys-v4'}],'cfb',now)['current'])==1

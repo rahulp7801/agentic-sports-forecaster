@@ -43,3 +43,33 @@ def test_rehashed_manifest_still_requires_valid_internal_commitments(case):
     if case=='malformed_sources': e['sources']=[None,None]
     m['explicit_source_sha256']=_sha(e);item['source_sha256']=_sha(m)
     assert not valid(row,item)
+
+
+def test_composite_settlement_roundtrip_retains_and_revalidates_manifest(tmp_path,monkeypatch):
+    from datetime import datetime
+    from decimal import Decimal
+    from sportsbet.ledger import Ledger,verified_settlement_evidence
+    from sportsbet.settlement import settle_final_props
+    from tests.test_multisport_edge import forecast
+    row,item=fixture();ledger=Ledger(tmp_path/'settlement.sqlite')
+    payload=forecast('cfb',player_id=str(row['athlete_id']),player=row['player_name'],
+        home_team=row['team_name'],away_team=row['opponent_name'],game_date=row['game_date'],
+        game_start_time='2026-09-26T16:00:00Z')
+    identity=ledger.record('scan',payload)
+    monkeypatch.setattr('sportsbet.settlement._actual',lambda *args:(Decimal(0),dict(
+        provider='sportsdataverse_espn_supplement',sha256=item['source_sha256'],
+        record_sha256=item['effective_record_sha256'],observed_at=datetime.fromisoformat(item['observed_at']),
+        record={k:v for k,v in row.items() if not k.startswith('source_')},supplement_manifest=item['manifest'])))
+    game=dict(provider_event_id=str(row['game_id']),date=row['game_date'],completed=True,
+        home_name=row['team_name'],away_name=row['opponent_name'],home_abbr='IU',away_abbr='NU',
+        game_time=payload['game_start_time'])
+    result=settle_final_props(ledger,'cfb',dict(captured_at=NOW.isoformat(),games=[game]))
+    assert result['settled']==1
+    retained=ledger.predictions()[0]
+    assert retained['outcome_evidence']['stat_supplement_manifest']==item['manifest']
+    assert ledger.report(sport='cfb')['settled_count']==1
+    proof=deepcopy(retained['outcome_evidence']);proof['stat_supplement_manifest']['primary_record_sha256']='f'*64
+    # Rehashing the outer proof alone cannot authenticate a changed inner record.
+    ref='espn_schedule+sportsdataverse_espn_supplement:'+str(row['game_id'])+':sha256:'+_sha(proof)
+    assert not verified_settlement_evidence(payload,False,'observed_final_stats',ref,
+        retained['outcome_observed_at'],0,proof)

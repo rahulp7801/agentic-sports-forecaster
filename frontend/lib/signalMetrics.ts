@@ -12,7 +12,7 @@ export function expectedProfit(expectedReturn: unknown, stake: number): number |
     ? expectedReturn * stake : null;
 }
 
-export function signalMetrics(s: Record<string, unknown>, now = Date.now()) {
+export function signalMetrics(s: Record<string, unknown>, now = Date.now(), retained = false) {
   const p = Number(s.true_prob), odds = Number(s.american_odds);
   const push = Number(s.push_probability ?? 0);
   const quoteTime = Date.parse(String(s.snapped_at ?? ''));
@@ -22,7 +22,8 @@ export function signalMetrics(s: Record<string, unknown>, now = Date.now()) {
   const valid = typeof s.true_prob === 'number' && typeof s.american_odds === 'number' && Number.isFinite(p) && p >= 0 && p <= 1 && Number.isFinite(push) && push >= 0 && p + push <= 1.000001
     && Number.isInteger(odds) && Math.abs(odds) >= 100 && (s.direction === 'over' || s.direction === 'under');
   const legacy = s.sport==='cfb'
-    ? now < CFB_HISTORY_FROZEN_AT ? s.model_version!==CURRENT_MODEL_VERSION
+    ? retained && s.model_version===CURRENT_MODEL_VERSION ? false
+      : now < CFB_HISTORY_FROZEN_AT ? s.model_version!==CURRENT_MODEL_VERSION
       : s.model_version!==CFB_MODEL_VERSION || s.history_policy_version!==CFB_HISTORY_POLICY
     : s.model_version!==CURRENT_MODEL_VERSION;
   const stale = !Number.isFinite(quoteTime) || now - quoteTime > 300000 || quoteTime > now + 60000;
@@ -244,7 +245,7 @@ export function latestForecastWindow(signals:EVSignal[],now=Date.now()) {
 }
 
 /** Return the only signal shape allowed across the public API boundary. */
-export function publicSignal(value:unknown, now=Date.now()):EVSignal|null {
+export function publicSignal(value:unknown, now=Date.now(), retained=false):EVSignal|null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const s=value as Record<string,unknown>;
   const sport=SPORTS.has(s.sport as ModelSport) ? s.sport as ModelSport : null;
@@ -274,7 +275,7 @@ export function publicSignal(value:unknown, now=Date.now()):EVSignal|null {
   const availability=publicAvailability(s.availability,sport,s.player_id);
   const nextGenStats=publicNextGenStats(s.next_gen_stats,sport,prop);
   const playerProfile=publicPlayerProfile(s.player_profile,sport,s.player,now);
-  const metrics=signalMetrics({...s,availability},now);
+  const metrics=signalMetrics({...s,availability},now,retained);
   if (!finite(metrics.implied_prob) || !finite(metrics.ev_pct)
       || (metrics.expected_return !== null && !finite(metrics.expected_return))) return null;
   const gateReason=typeof metrics.gate_reason === 'string' ? metrics.gate_reason : undefined;
