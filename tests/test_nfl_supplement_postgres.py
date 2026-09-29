@@ -14,10 +14,13 @@ pytestmark = pytest.mark.skipif(not os.environ.get('SPORTSBET_TEST_DATABASE_URL'
 def test_reviewed_nfl_archive_is_atomic_replay_safe_and_private():
     import psycopg
     from psycopg.types.json import Jsonb
+    from sportsbet.db.access import provision_roles, READER, WORKER
+    import secrets
     url = os.environ['SPORTSBET_TEST_DATABASE_URL'].replace('postgresql+psycopg://','postgresql://',1)
     raw = json.dumps(bundle()); evidence = inspect_bundle(bundle(),now=NOW)
     with psycopg.connect(url) as conn:
         try:
+            provision_roles(conn, {role: secrets.token_urlsafe(32) for role in (READER, WORKER)})
             g = game()
             conn.execute('INSERT INTO public.games ('+','.join(g)+') VALUES ('+','.join(['%s']*len(g))+')', tuple(g.values()))
             class Session:
