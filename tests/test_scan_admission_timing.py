@@ -45,7 +45,16 @@ async def test_admission_rechecks_time_after_context_queries(tmp_path,monkeypatc
     monkeypatch.setattr(scan,'historical_availability_splits',slow_context)
     monkeypatch.setattr(scan,'load_ngs_evidence',AsyncMock(return_value=None))
     ledger=Ledger(tmp_path/'timing.sqlite',database_url='')
+    paper_calls=[]
+    async def check_model_paper_after_commit(actual_pool,payloads,actual_sport):
+        persisted=ledger.predictions()
+        assert actual_pool is pool and actual_sport==sport
+        assert {p['prediction_id'] for p in payloads}=={p['prediction_id'] for p in persisted}
+        assert [p['gate_reason'] for p in payloads]==[p['gate_reason'] for p in persisted]
+        paper_calls.append(payloads)
+    monkeypatch.setattr('sportsbet.quant.model_selection_paper.record',check_model_paper_after_commit)
     result=await scan.evaluate_event(pool,event,sport,ledger,'scan',context)
+    assert len(paper_calls)==1
     row,=ledger.predictions();public,=result['signals']
     assert row['gate_reason']==public['gate_reason']==expected
     assert row['accepted']==(expected=='accepted')

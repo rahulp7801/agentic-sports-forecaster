@@ -9,6 +9,7 @@ This adds private timely receipts for the previously researched raw-model and fi
 - History and recommendation policy versions are fixed in the protocol. Old NFL/CFB cohorts cannot validate the new models.
 - Raw and calibrated rules have separate protocol identities in the existing private `analytics.paper_selections` table. The primary hypothesis is the raw rule; the calibrated rule is secondary. Sports remain separate.
 - Each rule chooses at most one offer per player/game: highest estimated return of at least 2% at the earliest eligible response, with the existing exact-source, half-line, minimum-history and five-minute freshness requirements. The prior strength remains 80.
+- The first successfully retained timely selection is kept per rule/player/game. Failed or expired recording is not backfilled; subsequent natural scans can supply a later timely first receipt. This live receipt cohort is distinct from reconstructing the earliest possible historical candidate.
 - Each receipt retains the original inputs and exact opposite-side price, supporting always-Over, always-Under and half-unit-per-side controls on the same selected opportunity. Embedded opposite prices must reproduce source hashes and the market baseline.
 
 ## Fixed review cohort
