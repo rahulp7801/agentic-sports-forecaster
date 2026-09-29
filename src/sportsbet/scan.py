@@ -500,7 +500,7 @@ async def evaluate_event(pool, event: dict, sport: str, ledger: Ledger, scan_id:
                 try:
                     ngs_contexts[ngs_key]=await load_ngs_evidence(pool,
                         player_gsis_id=player_id,season=season,game_date=game_date,
-                        team=availability_evidence.get('team',''),prop_type=MARKETS[sport][market])
+                        team=availability_evidence.get('team',''),prop_type=MARKETS[sport][market],observed_before=selection_time)
                 except Exception as exc:
                     log.warning('ngs_evidence_unavailable',error_type=type(exc).__name__)
                     ngs_contexts[ngs_key]=None
@@ -559,7 +559,7 @@ async def evaluate_event(pool, event: dict, sport: str, ledger: Ledger, scan_id:
                 true_prob=float(probability),implied_prob=float(implied),ev_pct=float(probability-implied),
                 expected_return=float(compute_expected_return(probability,payout,prop.push_probability)),push_probability=float(prop.push_probability),
                 kelly_fraction=float(signal.kelly_fraction) if accepted and signal else 0,gated=not accepted,gate_reason=reason,
-                sportsbook=quote.sportsbook,american_odds=quote.price,snapped_at=quote.snapped_at.isoformat(),
+                sportsbook=quote.sportsbook,american_odds=quote.price,snapped_at=quote.snapped_at.isoformat(),captured_at=now.isoformat(),
                 game_start_time=start.isoformat(),sample_size=prop.sample_size,mean_stat=float(prop.mean_stat) if prop.mean_stat is not None else None,
                 confidence_interval=[float(x) for x in model_interval] if model_interval else None,
                 model_version=model_version_for(sport, selection_time),

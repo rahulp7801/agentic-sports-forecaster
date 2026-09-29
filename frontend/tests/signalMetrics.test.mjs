@@ -20,12 +20,12 @@ test('Next Gen Stats context is source-bound, pregame-only, and never changes pr
     source_provider:'nflverse_ngs',
     source_url:'https://github.com/nflverse/nflverse-data/releases/download/nextgen_stats/ngs_passing.parquet',
     source_sha256:'c'.repeat(64),source_observed_at:new Date(now).toISOString(),probability_adjusted:false};
-  const result=publicSignals([{...publicQuote,next_gen_stats:{...evidence,private:'secret'}}],now).signals[0];
+  const result=publicSignals([{...publicQuote,captured_at:new Date(now).toISOString(),next_gen_stats:{...evidence,private:'secret'}}],now).signals[0];
   assert.equal(result.next_gen_stats.sample_weeks,8);assert.equal(result.true_prob,publicQuote.true_prob);
   assert.equal(result.next_gen_stats.private,undefined);assert.equal(result.next_gen_stats.probability_adjusted,false);
   for(const patch of [{source_url:'https://evil.example/ngs'},{probability_adjusted:true},
     {cutoff_exclusive:false},{sample_weeks:9},{metrics:{unknown:1}},{stat_type:'rushing'}]) {
-    const projected=publicSignals([{...publicQuote,next_gen_stats:{...evidence,...patch}}],now).signals[0];
+    const projected=publicSignals([{...publicQuote,captured_at:new Date(now).toISOString(),next_gen_stats:{...evidence,...patch}}],now).signals[0];
     assert.equal(projected.next_gen_stats,undefined);
     assert.equal(projected.true_prob,publicQuote.true_prob);
   }
@@ -393,4 +393,30 @@ test('NFL corrected-history policy gates current signals while retaining old pic
   assert.equal(signalMetrics({...legacy,model_version:'empirical-jeffreys-v4-nfl-history-v1',
     history_policy_version:'nfl-explicit-receiving-v1'},when).gated,false);
   assert.equal(signalMetrics({...legacy,model_version:'empirical-jeffreys-v4-nfl-history-v1'},when).gate_reason,'legacy_model');
+});
+
+test('tracking source chronology uses forecast capture and survives repeat projection',()=>{
+  const sourceAt=new Date(now+1000).toISOString(),captureAt=new Date(now+2000).toISOString();
+  const evidence={status:'observed',stat_type:'passing',sample_weeks:2,cutoff_season:2026,cutoff_week:3,
+    cutoff_exclusive:true,metrics:{avg_time_to_throw:2.7},source_provider:'nflverse_ngs',
+    source_url:'https://github.com/nflverse/nflverse-data/releases/download/nextgen_stats/ngs_passing.parquet',
+    source_sha256:'a'.repeat(64),source_observed_at:sourceAt,observed_before:sourceAt,probability_adjusted:false};
+  const record={...publicQuote,captured_at:captureAt,next_gen_stats:evidence};
+  const first=publicSignals([record],now+2000).signals[0];
+  assert.equal(first.next_gen_stats.source_observed_at,sourceAt);
+  assert.equal(first.captured_at,captureAt);
+  assert.deepEqual(publicSignals([first],now+2000).signals[0].next_gen_stats,first.next_gen_stats);
+  for(const patch of [{source_observed_at:new Date(now+3000).toISOString()},
+    {observed_before:new Date(now+3000).toISOString()}, {observed_before:new Date(now).toISOString()},
+    {observed_before:'2026-09-10T12:00:01'}, {observed_before:'invalid'}]) {
+    const value=publicSignals([{...record,next_gen_stats:{...evidence,...patch}}],now+2000).signals[0];
+    assert.equal(value.next_gen_stats,undefined);assert.equal(value.true_prob,record.true_prob);
+  }
+  for(const captured_at of [undefined,'invalid','2026-09-10T12:00:02',new Date(now-1).toISOString(),
+    record.game_start_time,new Date(now+120000).toISOString()]) {
+    const value=publicSignals([{...record,captured_at}],now+2000).signals[0];
+    assert.equal(value.next_gen_stats,undefined);assert.equal(value.true_prob,record.true_prob);
+  }
+  const legacy={...evidence};delete legacy.observed_before;
+  assert.ok(publicSignals([{...record,next_gen_stats:legacy}],now+2000).signals[0].next_gen_stats);
 });

@@ -66,3 +66,37 @@ async def test_ngs_evidence_fails_closed_for_mixed_source_versions():
     pool=MagicMock();pool.acquire.return_value=_Context(conn)
     assert await load_ngs_evidence(pool,player_gsis_id='00-0031234',season=2026,
         game_date=date(2026,9,20),team='LAR',prop_type='rec_yds') is None
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('invalid',['naive','late','oversized_sample','incomplete_source'])
+async def test_tracking_rejects_invalid_observation_evidence(invalid):
+    from datetime import timedelta
+    cutoff=datetime(2026,9,20,tzinfo=timezone.utc)
+    conn=AsyncMock();conn.fetch.return_value=[{'week':3}]
+    conn.fetchrow.return_value={'sample_weeks':2,'avg_separation':2.5,'avg_cushion':5.0,'avg_yac_above_expectation':.8,
+        'source_provider':'nflverse_ngs','source_url':'https://github.com/nflverse/nflverse-data/releases/download/nextgen_stats/ngs_receiving.parquet',
+        'source_sha256':'a'*64,'source_observed_at':cutoff,'source_provider_count':1,'source_url_count':1,'source_version_count':1,'invalid_source_rows':0}
+    pool=MagicMock();pool.acquire.return_value=_Context(conn)
+    args=dict(player_gsis_id='00-0031234',season=2026,game_date=date(2026,9,20),team='SEA',prop_type='rec_yds',observed_before=cutoff)
+    if invalid=='naive':
+        args['observed_before']=cutoff.replace(tzinfo=None)
+        with pytest.raises(ValueError,match='aware'):await load_ngs_evidence(pool,**args)
+        pool.acquire.assert_not_called();return
+    if invalid=='late':conn.fetchrow.return_value['source_observed_at']=cutoff+timedelta(microseconds=1)
+    if invalid=='oversized_sample':conn.fetchrow.return_value['sample_weeks']=9
+    if invalid=='incomplete_source':conn.fetchrow.return_value['invalid_source_rows']=1
+    assert await load_ngs_evidence(pool,**args) is None
+
+
+@pytest.mark.asyncio
+async def test_tracking_binds_cutoff_before_window_selection_and_retains_it():
+    cutoff=datetime(2026,9,20,tzinfo=timezone.utc)
+    conn=AsyncMock();conn.fetch.return_value=[{'week':3}]
+    conn.fetchrow.return_value={'sample_weeks':2,'avg_time_to_throw':2.7,'avg_completed_air_yards':5.0,'avg_intended_air_yards':8.1,'aggressiveness':14.0,
+        'source_provider':'nflverse_ngs','source_url':'https://github.com/nflverse/nflverse-data/releases/download/nextgen_stats/ngs_passing.parquet',
+        'source_sha256':'a'*64,'source_observed_at':cutoff,'source_provider_count':1,'source_url_count':1,'source_version_count':1,'invalid_source_rows':0}
+    pool=MagicMock();pool.acquire.return_value=_Context(conn)
+    result=await load_ngs_evidence(pool,player_gsis_id='00-0031234',season=2026,game_date=date(2026,9,20),team='SEA',prop_type='pass_yds',observed_before=cutoff)
+    assert result['observed_before']==cutoff.isoformat()
+    sql,*args=conn.fetchrow.await_args.args
+    assert args[-1]==cutoff and sql.index('source_observed_at <= $5')<sql.index('LIMIT 8')

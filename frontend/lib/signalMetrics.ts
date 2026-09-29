@@ -188,8 +188,8 @@ function publicAvailability(value:unknown,sport:Sport,historyPlayerId?:unknown):
     teammates,...(contextSplits.length ? {context_splits:contextSplits} : {}),probability_adjusted:false};
 }
 
-function publicNextGenStats(value:unknown,sport:Sport,prop:PropType):NextGenStatsEvidence|undefined {
-  if(sport!=='nfl' || !value || typeof value!=='object' || Array.isArray(value)) return undefined;
+function publicNextGenStats(value:unknown,sport:Sport,prop:PropType,capturedAt?:string):NextGenStatsEvidence|undefined {
+  if(sport!=='nfl' || !capturedAt || !value || typeof value!=='object' || Array.isArray(value)) return undefined;
   const evidence=value as Record<string,unknown>;
   const expected:Partial<Record<PropType,NextGenStatsEvidence['stat_type']>>={
     pass_yds:'passing',pass_tds:'passing',rush_yds:'rushing',rec_yds:'receiving',receptions:'receiving'};
@@ -211,6 +211,10 @@ function publicNextGenStats(value:unknown,sport:Sport,prop:PropType):NextGenStat
     || !bounded(evidence.source_sha256,64) || !/^[a-f0-9]{64}$/.test(evidence.source_sha256)
     || !timestamp(evidence.source_observed_at) || !metrics || typeof metrics!=='object'
     || Array.isArray(metrics)) return undefined;
+  if(Date.parse(evidence.source_observed_at)>Date.parse(capturedAt)
+    || (evidence.observed_before!==undefined && (!timestamp(evidence.observed_before)
+      || Date.parse(evidence.observed_before)>Date.parse(capturedAt)
+      || Date.parse(evidence.source_observed_at)>Date.parse(evidence.observed_before)))) return undefined;
   const entries=Object.entries(metrics);
   if(!entries.length || entries.some(([key,item])=>!columns[statType].has(key as NextGenMetric)
     || !finite(item) || Math.abs(item)>10000)) return undefined;
@@ -219,7 +223,8 @@ function publicNextGenStats(value:unknown,sport:Sport,prop:PropType):NextGenStat
     cutoff_exclusive:true,metrics:{...metrics} as Partial<Record<NextGenMetric,number>>,
     source_provider:'nflverse_ngs',source_url:evidence.source_url,
     source_sha256:evidence.source_sha256,source_observed_at:evidence.source_observed_at,
-    probability_adjusted:false};
+    probability_adjusted:false,
+    ...(timestamp(evidence.observed_before) ? {observed_before:evidence.observed_before} : {})};
 }
 
 /** Current identity metadata never supplies historical availability or eligibility. */
@@ -280,7 +285,12 @@ export function publicSignal(value:unknown, now=Date.now(), retained=false):EVSi
         ([key,item])=>!bounded(key,64) || !bounded(item,300,true))
       || !bounded(s.market_type,100)) return null;
   const availability=publicAvailability(s.availability,sport,s.player_id);
-  const nextGenStats=publicNextGenStats(s.next_gen_stats,sport,prop);
+  // The quote can precede inference. Retain the actual forecast capture time
+  // rather than treating the earlier price timestamp as source availability.
+  const capturedAt=timestamp(s.captured_at) && Date.parse(s.captured_at)>=Date.parse(s.snapped_at)
+    && Date.parse(s.captured_at)<Date.parse(s.game_start_time) && Date.parse(s.captured_at)<=now+60000
+    ? s.captured_at : undefined;
+  const nextGenStats=publicNextGenStats(s.next_gen_stats,sport,prop,capturedAt);
   const playerProfile=publicPlayerProfile(s.player_profile,sport,s.player,now);
   const metrics=signalMetrics({...s,availability},now,retained);
   if (!finite(metrics.implied_prob) || !finite(metrics.ev_pct)
@@ -301,7 +311,7 @@ export function publicSignal(value:unknown, now=Date.now(), retained=false):EVSi
     // Preserve stored forecasts, but withhold the obsolete generated claim of exact on/off evidence.
     trade_plan:tradePlan.filter(bullet=>!(bullet.startsWith('Availability: ')
       && bullet.includes(' exact historical on/off comparison'))),injury_flags:{...flags} as Record<string,string>,
-    market_type:s.market_type,snapped_at:s.snapped_at,strength:'unrated',
+    market_type:s.market_type,snapped_at:s.snapped_at,...(capturedAt ? {captured_at:capturedAt} : {}),strength:'unrated',
     gated:metrics.gated as boolean,...(gateReason ? {gate_reason:gateReason} : {}),
     sample_size:s.sample_size,mean_stat:mean as number|null,game_id:s.game_id,
     ...(availability ? {availability} : {}),

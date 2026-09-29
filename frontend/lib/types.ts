@@ -60,6 +60,7 @@ export interface NextGenStatsEvidence {
   source_url: string;
   source_sha256: string;
   source_observed_at: string;
+  observed_before?: string;
   probability_adjusted: false;
 }
 
@@ -95,6 +96,7 @@ export interface EVSignal {
   injury_flags: Record<string, string>;
   market_type: string;
   snapped_at: string;
+  captured_at?: string;
   strength: SignalStrength;
   // Extended fields from cache (not in EVSignal base type)
   gated?: boolean;
