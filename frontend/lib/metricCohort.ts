@@ -1,5 +1,5 @@
 export type MetricCohort = 'all' | 'recommendations';
-export type MetricSport = 'all' | 'nba' | 'nfl';
+export type MetricSport = 'all' | 'nba' | 'nfl' | 'cfb';
 
 export function metricCohort(url: string): MetricCohort | null {
   const value = new URL(url).searchParams.get('cohort') ?? 'all';
@@ -8,7 +8,7 @@ export function metricCohort(url: string): MetricCohort | null {
 
 export function metricSport(url: string): MetricSport | null {
   const value = new URL(url).searchParams.get('sport') ?? 'all';
-  return value === 'all' || value === 'nba' || value === 'nfl' ? value : null;
+  return value === 'all' || value === 'nba' || value === 'nfl' || value === 'cfb' ? value : null;
 }
 
 export function metricSnapshotKey(cohort: MetricCohort, sport: MetricSport = 'all') {
@@ -17,5 +17,6 @@ export function metricSnapshotKey(cohort: MetricCohort, sport: MetricSport = 'al
 
 export function metricLedgerArgs(cohort: MetricCohort, sport: MetricSport = 'all') {
   return ['-m', 'sportsbet.ledger', ...(cohort === 'recommendations' ? ['--recommendations-only'] : []),
-    ...(sport === 'all' ? [] : ['--sport', sport])];
+    ...(sport === 'all' ? [] : ['--sport', sport]),
+    ...(sport === 'cfb' ? ['--model-version','empirical-jeffreys-v4-cfb-history-v1'] : [])];
 }

@@ -83,3 +83,11 @@ test('public metrics rejects unsafe model identifiers', () => {
   const value=report();value.model_version='<script>alert(1)</script>';
   assert.throws(()=>publicMetrics(value,'all'));
 });
+
+
+test('CFB replay preserves its distinct model and rejects another league snapshot',()=>{
+  const value={...report(),sport:'cfb',model_version:'empirical-jeffreys-v4-cfb-history-v1'};
+  const result=publicMetrics(value,'all','cfb');
+  assert.equal(result.sport,'cfb');assert.equal(result.model_version,value.model_version);
+  assert.throws(()=>publicMetrics({...value,sport:'nfl'},'all','cfb'));
+});
