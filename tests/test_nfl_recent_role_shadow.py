@@ -206,3 +206,21 @@ async def test_scanner_candidate_preserves_public_forecasts_and_exposure(tmp_pat
         assert row['accepted'] is False and row['stake_fraction']==0
     assert all('role_history_shadow' not in s for s in after['signals'])
     with candidate.connect() as db:assert db.execute('SELECT count(*) FROM exposure').fetchone()[0]==0
+
+@pytest.mark.parametrize('portrait',[False,True])
+def test_verified_roster_identity_reaches_recent_role_without_requiring_photo(portrait):
+    from sportsbet.prop.availability import player_availability,NFL_PLAYER_IDS_URL
+    p,data=fixture();binding=data['players'][0];espn=binding['espn_player_id'];name=binding['player'];now=datetime.fromisoformat(p['captured_at'])
+    team=dict(name='Home',abbreviation='KC',roster_names=[name],roster_ids={espn:name},roster_statuses={name:'Active'},reports=[],
+        roster_source_url=p['availability']['roster_source_url'],roster_source_sha256=p['availability']['roster_source_sha256'])
+    if portrait:team['portraits']={name:dict(player_id=espn,player_image_url=f'https://a.espncdn.com/i/headshots/nfl/players/full/{espn}.png')}
+    context=dict(status='observed',captured_at=p['captured_at'],source_url='https://site.api.espn.com/apis/site/v2/sports/football/nfl/injuries',
+        source_sha256='a'*64,teams=[team],player_identities={p['player_id']:espn},
+        identity_source=dict(url=NFL_PLAYER_IDS_URL,source_sha256='b'*64,retrieved_at=p['captured_at']))
+    evidence,reason=player_availability(context,name,now,player_id=p['player_id'],sport='nfl')
+    assert reason is None and evidence.get('player_id')==espn
+    assert ('player_image_url' in evidence)==portrait
+    p['availability']=evidence
+    result=role.shadow_record(p,data)
+    assert result['status']=='predicted',result
+    assert p['model_probability']==30.5/34 and evidence['probability_adjusted'] is False

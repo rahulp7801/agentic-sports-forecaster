@@ -280,6 +280,23 @@ def nfl_roster_history_bindings(context: dict | None, event: dict, now: datetime
         return {}
 
 
+def _roster_athlete_id(team: dict, name: str, sport: str) -> str | None:
+    """Preserve an exact ESPN roster ID independently of optional photo metadata."""
+    roster = team.get('roster_ids')
+    if not isinstance(roster, dict):
+        return None
+    matches = [identity for identity, player in roster.items() if player == name]
+    if len(matches) != 1 or not isinstance(matches[0], str) or not re.fullmatch(r'[1-9][0-9]{0,19}', matches[0]):
+        return None
+    url, digest = team.get('roster_source_url'), team.get('roster_source_sha256')
+    suffix = r'(?:\?limit=1000)?' if sport == 'cfb' else ''
+    if (not isinstance(url, str) or not isinstance(digest, str)
+            or not re.fullmatch(re.escape(BASES[sport])+r'/teams/[1-9][0-9]*/roster'+suffix, url)
+            or not re.fullmatch(r'[a-f0-9]{64}', digest)):
+        return None
+    return matches[0]
+
+
 def player_availability(context: dict | None, player: str, now: datetime, *, player_id: str | None = None, sport: str = 'nfl') -> tuple[dict, str | None]:
     """Never equate an unlisted injury with a confirmed active game-day lineup."""
     unavailable = dict(status='unavailable', roster_confirmed=False, subject_status='Unknown',
@@ -337,6 +354,13 @@ def player_availability(context: dict | None, player: str, now: datetime, *, pla
                         roster_source_url=team['roster_source_url'],roster_source_sha256=team['roster_source_sha256'],
                         teammates=teammates, probability_adjusted=False)
         evidence.update(team.get('portraits',{}).get(roster_name,{}))
+        roster_id = _roster_athlete_id(team, roster_name, sport)
+        if roster_id is not None:
+            evidence['player_id'] = roster_id
+            image_sport = 'college-football' if sport == 'cfb' else sport
+            expected_image = f'https://a.espncdn.com/i/headshots/{image_sport}/players/full/{roster_id}.png'
+            if evidence.get('player_image_url') != expected_image:
+                evidence.pop('player_image_url', None)
         if sport=='cfb' and player_id is not None:
             evidence['player_id']=player_id
         if roster_name != player:
