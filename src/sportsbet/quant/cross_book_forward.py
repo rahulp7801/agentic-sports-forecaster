@@ -35,6 +35,22 @@ PROTOCOL = {
 FROZEN_DIGESTS = {'sportsbet.quant.market_challengers': 'bb99ceb40450f0fcbebeb3730e75211954628d1ec8cf410d167f1a3bbc84f4df', 'sportsbet.quant.market_baseline': 'bffd86272a1eac303acb57dbd0b246355b8d2d5b2ab4c39945d5e8d5c3af9404', 'sportsbet.quant.priced_market_audit': '6925b66315c7daeab86f0c1cab57c02c7abda9f237f6a80242dba94d8419a5be', 'sportsbet.ledger': 'e33611de7f85c376b2967f3d1f1bf4a02e80ce093d85c7a1182d29b8799fe2b1', 'sportsbet.model_contract': '96cac511ca3ae555e953985167a18639ef06148947c82a00d8b6c4bc241f4f29', 'sportsbet.ingestion.prop_odds': 'e5ca0fd05e4bfacbff670c925016526b24ae6f9cf8ed0e1d43762c670cbf5ad3'}
 
 
+class ProspectiveLedger(ReadOnlyLedger):
+    """Filter at the source so old payloads never need to be transferred."""
+    def _prediction_records(self, *, ordered=False):
+        query = """SELECT id,payload,outcome,outcome_source,outcome_ref,
+            outcome_observed_at,actual_value,outcome_evidence FROM predictions
+            WHERE CASE WHEN payload::jsonb->>'sport'=ANY(?)
+                AND payload::jsonb->>'model_version'=ANY(?)
+                THEN (payload::jsonb->>'captured_at')::timestamptz>=?::timestamptz
+                ELSE false END"""
+        if ordered:
+            query += ' ORDER BY id'
+        with self.connect() as db:
+            return db.execute(query,(list(PROTOCOL['model_versions']),
+                list(PROTOCOL['model_versions'].values()),PROTOCOL['captured_after'])).fetchall()
+
+
 def source_digests():
     return {module.__name__:hashlib.sha256(Path(module.__file__).read_text(encoding='utf-8').encode('utf-8')).hexdigest()
         for module in (challenger,market_baseline,priced_market_audit,ledger_module,model_contract,prop_odds)}
@@ -121,7 +137,7 @@ def main():
     else:
         from dotenv import load_dotenv
         load_dotenv()
-        ledger=ReadOnlyLedger(database_url=audit_database_url(args.database_env))
+        ledger=ProspectiveLedger(database_url=audit_database_url(args.database_env))
         with ledger.snapshot():
             rows=ledger.predictions()
     now=datetime.now(timezone.utc)

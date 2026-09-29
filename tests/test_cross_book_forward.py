@@ -87,3 +87,23 @@ def test_sufficient_positive_evidence_still_requires_review(monkeypatch):
     assert report['decided']==100 and report['settled_games']==50
     assert report['status']=='review_required'
     assert report['promote'] is False
+
+
+def test_hosted_source_filters_before_fetching_old_payloads(monkeypatch):
+    from contextlib import contextmanager
+    calls=[]
+    class Cursor:
+        def fetchall(self):return []
+    class Connection:
+        def execute(self,query,params):
+            calls.append((query,params));return Cursor()
+    @contextmanager
+    def connection():yield Connection()
+    ledger=forward.ProspectiveLedger(database_url='postgresql://localhost/unused')
+    monkeypatch.setattr(ledger,'connect',connection)
+    assert ledger._prediction_records(ordered=True)==[]
+    query,params=calls[0]
+    assert 'WHERE CASE WHEN' in query and '::timestamptz>=?::timestamptz' in query
+    assert query.endswith('ORDER BY id')
+    assert params==(list(forward.PROTOCOL['model_versions']),
+        list(forward.PROTOCOL['model_versions'].values()),forward.PROTOCOL['captured_after'])
