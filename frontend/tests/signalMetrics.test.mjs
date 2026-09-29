@@ -471,3 +471,29 @@ test('participation window and nested cohort fields are projected without changi
   }
   assert.equal(project(undefined).availability.context_splits[0].sample_window,undefined);
 });
+
+test('CFB alias identity survives repeated public projection without a player photo',()=>{
+  const roster='https://site.api.espn.com/apis/site/v2/sports/football/college-football/teams/324/roster';
+  const availability={...quote.availability,team:'CCU',player_id:'5203477',roster_player_name:'Dominic Lee-Knicely',
+    source_url:roster,source_sha256:'b'.repeat(64),roster_source_url:roster,roster_source_sha256:'b'.repeat(64),
+    identity_source_url:roster,identity_source_sha256:'b'.repeat(64)};
+  const first=publicSignals([{...publicQuote,sport:'cfb',player:'Dominic Knicely',player_id:'5203477',availability}],now).signals[0];
+  assert.equal(first.availability.player_id,'5203477');assert.equal(first.availability.player_image_url,undefined);
+  const second=publicSignals([first],now).signals[0];
+  assert.deepEqual(second.availability,first.availability);assert.equal(second.gated,first.gated);
+  assert.equal(second.true_prob,publicQuote.true_prob);
+});
+
+test('public roster IDs survive missing or invalid images without exposing another athlete image',()=>{
+  for(const player_image_url of [undefined,'https://attacker.invalid/image.png',
+    'https://a.espncdn.com/i/headshots/nfl/players/full/999.png']) {
+    const result=publicSignals([{...publicQuote,availability:{...quote.availability,player_id:'123',player_image_url}}],now).signals[0];
+    assert.equal(result.availability.player_id,'123');assert.equal(result.availability.player_image_url,undefined);
+    assert.equal(result.true_prob,publicQuote.true_prob);
+    assert.deepEqual(publicSignals([result],now).signals[0].availability,result.availability);
+  }
+  for(const player_id of ['0','-1','00-0000001','123<script>',123]) {
+    const result=publicSignals([{...publicQuote,availability:{...quote.availability,player_id}}],now).signals[0];
+    assert.equal(result.availability.player_id,undefined);assert.equal(result.availability.player_image_url,undefined);
+  }
+});

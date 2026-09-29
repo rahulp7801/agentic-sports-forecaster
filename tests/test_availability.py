@@ -47,7 +47,8 @@ def test_only_confirmed_acute_teammate_absences_block_the_baseline():
 
 
 @pytest.mark.parametrize('sport,missing_team',[('nfl',False),('nba',False),('nba',True),('cfb',False),('cfb',True)])
-async def test_exact_team_rosters_and_archived_response_hashes(sport,missing_team,tmp_path,monkeypatch):
+@pytest.mark.parametrize('photo',[True,False,None,'invalid'])
+async def test_exact_team_rosters_and_archived_response_hashes(sport,missing_team,photo,tmp_path,monkeypatch):
     monkeypatch.chdir(tmp_path)
     now=datetime.now(timezone.utc).isoformat()
     teams=[dict(id=str(i),displayName=name,abbreviation=name) for i,name in enumerate(['Home','Away'],1)]
@@ -64,6 +65,10 @@ async def test_exact_team_rosters_and_archived_response_hashes(sport,missing_tea
             body['team']=dict(id=identity)
             image_sport='college-football' if sport=='cfb' else sport
             athletes=[dict(id='123',headshot={'href':f'https://a.espncdn.com/i/headshots/{image_sport}/players/full/123.png'},displayName='Player' if identity=='1' else 'Opponent',status={'name':'Active'})]
+            if photo is False:athletes[0].pop('headshot')
+            elif photo is None:athletes[0]['headshot']=None
+            elif photo=='invalid':athletes[0]['headshot']='not-an-object'
+            athletes[0]['position']=None  # Optional presentation metadata may be absent.
             body['athletes']=[dict(items=athletes)] if sport in ('nfl','cfb') else athletes
         return httpx.Response(200,json=body)
     original=httpx.AsyncClient
@@ -72,7 +77,10 @@ async def test_exact_team_rosters_and_archived_response_hashes(sport,missing_tea
         assert result['status']==('partial' if missing_team else 'observed') and len(result['source_sha256'])==64
         assert player_availability(result,'Player',datetime.now(timezone.utc))[0]['team']=='Home'
         image_sport='college-football' if sport=='cfb' else sport
-        assert player_availability(result,'Player',datetime.now(timezone.utc))[0]['player_image_url']==f'https://a.espncdn.com/i/headshots/{image_sport}/players/full/123.png'
+        evidence=player_availability(result,'Player',datetime.now(timezone.utc),sport=sport)[0]
+        assert evidence['player_id']=='123'
+        if photo is True:assert evidence['player_image_url']==f'https://a.espncdn.com/i/headshots/{image_sport}/players/full/123.png'
+        else:assert 'player_image_url' not in evidence
         assert player_availability(result,'Opponent',datetime.now(timezone.utc))[0]['status']==('unavailable' if missing_team else 'observed')
         assert len(list((tmp_path/'.local/availability').glob('*.json')))==1
         result=await fetch_event_availability(dict(id='event',home_team='Wrong',away_team='Away'),sport)
@@ -273,3 +281,27 @@ async def test_cfb_full_roster_includes_subject_and_injury_after_default_cutoff(
 def test_cfb_extended_roster_allows_only_committed_limit(query):
     data=cfb_identity_context();data['teams'][0]['roster_source_url']+=query
     assert player_availability(data,'Dominic Knicely',datetime.now(timezone.utc),player_id='5203477',sport='cfb')[0]['status']=='unavailable'
+
+@pytest.mark.parametrize('sport',['nfl','nba','cfb'])
+@pytest.mark.parametrize('fault',[None,'ambiguous','invalid_id','invalid_source','invalid_digest','unmatched'])
+def test_roster_id_does_not_depend_on_photos_and_requires_exact_committed_binding(sport,fault):
+    from sportsbet.prop.availability import BASES,_roster_athlete_id
+    team=dict(roster_ids={'123':'Player'},roster_source_url=BASES[sport]+'/teams/12/roster',roster_source_sha256='a'*64)
+    if fault=='ambiguous':team['roster_ids']['456']='Player'
+    if fault=='invalid_id':team['roster_ids']={'0':'Player'}
+    if fault=='invalid_source':team['roster_source_url']='https://attacker.invalid/roster'
+    if fault=='invalid_digest':team['roster_source_sha256']='invalid'
+    if fault=='unmatched':team['roster_ids']={'123':'Another Player'}
+    assert _roster_athlete_id(team,'Player',sport)==('123' if fault is None else None)
+    if fault is None and sport=='cfb':
+        team['roster_source_url']+='?limit=1000'
+        assert _roster_athlete_id(team,'Player',sport)=='123'
+
+
+def test_verified_roster_identity_rejects_a_different_portrait_athlete():
+    from sportsbet.prop.availability import BASES
+    data=context();team=data['teams'][0]
+    team.update(roster_ids={'123':'Player'},roster_source_url=BASES['nfl']+'/teams/12/roster',
+        portraits={'Player':dict(player_id='999',player_image_url='https://a.espncdn.com/i/headshots/nfl/players/full/999.png')})
+    evidence,reason=player_availability(data,'Player',datetime.now(timezone.utc))
+    assert reason is None and evidence['player_id']=='123' and 'player_image_url' not in evidence
