@@ -51,7 +51,9 @@ def test_browser_role_migration_closes_owner_view_and_preserves_data():
             assert conn.execute(sa.text("SELECT count(*) FROM dashboard_snapshots WHERE snapshot_key='acl-proof'")).scalar_one() == 1
             for role in ('anon', 'authenticated'):
                 for table in ('public.dashboard_snapshots', 'public.dashboard_gamelogs',
-                              'public.provider_response_cache', 'public.ngs_stats'):
+                              'public.provider_response_cache', 'public.ngs_stats',
+                              'public.cfb_history_source_bundles', 'public.cfb_receiving_supplements',
+                              'public.cfb_effective_gamelogs'):
                     assert not conn.execute(sa.text("SELECT has_table_privilege(:role,:table,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE')"),
                                             {'role': role, 'table': table}).scalar_one()
         for role in ('anon', 'authenticated'):
@@ -158,7 +160,7 @@ def test_alembic_upgrade_clean() -> None:
             'targets','receptions','percent_attempts_gte_eight_defenders','rush_attempts',
             'source_provider','source_url','source_sha256','source_record_sha256',
             'source_observed_at'} <= ngs_columns
-    # Cleanup — leave DB clean for next test run
+    # Cleanup â€” leave DB clean for next test run
     alembic.command.downgrade(cfg, "base")
 
 
@@ -446,3 +448,36 @@ def test_gamelog_identity_view_preserves_rows_and_security_on_upgrade_and_downgr
             assert conn.execute(sa.text('SELECT count(*) FROM dashboard_gamelogs WHERE player_id IS NOT NULL')).scalar_one()==4
     finally:
         engine.dispose();alembic.command.downgrade(cfg,'base')
+
+
+@pytest.mark.serial
+@pytest.mark.skipif(not os.environ.get('SPORTSBET_TEST_DATABASE_URL'), reason='Disposable database required')
+def test_cfb_supplements_are_append_only_and_view_is_restricted():
+    url=os.environ['SPORTSBET_TEST_DATABASE_URL'];cfg=get_alembic_cfg(url)
+    alembic.command.upgrade(cfg,'0030_gamelog_player_identity')
+    engine=sa.create_engine(url)
+    created=[]
+    try:
+        with engine.begin() as conn:
+            for role in ('sportsbet_worker','sportsbet_dashboard','anon','authenticated'):
+                if not conn.execute(sa.text('SELECT 1 FROM pg_roles WHERE rolname=:role'),{'role':role}).first():
+                    conn.execute(sa.text(f'CREATE ROLE {role} NOLOGIN'));created.append(role)
+        alembic.command.upgrade(cfg,'head')
+        with engine.connect() as conn:
+            assert conn.execute(sa.text("SELECT reloptions FROM pg_class WHERE oid='public.cfb_effective_gamelogs'::regclass")).scalar_one()==['security_barrier=true']
+            for table in ('cfb_history_source_bundles','cfb_receiving_supplements'):
+                assert conn.execute(sa.text("SELECT relrowsecurity FROM pg_class WHERE oid=CAST(:table AS regclass)"),{'table':'public.'+table}).scalar_one()
+                for permission in ('SELECT','INSERT'):
+                    assert conn.execute(sa.text("SELECT has_table_privilege('sportsbet_worker',:table,:permission)"),{'table':'public.'+table,'permission':permission}).scalar_one()
+                for permission in ('UPDATE','DELETE','TRUNCATE'):
+                    assert not conn.execute(sa.text("SELECT has_table_privilege('sportsbet_worker',:table,:permission)"),{'table':'public.'+table,'permission':permission}).scalar_one()
+            for role in ('sportsbet_dashboard','anon','authenticated'):
+                for target in ('cfb_history_source_bundles','cfb_receiving_supplements','cfb_effective_gamelogs'):
+                    assert not conn.execute(sa.text("SELECT has_table_privilege(:role,:target,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE')"),{'role':role,'target':'public.'+target}).scalar_one()
+        alembic.command.downgrade(cfg,'0030_gamelog_player_identity')
+        alembic.command.upgrade(cfg,'head')
+    finally:
+        with engine.begin() as conn:
+            for role in created:
+                conn.execute(sa.text(f'DROP OWNED BY {role}'));conn.execute(sa.text(f'DROP ROLE {role}'))
+        engine.dispose()

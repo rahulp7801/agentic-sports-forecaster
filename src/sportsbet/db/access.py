@@ -16,10 +16,10 @@ READER = 'sportsbet_dashboard'
 WORKER = 'sportsbet_worker'
 READ_TABLES = ('games', 'player_stats', 'nfl_snap_counts', 'cfb_player_gamelogs', 'nba_player_gamelogs', 'nba_player_stats',
                'play_by_play', 'ngs_stats', 'injury_reports', 'odds_snapshots',
-               'player_prop_snapshots', 'dashboard_snapshots')
+               'player_prop_snapshots', 'dashboard_snapshots', 'cfb_history_source_bundles', 'cfb_receiving_supplements')
 WRITE_TABLES = ('games', 'player_stats', 'nfl_snap_counts', 'cfb_player_gamelogs',
                 'nba_player_gamelogs', 'ngs_stats', 'dashboard_snapshots')
-APPEND_TABLES = ('odds_snapshots', 'player_prop_snapshots')
+APPEND_TABLES = ('odds_snapshots', 'player_prop_snapshots', 'cfb_history_source_bundles', 'cfb_receiving_supplements')
 CACHE_TABLES = ('provider_response_cache',)
 ANALYTICS_TABLES = ('predictions', 'exposure', 'quotes', 'api_usage')
 
@@ -28,7 +28,7 @@ def deny_browser_roles(conn):
     """Supabase defaults can grant named browser roles independently of PUBLIC/RLS."""
     targets: list[sql.Composable] = [sql.Identifier('public', table) for table in
                                      (*READ_TABLES, *CACHE_TABLES, 'alembic_version',
-                                      'ev_signals', 'dashboard_gamelogs')]
+                                      'ev_signals', 'dashboard_gamelogs', 'cfb_effective_gamelogs')]
     targets.extend(sql.Identifier('analytics', table) for table in ANALYTICS_TABLES)
     grantees: list[sql.Composable] = [sql.SQL('PUBLIC')]
     for role in ('anon', 'authenticated'):
@@ -62,6 +62,7 @@ def apply_access(conn):
     conn.execute(sql.SQL('GRANT USAGE ON SCHEMA public TO {}, {}').format(sql.Identifier(READER), sql.Identifier(WORKER)))
     conn.execute(sql.SQL('GRANT SELECT ON public.dashboard_snapshots TO {}').format(sql.Identifier(READER)))
     conn.execute(sql.SQL('GRANT SELECT ON public.dashboard_gamelogs TO {}').format(sql.Identifier(READER)))
+    conn.execute(sql.SQL('GRANT SELECT ON public.cfb_effective_gamelogs TO {}').format(sql.Identifier(WORKER)))
     for table in READ_TABLES:
         target = sql.Identifier('public', table)
         conn.execute(sql.SQL('GRANT SELECT ON {} TO {}').format(target, sql.Identifier(WORKER)))
@@ -84,6 +85,9 @@ def apply_access(conn):
     conn.execute('DROP POLICY IF EXISTS sportsbet_worker_delete ON public.ngs_stats')
     conn.execute(sql.SQL('CREATE POLICY sportsbet_worker_delete ON public.ngs_stats '
                          'FOR DELETE TO {} USING (true)').format(sql.Identifier(WORKER)))
+    for table in ('cfb_history_source_bundles', 'cfb_receiving_supplements'):
+        conn.execute(sql.SQL('REVOKE UPDATE, DELETE, TRUNCATE ON {} FROM {}').format(
+            sql.Identifier('public', table), sql.Identifier(WORKER)))
     for table in APPEND_TABLES:
         target = sql.Identifier('public', table)
         conn.execute(sql.SQL('GRANT INSERT ON {} TO {}').format(target, sql.Identifier(WORKER)))
