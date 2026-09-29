@@ -418,3 +418,8 @@
 @media(max-width:900px) { .assistantBar { flex-wrap:wrap; }.modePicker { order:3;width:100%;overflow-x:auto; }.modePicker button { flex:1;white-space:nowrap; }.slipGrid,.slipSkeleton { grid-template-columns:1fr; }.slipPanel { position:static; } }
 @media(max-width:560px) { .assistantBar { gap:10px; }.assistantIdentity { min-width:0;flex:1; }.rebuildButton { margin-left:0; }.slipCandidate dl,.slipCandidateActive dl { grid-template-columns:1fr; }.slipMath { grid-template-columns:1fr; }.slipMath>p,.slipMath>label,.returnRange { grid-column:auto; }.slipCandidate header>span,.slipCandidateActive header>span { max-width:105px;overflow:hidden;text-overflow:ellipsis; }.toolView { padding:14px 10px; } }
 @media(prefers-reduced-motion:reduce) { .slipSkeleton i { animation:none; } }
+
+.recentForm { margin: 16px 0; padding: 16px; border: 1px solid var(--border-dim); border-radius: 12px; background: var(--bg-surface); }
+.recentForm h4 { margin: 0 0 8px; }
+.recentForm .evidenceMetrics { grid-template-columns: repeat(2,minmax(0,1fr)); }
+@media (max-width: 600px) { .recentForm .evidenceMetrics { grid-template-columns: 1fr; } }

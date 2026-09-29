@@ -202,7 +202,10 @@ def test_dashboard_game_logs_expose_stats_and_reject_ambiguous_nfl_games():
             assert result['nfl']['pass_yds']==210 and result['nfl']['is_home'] is True
             assert result['nfl']['opponent']=='VV2'
             assert result['cfb']['pass_yds']==245 and result['cfb']['opponent']=='OS'
-            assert 'player_id' not in result['nfl']
+            assert result['nfl']['player_id']==identity
+            assert result['nba']['player_id']==result['cfb']['player_id']=='1'
+            for payload in result.values():
+                assert not any(key.startswith('source_') for key in payload)
             conn.execute(sa.text("INSERT INTO games(game_id,season,week,home_team,away_team,game_date) VALUES (:id,2026,1,'VV1','VV3','2026-09-11')"),{'id':identity+'x'})
             assert conn.execute(sa.text("SELECT count(*) FROM dashboard_gamelogs WHERE sport='nfl' AND player_name=:name"),{'name':name}).scalar_one()==0
     finally:

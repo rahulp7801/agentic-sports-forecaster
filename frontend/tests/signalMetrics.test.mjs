@@ -357,3 +357,10 @@ test('CFB complete roster commitments retain exact URL and reject other query va
   const nfl={...quote.availability,roster_source_url:quote.availability.roster_source_url+'?limit=1000'};
   assert.equal(publicSignals([{...publicQuote,availability:nfl}],now).signals[0].availability,undefined);
 });
+
+
+test('forecast API exposes only a validated history player ID, distinct from ESPN portrait ID',()=>{
+  const result=publicSignals([{...publicQuote,player_id:'00-0000001'}],now).signals[0];
+  assert.equal(result.player_id,'00-0000001');assert.equal(result.true_prob,publicQuote.true_prob);
+  assert.equal(publicSignals([{...publicQuote,player_id:'malformed'}],now).signals[0].player_id,undefined);
+});

@@ -64,6 +64,7 @@ export interface NextGenStatsEvidence {
 }
 
 export interface EVSignal {
+  player_id?: string;
   player_profile?: PlayerProfile;
   id: string;
   player: string;
@@ -125,6 +126,7 @@ export interface PlayerProfile {
 }
 
 export interface GameLog {
+  player_id?: string;
   id: string;
   player: string;
   team: string;
