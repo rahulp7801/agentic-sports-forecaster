@@ -152,8 +152,13 @@ def test_reader_cannot_write_or_read_audits_and_worker_cannot_rewrite_prediction
                                       ('public.'+table,)).fetchone()[0]
                 assert not worker.execute('SELECT has_table_privilege(current_user,%s,\'UPDATE,DELETE\')',
                                           ('public.'+table,)).fetchone()[0]
-                assert worker.execute("SELECT has_sequence_privilege(current_user,"
-                    "pg_get_serial_sequence(%s,'id'),'USAGE')", ('public.'+table,)).fetchone()[0]
+                sequences = worker.execute("SELECT pg_get_serial_sequence(%s,column_name) "
+                    "FROM information_schema.columns WHERE table_schema='public' AND table_name=%s",
+                    ('public.'+table,table)).fetchall()
+                for (sequence,) in sequences:
+                    if sequence:
+                        assert worker.execute("SELECT has_sequence_privilege(current_user,%s,'USAGE')",
+                                              (sequence,)).fetchone()[0]
             for table in CACHE_TABLES:
                 assert worker.execute("SELECT has_table_privilege(current_user,%s,'SELECT,INSERT,UPDATE')",
                                       ('public.'+table,)).fetchone()[0]
