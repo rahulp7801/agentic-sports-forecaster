@@ -27,3 +27,14 @@ test('metric cohort selects the matching hosted snapshot and local ledger mode',
     '-m', 'sportsbet.ledger', '--recommendations-only', '--sport', 'nba'
   ]);
 });
+
+
+test('CFB metrics select their own published and local model cohort',()=>{
+  assert.equal(metricSport('https://example.test/api/metrics?sport=cfb'),'cfb');
+  for(const cohort of ['all','recommendations']) {
+    assert.equal(metricSnapshotKey(cohort,'cfb'),`metrics:${cohort}:cfb`);
+    assert.deepEqual(metricLedgerArgs(cohort,'cfb'),['-m','sportsbet.ledger',
+      ...(cohort==='recommendations' ? ['--recommendations-only'] : []),
+      '--sport','cfb','--model-version','empirical-jeffreys-v4-cfb-history-v1']);
+  }
+});

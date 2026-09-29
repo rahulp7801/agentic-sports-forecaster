@@ -210,3 +210,16 @@ test('public capture retry settings are bounded before any requests',async()=>{
     await assert.rejects(verifyProduction({...patch,fetchImpl:async()=>{assert.fail('must not request');}}),/retry bounds/);
   }
 });
+
+
+test('production readiness covers CFB consumer forecasts, replay, slate and history',()=>{
+  for(const path of ['/api/signals?sport=cfb&limit=12','/api/signals?sport=cfb&view=qualified',
+    '/api/picks?sport=cfb','/api/metrics?sport=cfb','/api/metrics?sport=cfb&cohort=recommendations']) {
+    assert.ok(paidPipelinePaths.includes(path));
+    assert.deepEqual(readinessStatuses(path,{paidEnabled:true,publicEnabled:true}),[200]);
+  }
+  for(const path of ['/api/slate?sport=cfb','/api/gamelogs?sport=cfb&player_id=1&exact=1&limit=1','/api/benchmarks?sport=cfb']) {
+    assert.ok(publicPipelinePaths.includes(path));
+    assert.deepEqual(readinessStatuses(path,{paidEnabled:false,publicEnabled:true}),[200]);
+  }
+});
