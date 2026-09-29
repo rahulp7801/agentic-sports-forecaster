@@ -139,6 +139,7 @@ class GraphState(TypedDict):
     last_n_games: int | None
     opponent_team: str | None
     home_away: str | None
+    observed_before: datetime | None  # Source availability cutoff for CFB history.
     as_of_date: date | None  # Exclusive history cutoff for NBA predictions.
     game_id: str
     season: int

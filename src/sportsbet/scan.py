@@ -18,7 +18,7 @@ from sportsbet.db.connection import create_async_pool
 from sportsbet.graph.graph import create_graph
 from sportsbet.ingestion.prop_odds import PlayerPropSnapshotCreate, parse_event_quotes, write_player_prop_snapshots
 from sportsbet.ledger import Ledger
-from sportsbet.model_contract import MODEL_VERSION
+from sportsbet.model_contract import MODEL_VERSION, model_version_for, CFB_HISTORY_POLICY
 from sportsbet.prop.agents import make_prop_quant_agent
 from sportsbet.prop.availability import (blocks_unadjusted_teammate_context,
                                          fetch_event_availability, player_availability, nfl_roster_history_bindings)
@@ -402,7 +402,7 @@ async def evaluate_event(pool, event: dict, sport: str, ledger: Ledger, scan_id:
                 state=await graph.ainvoke(dict(session_id=scan_id,request_type='nba_prop_analysis' if sport=='nba' else 'prop_analysis',
                 game_id=event['id'],home_team=event['home_team'],away_team=event['away_team'],season=season-2,week=1,
                 receiver_gsis_id=player_id,player_name=player,sport=sport,prop_type=MARKETS[sport][market],
-                prop_line=line,prop_side=side.lower(),as_of_date=game_date,last_n_games=40,player_prop_snapshots=[quote]))
+                prop_line=line,prop_side=side.lower(),as_of_date=game_date,observed_before=now,last_n_games=40,player_prop_snapshots=[quote]))
             except Exception as exc:
                 log.warning('selection_model_failed',sport=sport,error_type=type(exc).__name__)
                 state={'error':'model_evaluation_failed'}
@@ -512,14 +512,15 @@ async def evaluate_event(pool, event: dict, sport: str, ledger: Ledger, scan_id:
             quote_time=quote.snapped_at.isoformat(),model_generated_at=now.isoformat(),
             quote_source_provider=quote.source_provider,quote_source_sha256=quote.source_sha256,
             quote_source_record_sha256=quote.source_record_sha256,accepted=accepted,gate_reason=reason,
-            stake_fraction=float(signal.kelly_fraction) if accepted else 0,model_version=MODEL_VERSION,
+            stake_fraction=float(signal.kelly_fraction) if accepted else 0,model_version=model_version_for(sport),
+            **({'history_policy_version':CFB_HISTORY_POLICY} if sport=='cfb' else {}),
             recommendation_policy_version=RECOMMENDATION_POLICY_VERSION,
             **paired_market_baseline(quote, quotes))
         if player in identity_evidence:
             payload['player_identity_evidence']=identity_evidence[player]
         counts[reason] += 1
         # Publish every measured forecast, including non-recommended estimates.
-        # Availability screens eligibility; v4 remains an unchanged historical baseline.
+        # Availability screens eligibility; the CFB input policy has a separate version.
         if prop:
             implied,payout=quote_terms(quote.price,american_to_raw_prob(quote.price))
             trade_plan=list(signal.trade_plan) if signal else [
@@ -551,7 +552,8 @@ async def evaluate_event(pool, event: dict, sport: str, ledger: Ledger, scan_id:
                 sportsbook=quote.sportsbook,american_odds=quote.price,snapped_at=quote.snapped_at.isoformat(),
                 game_start_time=start.isoformat(),sample_size=prop.sample_size,mean_stat=float(prop.mean_stat) if prop.mean_stat is not None else None,
                 confidence_interval=[float(x) for x in model_interval] if model_interval else None,
-                model_version=MODEL_VERSION,strength='unrated',trade_plan=trade_plan,injury_flags={},market_type=market,
+                model_version=model_version_for(sport),
+                **({'history_policy_version':CFB_HISTORY_POLICY} if sport=='cfb' else {}),strength='unrated',trade_plan=trade_plan,injury_flags={},market_type=market,
                 availability=availability_evidence,forecast_cutoff=game_date.isoformat(),
                 **({'next_gen_stats':ngs_evidence} if ngs_evidence else {}))
             payload.update(availability=availability_evidence,trade_plan=trade_plan,
@@ -800,9 +802,9 @@ async def run(sports: list[str], daily_credit_limit: int, event_ids: frozenset[s
         publish_snapshot('metrics:recommendations',ledger.report(True,model_version=MODEL_VERSION))
         prediction_rows=ledger.predictions()
         for sport in sports:
-            publish_snapshot(f'metrics:all:{sport}',ledger.report(model_version=MODEL_VERSION,sport=sport))
+            publish_snapshot(f'metrics:all:{sport}',ledger.report(model_version=model_version_for(sport),sport=sport))
             publish_snapshot(f'metrics:recommendations:{sport}',
-                ledger.report(True,model_version=MODEL_VERSION,sport=sport))
+                ledger.report(True,model_version=model_version_for(sport),sport=sport))
             publish_snapshot(f'picks:{sport}',build_pick_board(prediction_rows,sport))
             from sportsbet.quant.history_shadow_audit import publish_history_shadow
             publish_history_shadow(prediction_rows,sport,publish_snapshot)

@@ -214,6 +214,7 @@ class PropParams(BaseModel):
     home_away: Optional[Literal["home", "away"]] = None
     # Exclusive game-date cutoff; historical callers must set this explicitly.
     as_of_date: Optional[date] = None
+    observed_before: Optional[datetime] = None
 
 
 class PropResult(BaseModel):

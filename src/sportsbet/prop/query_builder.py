@@ -3,34 +3,34 @@
 Security invariant: user-supplied data (player_id, season, line, filter values) NEVER
 appears in the SQL string. All values are passed as positional asyncpg $N params.
 Column names in filter clauses come exclusively from PROP_ALLOWED_FILTER_KEYS or
-NFL_SITUATIONAL_ALLOWED_KEYS (static frozensets), not from user input — this is the
+NFL_SITUATIONAL_ALLOWED_KEYS (static frozensets), not from user input â€” this is the
 structural injection prevention layer.
 Column names in SELECT come exclusively from PROP_COLUMN_MAP (a static dict) keyed by
-prop_type Literal — prop_type is validated by Pydantic before build() is ever called.
+prop_type Literal â€” prop_type is validated by Pydantic before build() is ever called.
 
 No f-string SQL for user data. No string interpolation of user values. Period.
 
 Phase 18 situational filter extensions (SC-4):
     Situational filters are appended AFTER the base params.filters loop. Order matters:
     1. opponent_team  (AND opponent_team = $N)
-    2. home_away      (AND home_away = $N  — "home"/"away" string in player_stats)
+    2. home_away      (AND home_away = $N  â€” "home"/"away" string in player_stats)
     3. teammate_out   (AND EXISTS(...injury_reports with INTERVAL date window...))
        Date-window approximation: injury_reports.game_id is nullable in v1 schema
        (migration 0005). Direct game_id join is unreliable. INTERVAL window of
        [-2 days, +1 day] around the game date is the v1 solution.
     4. last_n_games   (AND (season,week) IN (SELECT ... ORDER BY ... LIMIT $N))
        Applied LAST so the subquery picks the most-recent N games that already pass
-       the opponent/location filters above — correct "last N games vs opponent" semantics.
+       the opponent/location filters above â€” correct "last N games vs opponent" semantics.
        Uses (season, week) tuple as the stable key because existing player_stats rows
        have NULL game_id (game_id added as nullable in migration 0005).
 
 Security invariants for situational clauses:
     - Column names (opponent_team, home_away, is_home, etc.) come from
-      NFL_SITUATIONAL_ALLOWED_KEYS frozenset — NOT from user input.
+      NFL_SITUATIONAL_ALLOWED_KEYS frozenset â€” NOT from user input.
     - All user-supplied VALUES (team abbreviation, "home"/"away", player IDs,
       last_n_games integer) are ALWAYS placed in the positional args tuple.
     - f-string is used only to inject $N index numbers and static column names
-      from the allowlist — never user data.
+      from the allowlist â€” never user data.
 """
 from __future__ import annotations
 
@@ -41,14 +41,14 @@ from sportsbet.graph.models import PropParams
 log = structlog.get_logger()
 
 # ---------------------------------------------------------------------------
-# Allowed filter column names (allowlist — NOT derived from user input)
+# Allowed filter column names (allowlist â€” NOT derived from user input)
 # ---------------------------------------------------------------------------
 
 PROP_ALLOWED_FILTER_KEYS: frozenset[str] = frozenset({"week", "team"})
 
 # ---------------------------------------------------------------------------
 # Phase 18 situational filter column allowlist
-# Column names for situational WHERE clauses — static frozenset, NOT user input.
+# Column names for situational WHERE clauses â€” static frozenset, NOT user input.
 # player_stats uses string "home"/"away" in home_away column (Option A migration 0005).
 # ---------------------------------------------------------------------------
 
@@ -60,8 +60,8 @@ NFL_SITUATIONAL_ALLOWED_KEYS: frozenset[str] = frozenset({
 # ---------------------------------------------------------------------------
 # Column map: prop_type Literal -> player_stats column name
 # All 11 NFL prop types + NBA types not queried by PropQueryBuilder (NBA uses
-# a separate query path — kept here for completeness and forward-compat).
-# Column names are Python string literals — NOT user input.
+# a separate query path â€” kept here for completeness and forward-compat).
+# Column names are Python string literals â€” NOT user input.
 # ---------------------------------------------------------------------------
 
 PROP_COLUMN_MAP: dict[str, str] = {
@@ -79,7 +79,7 @@ PROP_COLUMN_MAP: dict[str, str] = {
     "rec_tds": "receiving_tds",
     "receptions": "receptions",
     "targets": "targets",
-    # NBA (forwarded to NBA query path — not handled by _NFL_PROP_TEMPLATE)
+    # NBA (forwarded to NBA query path â€” not handled by _NFL_PROP_TEMPLATE)
     "points": "pts",
     "rebounds": "reb",
     "assists": "ast",
@@ -87,7 +87,7 @@ PROP_COLUMN_MAP: dict[str, str] = {
     "steals": "stl",
     "blocks": "blk",
     "pra": "pra",
-    "double_double": "double_double",  # NBA composite prop — forwarded to NBAQueryBuilder path
+    "double_double": "double_double",  # NBA composite prop â€” forwarded to NBAQueryBuilder path
 }
 CFB_PROP_TYPES=frozenset({'pass_yds','rush_yds','rec_yds','receptions'})
 
@@ -97,7 +97,7 @@ CFB_PROP_TYPES=frozenset({'pass_yds','rush_yds','rec_yds','receptions'})
 # $2 = season     (int)
 # $3 explicitly uses double precision: otherwise PostgreSQL infers the stat's
 # integer type and asyncpg truncates half-lines, inventing push outcomes.
-# {col} substituted from PROP_COLUMN_MAP[params.prop_type] — allowlist only, never user input
+# {col} substituted from PROP_COLUMN_MAP[params.prop_type] â€” allowlist only, never user input
 # ---------------------------------------------------------------------------
 
 _NFL_PROP_TEMPLATE = """\
@@ -120,11 +120,16 @@ SELECT
     AVG(stat::float) AS mean_val
 FROM (
     SELECT {col} AS stat
-    FROM cfb_player_gamelogs
+    FROM cfb_effective_gamelogs e
     WHERE athlete_id = CAST($1 AS bigint)
       AND season >= $2
       AND {col} IS NOT NULL
       AND game_date < $4
+      AND source_observed_at <= $6
+      AND (supplement_manifest IS NULL OR EXISTS (
+          SELECT 1 FROM cfb_receiving_supplements s
+          WHERE s.athlete_id=e.athlete_id AND s.game_id=e.game_id
+            AND s.source_sha256=e.source_sha256 AND s.inserted_at <= $6))
     ORDER BY game_date DESC, game_id DESC
     LIMIT $5
 ) history
@@ -135,7 +140,7 @@ class PropQueryBuilder:
     """Builds parameterized asyncpg SQL queries from validated PropParams.
 
     The build() classmethod is the sole public API. It:
-    1. Selects the player_stats column from PROP_COLUMN_MAP by prop_type (Literal — already validated).
+    1. Selects the player_stats column from PROP_COLUMN_MAP by prop_type (Literal â€” already validated).
     2. Substitutes the column name into the static _NFL_PROP_TEMPLATE (not user data).
     3. Appends allowed filter clauses using column names from PROP_ALLOWED_FILTER_KEYS only.
     4. Returns (sql_string, args_tuple) where args_tuple contains all $N values.
@@ -175,7 +180,8 @@ class PropQueryBuilder:
         if params.sport=='cfb':
             if (params.prop_type not in CFB_PROP_TYPES or not params.player_id.isascii()
                     or not params.player_id.isdecimal() or len(params.player_id)>19
-                    or params.as_of_date is None):
+                    or params.as_of_date is None or params.observed_before is None
+                    or params.observed_before.utcoffset() is None):
                 raise ValueError('CFB queries require an ESPN athlete ID and exclusive cutoff')
             athlete_id=int(params.player_id)
             if not 0<athlete_id<=2**63-1:
@@ -183,38 +189,38 @@ class PropQueryBuilder:
             # asyncpg binds CAST($1 AS bigint) as int64; passing the string ID raises DataError.
             return _CFB_PROP_TEMPLATE.format(col=col),(
                 athlete_id,params.season,float(params.line),params.as_of_date,
-                params.last_n_games or 40)
+                params.last_n_games or 40,params.observed_before)
 
-        # Substitute column name from static map — column name is NOT user data
+        # Substitute column name from static map â€” column name is NOT user data
         sql: str = _NFL_PROP_TEMPLATE.format(col=col)
 
         # Base positional args: $1=player_id, $2=season, $3=line (float for asyncpg compat)
         args: list[object] = [params.player_id, params.season, float(params.line)]
 
         # FilterKey guard: only PROP_ALLOWED_FILTER_KEYS pass through
-        # Column names come from the allowlist (not user input) — safe for SQL concatenation.
-        # Values always go into positional args — never interpolated.
+        # Column names come from the allowlist (not user input) â€” safe for SQL concatenation.
+        # Values always go into positional args â€” never interpolated.
         next_idx = 4
         for key, value in params.filters.items():
             if key not in PROP_ALLOWED_FILTER_KEYS:
                 log.warning("prop_unknown_filter_key_dropped", key=key)
                 continue
-            # key is from PROP_ALLOWED_FILTER_KEYS (static frozenset) — not user data
+            # key is from PROP_ALLOWED_FILTER_KEYS (static frozenset) â€” not user data
             sql = sql + f"  AND {key} = ${next_idx}\n"
             args.append(value)
             next_idx += 1
 
         # --- Phase 18 situational filter clauses ---
-        # All column names from NFL_SITUATIONAL_ALLOWED_KEYS (static frozenset) — not user input.
-        # All values in positional $N args — never interpolated into SQL string.
+        # All column names from NFL_SITUATIONAL_ALLOWED_KEYS (static frozenset) â€” not user input.
+        # All values in positional $N args â€” never interpolated into SQL string.
 
-        # opponent_team filter — applied before last_n_games for correct subquery semantics
+        # opponent_team filter â€” applied before last_n_games for correct subquery semantics
         if params.opponent_team is not None:
             sql = sql + f"  AND opponent_team = ${next_idx}\n"
             args.append(params.opponent_team)
             next_idx += 1
 
-        # home_away filter — player_stats.home_away is "home"/"away" string (Option A schema)
+        # home_away filter â€” player_stats.home_away is "home"/"away" string (Option A schema)
         # "home"/"away" Literal validated by Pydantic before build() is called
         if params.home_away is not None:
             sql = sql + f"  AND home_away = ${next_idx}\n"

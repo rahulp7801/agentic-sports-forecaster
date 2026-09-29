@@ -85,6 +85,7 @@ export interface EVSignal {
   gate_reason?: string;
   data_source?: string;
   model_version?: string;
+  history_policy_version?: string;
   game_start_time?: string;
   kelly_fraction: number;    // 0–0.25
   american_odds: number;

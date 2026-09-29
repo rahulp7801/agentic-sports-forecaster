@@ -2,6 +2,9 @@ import {validPlayerId} from './publicGameLogs.ts';
 import type {AvailabilityContextSplit,AvailabilityEvidence,EVSignal,ModelSport,NextGenMetric,NextGenStatsEvidence,PlayerProfile,PropType,Sport} from './types';
 
 const CURRENT_MODEL_VERSION = 'empirical-jeffreys-v4';
+const CFB_MODEL_VERSION = 'empirical-jeffreys-v4-cfb-history-v1';
+const CFB_HISTORY_POLICY = 'cfb-explicit-receiving-v1';
+const CFB_HISTORY_FROZEN_AT = Date.parse('2026-09-29T04:15:00+00:00');
 
 /** Validate display metrics without inventing uncertainty or execution eligibility. */
 export function expectedProfit(expectedReturn: unknown, stake: number): number | null {
@@ -18,7 +21,10 @@ export function signalMetrics(s: Record<string, unknown>, now = Date.now()) {
   const sample = Number(s.sample_size), kelly = Number(s.kelly_fraction);
   const valid = typeof s.true_prob === 'number' && typeof s.american_odds === 'number' && Number.isFinite(p) && p >= 0 && p <= 1 && Number.isFinite(push) && push >= 0 && p + push <= 1.000001
     && Number.isInteger(odds) && Math.abs(odds) >= 100 && (s.direction === 'over' || s.direction === 'under');
-  const legacy = s.model_version !== CURRENT_MODEL_VERSION;
+  const legacy = s.sport==='cfb'
+    ? now < CFB_HISTORY_FROZEN_AT ? s.model_version!==CURRENT_MODEL_VERSION
+      : s.model_version!==CFB_MODEL_VERSION || s.history_policy_version!==CFB_HISTORY_POLICY
+    : s.model_version!==CURRENT_MODEL_VERSION;
   const stale = !Number.isFinite(quoteTime) || now - quoteTime > 300000 || quoteTime > now + 60000;
   const missingStart = !Number.isFinite(start), started = Number.isFinite(start) && start <= now;
   const availability = s.availability as AvailabilityEvidence | undefined;
@@ -278,6 +284,8 @@ export function publicSignal(value:unknown, now=Date.now()):EVSignal|null {
     true_prob:s.true_prob,implied_prob:metrics.implied_prob as number,ev_pct:metrics.ev_pct as number,
     expected_return:metrics.expected_return as number|null,push_probability:s.push_probability,
     confidence_interval:interval,model_version:s.model_version,game_start_time:s.game_start_time,
+    ...(s.sport==='cfb' && s.model_version===CFB_MODEL_VERSION && s.history_policy_version===CFB_HISTORY_POLICY
+      ? {history_policy_version:CFB_HISTORY_POLICY} : {}),
     kelly_fraction:metrics.kelly_fraction as number,american_odds:s.american_odds,
     sportsbook:s.sportsbook,
     // Preserve stored forecasts, but withhold the obsolete generated claim of exact on/off evidence.
