@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {publicRequest} from './lib/publicRequest';
+import {NO_STORE_HEADERS} from './lib/publicCache';
 
 export function proxy(request: NextRequest) {
   const status=publicRequest(request);
-  if(status) return NextResponse.json({error:'Request rejected.'},{status,headers:{'Cache-Control':'no-store'}});
+  if(status) return NextResponse.json({error:'Request rejected.'},{status,headers:NO_STORE_HEADERS});
   if(request.nextUrl.pathname.startsWith('/api/')) return NextResponse.next();
   const nonce = Buffer.from(crypto.randomUUID()).toString('base64');
   const development = process.env.NODE_ENV === 'development';

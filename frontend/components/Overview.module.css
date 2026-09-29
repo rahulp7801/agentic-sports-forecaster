@@ -120,7 +120,7 @@
 
 /* The pick board keeps live prices visually distinct from recorded evidence. */
 .shortlist[data-state='recorded'] .qualified { color:var(--accent-amber);background:color-mix(in srgb,var(--accent-amber) 12%,var(--bg-surface)); }
-.shortlist[data-state='empty'] .qualified { color:var(--text-secondary);background:var(--bg-raised); }
+.shortlist[data-state='empty'] .qualified,.shortlist[data-state='unavailable'] .qualified,.shortlist[data-state='loading'] .qualified { color:var(--text-secondary);background:var(--bg-raised); }
 .boardNotice { display:flex;align-items:flex-start;gap:10px;margin:18px 0 0!important;padding:13px 15px;border:1px solid color-mix(in srgb,var(--accent-amber) 22%,transparent);background:color-mix(in srgb,var(--accent-amber) 8%,var(--bg-base)); }
 .boardNotice strong { flex:0 0 auto;color:var(--accent-amber);font-size:11px; }
 .boardNotice span { color:var(--text-secondary);font-size:11px;line-height:1.55; }

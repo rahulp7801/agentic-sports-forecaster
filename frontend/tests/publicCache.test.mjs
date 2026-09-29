@@ -8,7 +8,7 @@ test('public data stays out of browser caches while Vercel absorbs repeat reads'
     assert.equal(headers['Cache-Control'],'no-store');
     assert.match(headers['Vercel-CDN-Cache-Control'],/^public, s-maxage=\d+, stale-while-revalidate=\d+$/);
   }
-  assert.deepEqual(NO_STORE_HEADERS,{'Cache-Control':'no-store'});
+  for(const key of ['Cache-Control','CDN-Cache-Control','Vercel-CDN-Cache-Control']) assert.equal(NO_STORE_HEADERS[key],'no-store');
 });
 
 test('actionable forecasts use the shortest cache lifetime',()=>{

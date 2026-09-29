@@ -42,7 +42,7 @@ function ProbabilityComparison({ model, implied, gated }: { model: number; impli
           fontSize: 12, fontWeight: 600,
           color: gated ? 'var(--text-secondary)' : edge > 0 ? 'var(--accent-mint)' : 'var(--accent-red)',
         }}>
-          {edge > 0 ? '+' : ''}{(edge * 100).toFixed(1)}pp edge
+          {edge > 0 ? '+' : ''}{(edge * 100).toFixed(1)}pp model difference
         </span>
       </div>
     </div>
@@ -199,8 +199,8 @@ export default function PropsAnalysis({ sport,initialPlayer='' }: PropsAnalysisP
           <div className={styles.filterFields}>
             <label>Prop<select aria-label="Prop type" className="term-select" value={effectivePropFilter} onChange={e=>setPropFilter(e.target.value)}><option value="all">All props</option>{leagueProps.map(p=><option key={p} value={p}>{PROP_LABELS[p]}</option>)}</select></label>
             <label>Eligibility<select aria-label="Forecast shortlist" className="term-select" value={scope} onChange={e=>setScope(e.target.value)}><option value="all">All estimates</option><option value="saved">Saved players</option><option value="eligible">Research eligible</option></select></label>
-            <label>Sort<select aria-label="Sort forecasts" className="term-select" value={sort} onChange={e=>setSort(e.target.value)}><option value="quality">Strongest supported margin</option><option value="edge">Point-estimate edge</option><option value="sample">Largest sample</option><option value="player">Player A-Z</option></select></label>
-            <label htmlFor="prop-min-edge">Minimum edge: {minEV}pp<input id="prop-min-edge" aria-valuetext={`${minEV} percentage points`} type="range" min={0} max={20} step={1} value={minEV} onChange={e=>setMinEV(Number(e.target.value))} /></label>
+            <label>Sort<select aria-label="Sort forecasts" className="term-select" value={sort} onChange={e=>setSort(e.target.value)}><option value="quality">Strongest supported margin</option><option value="edge">Model difference</option><option value="sample">Largest sample</option><option value="player">Player A-Z</option></select></label>
+            <label htmlFor="prop-min-edge">Minimum model difference: {minEV}pp<input id="prop-min-edge" aria-valuetext={`${minEV} percentage points`} type="range" min={0} max={20} step={1} value={minEV} onChange={e=>setMinEV(Number(e.target.value))} /></label>
             <button className={styles.uxButton} type="button" onClick={resetFilters}>Reset filters</button>
           </div>
         </details>
@@ -220,7 +220,7 @@ export default function PropsAnalysis({ sport,initialPlayer='' }: PropsAnalysisP
         {props.length === 0 ? (
           <div className={styles.propsEmpty}>
             <strong>{!allProps.length && error ? 'Forecasts could not be loaded.' : scope==='saved' ? 'Your saved-player view is empty.' : allProps.length ? 'No forecasts match these filters.' : `No recorded ${sport.toUpperCase()} forecasts are published yet.`}</strong>
-            <span>{!allProps.length && error ? 'Try Refresh. A failed request does not mean there are no forecasts.' : scope==='saved' ? 'Use the bookmark next to a player to save them. Other filters still apply to your saved players.' : allProps.length ? 'Try all recorded forecasts, another player, or a lower minimum edge.' : 'The scheduled scan covers the next 48 hours, subject to source availability and the API budget. Forecasts require real pregame prices and sufficient player history.'}</span>
+            <span>{!allProps.length && error ? 'Try Refresh. A failed request does not mean there are no forecasts.' : scope==='saved' ? 'Use the bookmark next to a player to save them. Other filters still apply to your saved players.' : allProps.length ? 'Try all recorded forecasts, another player, or a lower minimum model difference.' : 'The scheduled scan covers the next 48 hours, subject to source availability and the API budget. Forecasts require real pregame prices and sufficient player history.'}</span>
             {allProps.length>0 && <button className={styles.uxButton} type="button" onClick={()=>{resetFilters();setWindowFilter('all');}}>Show all forecasts</button>}
           </div>
         ) : view==='cards' ? <><div className={styles.forecastGrid}>{propGroups.slice(0,visibleCount).map(({pick:p,alternatives})=><motion.article key={p.id} className={styles.forecastCard} initial={reduceMotion ? false : {opacity:0,y:8}} animate={{opacity:1,y:0}} transition={{duration:.2}}>
@@ -238,7 +238,7 @@ export default function PropsAnalysis({ sport,initialPlayer='' }: PropsAnalysisP
               <th>Prop</th>
               <th>Line / Dir</th>
               <th>Probability Comparison</th>
-              <th>Edge (pp)</th>
+              <th>Model difference (pp)</th>
               <th>Kelly</th>
               <th>Stats</th>
               <th>Book / Odds</th>

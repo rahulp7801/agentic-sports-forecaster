@@ -1,4 +1,4 @@
-export const NO_STORE_HEADERS = {'Cache-Control': 'no-store'} as const;
+export const NO_STORE_HEADERS = {'Cache-Control':'no-store','CDN-Cache-Control':'no-store','Vercel-CDN-Cache-Control':'no-store'} as const;
 
 // Public responses are identical for every visitor. Keep browsers honest about
 // freshness while letting Vercel absorb repeat reads before they reach Supabase.
