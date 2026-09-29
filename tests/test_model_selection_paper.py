@@ -149,16 +149,17 @@ async def test_empty_work_never_acquires_database(monkeypatch):
 async def test_record_is_atomic_bounded_append_only(monkeypatch):
     prepared=[receipt(),receipt("market_prior80")]
     monkeypatch.setattr(paper,"prepare",lambda *_:prepared)
-    conn=MagicMock();conn.execute=AsyncMock();conn.fetchval=AsyncMock()
+    conn=MagicMock();conn.execute=AsyncMock();conn.executemany=AsyncMock()
     tx=MagicMock();tx.__aenter__=AsyncMock();tx.__aexit__=AsyncMock(return_value=False)
     conn.transaction.return_value=tx
     acquire=MagicMock();acquire.__aenter__=AsyncMock(return_value=conn);acquire.__aexit__=AsyncMock(return_value=False)
     pool=MagicMock();pool.acquire.return_value=acquire
     await paper.record(pool,rows(),"nfl")
-    assert conn.fetchval.await_count==2
-    assert all(call.args[0]==existing.INSERT_SQL for call in conn.fetchval.await_args_list)
+    conn.executemany.assert_awaited_once()
+    sql,batch=conn.executemany.await_args.args
+    assert sql==existing.INSERT_SQL and len(batch)==2
     conn.execute.assert_awaited_once_with("SET LOCAL statement_timeout='2s'")
-    assert {call.args[1] for call in conn.fetchval.await_args_list} == set(paper.PROTOCOL["policies"].values())
+    assert {args[0] for args in batch} == set(paper.PROTOCOL["policies"].values())
 
 
 @pytest.mark.asyncio

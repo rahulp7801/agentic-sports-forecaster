@@ -128,10 +128,10 @@ async def record(pool, rows, sport):
             async with pool.acquire() as conn:
                 async with conn.transaction():
                     await conn.execute("SET LOCAL statement_timeout='2s'")
-                    for row in prepared:
-                        await conn.fetchval(storage.INSERT_SQL, *[row[key] for key in (
-                            "protocol", "sport", "game_id", "player_id", "prediction_id",
-                            "decision_at", "valid_until", "payload", "payload_sha256")])
+                    # One pipelined batch avoids a network round trip per player.
+                    await conn.executemany(storage.INSERT_SQL, [[row[key] for key in (
+                        "protocol", "sport", "game_id", "player_id", "prediction_id",
+                        "decision_at", "valid_until", "payload", "payload_sha256")] for row in prepared])
     except Exception as exc:
         structlog.get_logger().warning("model_selection_receipt_unavailable", error_type=type(exc).__name__)
 

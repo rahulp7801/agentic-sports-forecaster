@@ -762,3 +762,41 @@ def test_explicit_cfb_recovery_locks_forecast_and_preserves_source_payload():
     finally:
         with psycopg.connect(dsn) as conn:
             conn.execute('DELETE FROM analytics.predictions WHERE id=%s',(key,))
+
+
+@pytest.mark.asyncio
+async def test_model_paper_batch_preserves_protocol_identity_and_database_receipts(monkeypatch):
+    from sportsbet.quant import model_selection_paper as paper
+    from sportsbet.quant import cross_book_paper as storage
+    url=os.environ['SPORTSBET_TEST_DATABASE_URL']
+    ledger=Ledger(database_url=url);identity=uuid.uuid4().hex
+    pool=await asyncpg.create_pool(url.replace('postgresql+psycopg://','postgresql://'),min_size=1,max_size=1)
+    async with pool.acquire() as conn:
+        now=await conn.fetchval('SELECT clock_timestamp()')
+    payload=dict(game_id=identity,player='Paper Fixture',player_id='7',sport='nba',
+        game_date=(now+timedelta(days=1)).date().isoformat(),home_team='Home',away_team='Away',
+        prop_type='points',direction='over',line=20.5,sportsbook='book',american_odds=100,
+        model_probability=.6,captured_at=now.isoformat(),
+        game_start_time=(now+timedelta(days=1)).isoformat(),model_version=identity)
+    key=ledger.record(identity,payload)
+    body={'fixture':identity};encoded=storage.encode(body)
+    prepared=[dict(protocol=protocol,sport='nba',game_id=identity,player_id='7',prediction_id=key,
+        decision_at=now-timedelta(seconds=5),valid_until=now+timedelta(minutes=1),payload=encoded,
+        payload_sha256=storage.digest(body)) for protocol in paper.PROTOCOL['policies'].values()]
+    monkeypatch.setattr(paper,'prepare',lambda *_:prepared)
+    try:
+        await paper.record(pool,[],'nba')
+        await paper.record(pool,[],'nba')  # immutable uniqueness makes retries idempotent
+        async with pool.acquire() as conn:
+            stored=await conn.fetch('SELECT protocol,recorded_at,decision_at,valid_until,payload_sha256 '
+                'FROM analytics.paper_selections WHERE game_id=$1',identity)
+        assert len(stored)==2
+        assert {r['protocol'] for r in stored}==set(paper.PROTOCOL['policies'].values())
+        assert all(r['decision_at']<=r['recorded_at']<r['valid_until'] for r in stored)
+        assert all(r['recorded_at']>=now and r['payload_sha256']==storage.digest(body) for r in stored)
+    finally:
+        async with pool.acquire() as conn:
+            await conn.execute('DELETE FROM analytics.paper_selections WHERE game_id=$1',identity)
+            await conn.execute('DELETE FROM analytics.predictions WHERE scan_id=$1',identity)
+            await conn.execute('DELETE FROM analytics.quotes WHERE identity=$1',ledger.quote_identity(payload))
+        await pool.close()
