@@ -198,3 +198,21 @@ def test_staged_reserve_can_capture_a_verified_pick_before_unchanged_board_lock(
     assert not ledger.reserve_api_credits(4,20,event_credit_holdback(event,held,captured))
     assert ledger.reserve_api_credits(4,20,event_credit_holdback(event,held,start-timedelta(minutes=30)))
     assert not ledger.reserve_api_credits(4,20)
+
+
+def test_cfb_activation_retains_history_and_requires_new_policy(monkeypatch):
+    from sportsbet.model_contract import CFB_MODEL_VERSION,CFB_HISTORY_POLICY
+    monkeypatch.setattr('sportsbet.picks.quote_evidence_valid',lambda value:True)
+    monkeypatch.setattr('sportsbet.picks.settlement_identity_valid',lambda value:True)
+    old_start=datetime(2026,9,26,20,tzinfo=timezone.utc)
+    start=datetime(2026,9,30,20,tzinfo=timezone.utc)
+    old=row('a',old_start-timedelta(hours=2),old_start)|{'sport':'cfb','game_id':'old'}
+    new=row('b',start-timedelta(hours=2),start)|{'sport':'cfb','model_version':CFB_MODEL_VERSION,
+        'history_policy_version':CFB_HISTORY_POLICY}
+    now=start-timedelta(minutes=90)
+    board=build_pick_board([old,new],'cfb',now)
+    assert len(board['history'])==len(board['current'])==1
+    assert board['current'][0]['history_policy_version']==CFB_HISTORY_POLICY
+    assert board['history'][0]['model_version']=='empirical-jeffreys-v4'
+    assert build_pick_board([new|{'history_policy_version':None}],'cfb',now)['current']==[]
+    assert build_pick_board([new|{'model_version':'empirical-jeffreys-v4'}],'cfb',now)['current']==[]

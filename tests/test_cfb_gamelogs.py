@@ -101,6 +101,10 @@ def test_cfb_prop_query_uses_college_table_exact_id_and_cutoff():
     assert 'game_date < $4' in sql and 'LIMIT $5' in sql
     assert args==(4429000,2024,250.5,date(2026,9,20),40,datetime(2026,9,20,tzinfo=timezone.utc))
     assert '4429000' not in sql and '250.5' not in sql
+    assert 'source_observed_at <= $6' in sql and 's.inserted_at <= $6' in sql
+    for cutoff in (None,datetime(2026,9,20)):
+        with pytest.raises(ValueError,match='CFB queries'):
+            PropQueryBuilder.build(params.model_copy(update={'observed_before':cutoff}))
     for invalid_id in ('1 OR 1=1', '0', '9223372036854775808', '\u0661\u0662\u0663'):
         with pytest.raises(ValueError,match='CFB queries'):
             PropQueryBuilder.build(params.model_copy(update={'player_id':invalid_id}))
