@@ -204,6 +204,7 @@ def summarize(entries, errors, sport, policy, now):
 
 
 def audit_receipts(receipts, predictions, sport, policy, now):
+    commitments()  # Empty cohorts must also fail closed if frozen code drifts.
     protocol = PROTOCOL["policies"][policy]
     by_id = {r["prediction_id"]: r for r in predictions}
     entries = []; errors = Counter(); seen = set()

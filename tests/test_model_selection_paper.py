@@ -166,3 +166,9 @@ async def test_record_is_atomic_bounded_append_only(monkeypatch):
 async def test_failure_cannot_erase_production_forecasts(monkeypatch):
     monkeypatch.setattr(paper,"prepare",lambda *_:(_ for _ in ()).throw(ValueError("failed research")))
     await paper.record(AsyncMock(),rows(),"nfl")
+
+
+def test_empty_audit_also_detects_frozen_dependency_drift(monkeypatch):
+    monkeypatch.setattr(paper,"FROZEN_DIGESTS",{})
+    with pytest.raises(ValueError,match="dependencies changed"):
+        paper.audit_receipts([],[],"nfl","raw_model",NOW)
