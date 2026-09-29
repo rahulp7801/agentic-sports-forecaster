@@ -19,7 +19,12 @@ test('terminal locations round trip for shareable dashboard state', () => {
 test('terminal locations reject unsupported leagues and views', () => {
   assert.equal(parseTerminalHash('#mlb/backtest'), null);
   assert.equal(parseTerminalHash('#nfl/admin'), null);
-  assert.equal(parseTerminalHash('#cfb/gamelogs'), null);
+  assert.equal(parseTerminalHash('#cfb/kelly'), null);
   assert.equal(parseTerminalHash('#cfb/backtest'), null);
   assert.equal(parseTerminalHash(''), null);
+});
+
+
+test('CFB game-log link opens the existing supported outcome view',()=>{
+  assert.deepEqual(parseTerminalHash(terminalHash('cfb','gamelogs')),{sport:'cfb',view:'gamelogs'});
 });

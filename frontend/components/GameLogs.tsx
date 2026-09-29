@@ -3,11 +3,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { GameLog, Sport } from '@/lib/types';
 import { gameLog, overFrequency } from '@/lib/gameLogMetrics';
+import {gameLogRequest,publicGameLogs} from '@/lib/publicGameLogs';
 import styles from './ResearchViews.module.css';
 
 interface GameLogsProps { sport: Sport }
 
 const NBA_COLS = ['points', 'rebounds', 'assists', 'threes', 'steals', 'blocks', 'minutes'] as const;
+const CFB_COLS = ['pass_yds', 'rush_yds', 'rec_yds', 'receptions'] as const;
 const NFL_COLS = ['pass_yds', 'pass_tds', 'rush_yds', 'rec_yds', 'receptions'] as const;
 
 function StatCell({ value, line }: { value?: number; line?: number }) {
@@ -29,7 +31,8 @@ export default function GameLogs({ sport }: GameLogsProps) {
   const [activeProp, setActiveProp] = useState<string>(sport === 'nba' ? 'points' : 'pass_yds');
   const [activeLine, setActiveLine] = useState('');
   const [allLogs, setAllLogs] = useState<GameLog[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [refresh,setRefresh]=useState(0);
   const [error, setError] = useState('');
 
   const fetchLogs = useCallback(async (signal: AbortSignal) => {
@@ -38,16 +41,20 @@ export default function GameLogs({ sport }: GameLogsProps) {
     setError('');
     try {
       const params = new URLSearchParams({ sport, limit: '40' });
-      if (playerFilter) params.set('player', playerFilter);
-      const response = await fetch(`/api/gamelogs?${params}`, { cache: 'no-store', signal });
+      if (playerFilter.trim()) params.set('player', playerFilter.trim().normalize('NFC'));
+      try {gameLogRequest(params);} catch {
+        if(!signal.aborted) setError('Use a player name with letters, spaces, apostrophes, periods or hyphens (up to 80 characters).');
+        return;
+      }
+      const response = await fetch(`/api/gamelogs?${params}`, { cache: 'no-store', signal:AbortSignal.any([signal,AbortSignal.timeout(15_000)]) });
+      if (!response.ok) throw new Error('Game logs unavailable');
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Game logs unavailable');
-      const logs: GameLog[] = data.logs.map((row: Record<string, unknown>, index: number) => gameLog(row, sport, String(index)));
+      const logs: GameLog[] = publicGameLogs(data.logs,sport).map((row,index)=>gameLog(row,sport,String(index)));
       if (!signal.aborted) setAllLogs(logs);
-    } catch (loadError) {
+    } catch {
       if (!signal.aborted) {
         setAllLogs([]);
-        setError(loadError instanceof Error ? loadError.message : 'Game logs unavailable');
+        setError('Recorded game logs are temporarily unavailable. Try again.');
       }
     } finally {
       if (!signal.aborted) setLoading(false);
@@ -58,9 +65,11 @@ export default function GameLogs({ sport }: GameLogsProps) {
     const controller = new AbortController();
     const timer = setTimeout(() => void fetchLogs(controller.signal), 250);
     return () => { controller.abort(); clearTimeout(timer); };
-  }, [fetchLogs]);
+  }, [fetchLogs,refresh]);
 
-  const cols = sport === 'nba' ? NBA_COLS : NFL_COLS;
+  const refreshLogs=()=>{setError('');setAllLogs([]);setLoading(true);setRefresh(value=>value+1);};
+
+  const cols = sport === 'nba' ? NBA_COLS : sport==='cfb' ? CFB_COLS : NFL_COLS;
   const numericLine = activeLine.trim() === '' ? NaN : Number(activeLine);
   const lineValue = Number.isFinite(numericLine) && numericLine >= 0 ? numericLine : undefined;
   const frequency = overFrequency(allLogs, activeProp, lineValue);
@@ -78,8 +87,9 @@ export default function GameLogs({ sport }: GameLogsProps) {
       <div className={styles.controlBar}>
         <div className={styles.controlGroup} style={{ minWidth: 190 }}>
           <label htmlFor="log-player">Player filter</label>
-          <input id="log-player" className="term-input" placeholder="Search recorded players" value={playerFilter} onChange={event => setPlayerFilter(event.target.value)} />
+          <input id="log-player" className="term-input" placeholder="Search recorded players" value={playerFilter} maxLength={80} onChange={event => {setAllLogs([]);setError('');setLoading(true);setPlayerFilter(event.target.value);}} />
         </div>
+        <button type="button" className={styles.uxButton} onClick={refreshLogs} disabled={loading}>{loading ? 'Loading logs...' : error ? 'Retry logs' : 'Refresh logs'}</button>
         <div className={styles.controlSpacer} />
         <div className={styles.controlGroup}>
           <label htmlFor="log-prop">Stat</label>
@@ -123,7 +133,7 @@ export default function GameLogs({ sport }: GameLogsProps) {
               </tr>
             ))}
             {allLogs.length === 0 && (
-              <tr><td colSpan={12} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 48 }}>{loading ? 'Loading recorded game logs…' : error ? 'Game logs unavailable' : 'No recorded game logs found.'}</td></tr>
+              <tr><td colSpan={5+cols.length} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 48 }}>{loading ? 'Loading recorded game logs…' : error ? 'Game logs unavailable' : 'No recorded game logs found.'}</td></tr>
             )}
           </tbody>
         </table>
