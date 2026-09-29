@@ -25,14 +25,14 @@ def test_forecast_pages_remain_bounded_with_large_history_and_exclude_old_candid
             ) ON COMMIT DROP'''))
             for game in range(13):
                 payload = dict(generated_at='2026-09-10T12:00:00Z', games=[], signals=[
-                    dict(id=f'{game}-{row}', gated=False, sample_size=20,
+                    dict(id=f'{game}-{row}', player='Archive Player' if game==0 else 'Recent Player', gated=False, sample_size=20,
                          true_prob=0.55, implied_prob=0.5, ev_pct=0.05) for row in range(500)
                 ])
                 connection.execute(sa.text('''INSERT INTO dashboard_snapshots VALUES
                     (:key,CAST(:payload AS jsonb),now()-CAST(:age AS interval))'''),
                     dict(key=f'signals:nfl:{game:02}', payload=json.dumps(payload),
                          age='1 day' if game == 0 else '0 seconds'))
-            values=dict(p1='signals:nfl:%',p2=['player-profiles:nfl'],p3='library',p4=100,p5=0)
+            values=dict(p1='signals:nfl:%',p2=['player-profiles:nfl'],p3='library',p4=100,p5=0,p6='')
             first=connection.execute(sa.text(query),values).scalar_one()
             assert first['total_count']==6500 and len(first['rows'])==100
             # A row carries one signal only. Repeating the snapshot's entire
@@ -44,6 +44,16 @@ def test_forecast_pages_remain_bounded_with_large_history_and_exclude_old_candid
             second_ids={row['payload']['signals'][0]['id'] for row in second['rows']}
             assert first_ids.isdisjoint(second_ids)
             assert first['invalid_envelopes']==0
+            searched=connection.execute(sa.text(query),{**values,'p6':'archive player'}).scalar_one()
+            assert searched['total_count']==500 and len(searched['rows'])==100
+            assert all(row['payload']['signals'][0]['id'].startswith('0-') for row in searched['rows'])
+            assert searched['revision']!=first['revision']
+            searched_next=connection.execute(sa.text(query),{**values,'p6':'archive player','p5':100}).scalar_one()
+            assert searched_next['revision']==searched['revision']
+            assert {r['payload']['signals'][0]['id'] for r in searched['rows']}.isdisjoint(
+                {r['payload']['signals'][0]['id'] for r in searched_next['rows']})
+            absent=connection.execute(sa.text(query),{**values,'p6':'Not Recorded'}).scalar_one()
+            assert absent['total_count']==0 and absent['rows']==[]
             qualified=connection.execute(sa.text(query),{**values,'p3':'qualified','p4':5001}).scalar_one()
             assert qualified['total_count']==6000 and len(qualified['rows'])==5001
             assert qualified['window_complete'] is True

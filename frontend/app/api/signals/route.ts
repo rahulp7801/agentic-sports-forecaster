@@ -9,12 +9,12 @@ import {NO_STORE_HEADERS,signalCacheHeaders} from '@/lib/publicCache';
 
 export const dynamic='force-dynamic';
 
-const cachedForecastPage=unstable_cache(async(pattern:string,profileKeys:string[],view:string,limit:number,offset:number)=>{
+const cachedForecastPage=unstable_cache(async(pattern:string,profileKeys:string[],view:string,limit:number,offset:number,player:string)=>{
   const result=await databaseQuery<{data:ForecastPageInput}>(FORECAST_PAGE_QUERY,
-    [pattern,profileKeys,view,view==='library' ? limit : 5001,offset],'forecast_page');
+    [pattern,profileKeys,view,view==='library' ? limit : 5001,offset,player],'forecast_page');
   if(!result.rows[0]?.data) throw new Error('Missing forecast page');
   return result.rows[0].data;
-},['forecast-page-v1'],{revalidate:60});
+},['forecast-page-v2-player-search'],{revalidate:60});
 
 export async function GET(request:Request) {
   let options:ReturnType<typeof forecastRequest>;
@@ -25,7 +25,7 @@ export async function GET(request:Request) {
     if(hosted) {
       const profileKeys=options.sport ? ['player-profiles:'+options.sport] : ['player-profiles:nfl','player-profiles:nba'];
       data=await cachedForecastPage(options.sport ? `signals:${options.sport}:%` : 'signals:%',profileKeys,
-        options.view,options.limit,options.offset);
+        options.view,options.limit,options.offset,options.player);
     } else {
       const paths=[path.join(process.cwd(),'public','signals_cache.json'),
         path.join(process.cwd(),'..','frontend','public','signals_cache.json')];
@@ -34,11 +34,12 @@ export async function GET(request:Request) {
       const raw=fs.readFileSync(filePath,'utf8');
       const snapshot=JSON.parse(raw);
       if(!Array.isArray(snapshot.signals) || snapshot.signals.length>500) throw new Error('Invalid snapshot');
-      const signals=snapshot.signals.filter((value:{sport?:unknown;gated?:unknown})=>
-        (!options.sport || value?.sport===options.sport) && (options.view!=='qualified' || value?.gated===false));
+      const signals=snapshot.signals.filter((value:{sport?:unknown;gated?:unknown;player?:unknown})=>
+        (!options.sport || value?.sport===options.sport) && (options.view!=='qualified' || value?.gated===false)
+        && (!options.player || (typeof value?.player==='string' && value.player.toLowerCase().includes(options.player.toLowerCase()))));
       data={rows:signals.slice(options.offset,options.offset+options.limit).map((signal:unknown)=>
         ({payload:{...snapshot,signals:[signal]}})),profiles:{},total_count:signals.length,
-        revision:createHash('sha256').update(raw).digest('hex'),metadata:{...snapshot,signals:[],games:[]},invalid_envelopes:0,window_complete:true};
+        revision:createHash('sha256').update(raw).update(options.player ? ':player:'+options.player : '').digest('hex'),metadata:{...snapshot,signals:[],games:[]},invalid_envelopes:0,window_complete:true};
       if(options.view!=='library') data.rows=signals.map((signal:unknown)=>({payload:{...snapshot,signals:[signal]}}));
     }
     if(options.revision && options.revision!==data.revision) {

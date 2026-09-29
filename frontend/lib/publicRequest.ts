@@ -1,5 +1,5 @@
 const PARAMETERS:Record<string,string[]>={
-  '/api/signals':['sport','view','offset','limit','revision'],
+  '/api/signals':['sport','view','offset','limit','revision','player'],
   '/api/gamelogs':['sport','player','player_id','limit','before','exact'],
   '/api/metrics':['sport','cohort'],
   '/api/markets':['sport'], '/api/prop-screens':['sport'],

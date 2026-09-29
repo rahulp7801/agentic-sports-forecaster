@@ -34,3 +34,9 @@ test('identity-bound history requests pass the outer boundary and inner validati
   assert.equal(publicRequest(request('/api/signals?player_id=201')),400);
   assert.throws(()=>gameLogRequest(new URLSearchParams({sport:'nfl',player_id:"1' OR 1=1"})));
 });
+
+
+test('player search passes the read boundary while duplicate and control input is rejected',()=>{
+  assert.equal(publicRequest(request('/api/signals?player=Aaron%20Rodgers&sport=nfl&view=library')),null);
+  for(const path of ['/api/signals?player=A&player=B','/api/signals?player=Bad%00Name']) assert.equal(publicRequest(request(path)),400);
+});

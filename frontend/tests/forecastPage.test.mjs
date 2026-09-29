@@ -28,7 +28,7 @@ test('forecast requests reject unbounded offsets, limits and unsupported views',
 
 test('forecast requests accept the bounded CFB research library',()=>{
   assert.deepEqual(forecastRequest(new URL('https://example.test/api/signals?sport=cfb&view=library&offset=0&limit=36')),
-    {sport:'cfb',view:'library',offset:0,limit:36,revision:null});
+    {sport:'cfb',view:'library',offset:0,limit:36,revision:null,player:''});
 });
 test('candidate view returns a bounded future watchlist without relabeling stale prices',async()=>{
   const options=forecastRequest(new URL('https://example.test/api/signals?sport=nfl&view=candidates'));
@@ -173,4 +173,38 @@ test('paged forecasts cannot attach a same-name profile for another roster athle
     assert.equal(projected.true_prob,base.true_prob);
     assert.equal(projected.availability.player_id,'123');
   }
+});
+
+
+test('player search is canonical, bounded, and excluded from qualification selection',()=>{
+  const query=player=>'https://example.test/api/signals?'+new URLSearchParams({sport:'nfl',player});
+  for(const player of ['Aaron Rodgers',"D'Andre Swift",'D\u2019Andre Swift','Jos\u00e9 Player']) {
+    assert.equal(forecastRequest(new URL(query(player))).player,player);
+  }
+  for(const player of [' A','A ','a'.repeat(81),'Player%','Player_','Player?','<script>','Player\nName','Jose\u0301 Player']) {
+    assert.throws(()=>forecastRequest(new URL(query(player))),player);
+  }
+  for(const view of ['qualified','candidates']) assert.throws(()=>forecastRequest(new URL(query('A')+'&view='+view)));
+  const options=forecastRequest(new URL(query('Other')));
+  assert.throws(()=>forecastPage(input([base]),options,now),/searched/);
+});
+
+test('searched pages preserve query identity through responses and continuation',async()=>{
+  const search='Archive Player',records=Array.from({length:120},(_,i)=>({...base,id:`archive-${i}`,player:search}));
+  const observed=[];
+  const fetchImpl=async url=>{
+    const options=forecastRequest(new URL(url,'https://example.test'));observed.push(options);
+    const data=input(records.slice(options.offset,options.offset+options.limit),records.length);
+    return {ok:true,json:async()=>forecastPage(data,options,now)};
+  };
+  const first=await fetchForecasts('nfl',undefined,'library',fetchImpl,36,undefined,false,search);
+  assert.equal(first.signals.length,36);assert.equal(first.cursor.player,search);
+  assert.equal(first.search_player,search);assert.equal(first.complete,false);
+  const rest=await fetchForecasts('nfl',undefined,'library',fetchImpl,1000,first.cursor,false,search);
+  assert.equal(rest.signals.length,84);assert.equal(rest.complete,true);
+  assert.ok(observed.every(o=>o.player===search));
+  await assert.rejects(fetchForecasts('nfl',undefined,'library',fetchImpl,1000,first.cursor,false,'Other'),/cursor/);
+  await assert.rejects(fetchForecasts('nfl',undefined,'library',async()=>({ok:true,json:async()=>({search_player:'Other'})}),36,undefined,false,search),/search response/);
+  const mismatched={...forecastPage(input([base]),request(),now),search_player:search};
+  await assert.rejects(fetchForecasts('nfl',undefined,'library',async()=>({ok:true,json:async()=>mismatched}),36,undefined,false,search),/searched/);
 });

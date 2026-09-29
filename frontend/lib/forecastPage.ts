@@ -11,14 +11,18 @@ export function forecastRequest(url:URL) {
   const offset=url.searchParams.get('offset') ?? '0';
   const limit=url.searchParams.get('limit') ?? String(FORECAST_PAGE_SIZE);
   const revision=url.searchParams.get('revision');
+  const player=url.searchParams.get('player') ?? '';
+  if(player!==player.trim() || player!==player.normalize('NFC')
+    || (player!=='' && !/^[\p{L}\p{M}.'\u2019 -]{1,80}$/u.test(player))
+    || (player!=='' && view!=='library')) throw new Error('Invalid player search');
   if((sport!==null && sport!=='nba' && sport!=='nfl' && sport!=='cfb') || !['library','qualified','candidates'].includes(view)
     // The public research window is deliberately capped at 1,000 rows. Larger
-    // offsets add expensive cache keys without serving any product workflow.
+    // offsets add expensive cache keys; player search narrows before pagination.
     || !/^(0|[1-9][0-9]{0,3})$/.test(offset) || Number(offset)>=1000
     || !/^[1-9][0-9]{0,2}$/.test(limit) || Number(limit)>FORECAST_PAGE_SIZE
     || (revision!==null && !/^[a-f0-9]{64}$/.test(revision))
     || (view!=='library' && (Number(offset)!==0 || revision!==null))) throw new Error('Invalid forecast request');
-  return {sport:sport as Sport|null,view,offset:Number(offset),limit:Number(limit),revision};
+  return {sport:sport as Sport|null,view,offset:Number(offset),limit:Number(limit),revision,player};
 }
 
 // Flatten before transfer; retain the previous latest-100-game archive window.
@@ -30,11 +34,17 @@ export const FORECAST_PAGE_QUERY=`WITH latest AS MATERIALIZED (
   SELECT snapshot_key,payload,updated_at,
     CASE WHEN jsonb_typeof(payload->'signals')='array' THEN payload->'signals' ELSE '[]'::jsonb END AS signals
   FROM latest
+), scoped AS MATERIALIZED (
+  SELECT snapshot_key,payload,updated_at,CASE WHEN $6::text='' THEN signals ELSE (
+    SELECT COALESCE(jsonb_agg(signal ORDER BY ordinality),'[]'::jsonb)
+    FROM jsonb_array_elements(signals) WITH ORDINALITY AS items(signal,ordinality)
+    WHERE strpos(lower(signal->>'player'),lower($6::text))>0
+  ) END AS signals FROM envelopes
 ), indexed AS MATERIALIZED (
   SELECT *,jsonb_array_length(signals) AS signal_count,
     COALESCE(sum(jsonb_array_length(signals)) OVER (ORDER BY updated_at DESC,snapshot_key DESC
       ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)::bigint AS base_offset
-  FROM envelopes
+  FROM scoped
 ), library_page AS (
   SELECT snapshot_key,payload->'generated_at' AS generated_at,signal,updated_at,ordinality
   FROM indexed CROSS JOIN LATERAL jsonb_array_elements(signals) WITH ORDINALITY AS items(signal,ordinality)
@@ -63,7 +73,7 @@ SELECT jsonb_build_object(
   'window_complete',($3::text!='qualified' OR (SELECT count(*) FROM dashboard_snapshots
     WHERE snapshot_key LIKE $1 AND updated_at>=now()-interval '6 minutes')<=100),
   'revision',(SELECT encode(sha256(convert_to(COALESCE(string_agg(snapshot_key||':'||updated_at::text,','
-    ORDER BY updated_at DESC,snapshot_key DESC),''),'UTF8')),'hex') FROM latest),
+    ORDER BY updated_at DESC,snapshot_key DESC),'')||CASE WHEN $6::text='' THEN '' ELSE ':player:'||$6::text END,'UTF8')),'hex') FROM latest),
   'metadata',(SELECT jsonb_build_object('generated_at',payload->'generated_at','games','[]'::jsonb,
     'signals','[]'::jsonb) FROM latest ORDER BY updated_at DESC,snapshot_key DESC LIMIT 1),
   'invalid_envelopes',(SELECT count(*) FROM latest WHERE jsonb_typeof(payload->'signals') IS DISTINCT FROM 'array'
@@ -91,6 +101,7 @@ export function forecastPage(data:ForecastPageInput,request:ReturnType<typeof fo
     if(result.signals.length>1) throw new Error('Invalid forecast row');
     let signal=result.signals[0];
     if(signal) {
+      if(request.player && !signal.player.toLowerCase().includes(request.player.toLowerCase())) throw new Error('Invalid searched forecast');
       const values=data.profiles?.['player-profiles:'+signal.sport]?.profiles;
       if(Array.isArray(values) && values.length<=500) {
         const matches=values.map(value=>publicPlayerProfile(value,signal.sport,signal.player,now,signal.availability?.player_id)).filter(Boolean);
@@ -111,7 +122,7 @@ export function forecastPage(data:ForecastPageInput,request:ReturnType<typeof fo
   // An incomplete candidate inspection cannot advertise the strongest picks.
   const selected=qualified ? (complete ? bestPickOptions(signals,now) : [])
     : request.view==='candidates' ? recentCandidateOptions(signals,now) : signals;
-  return {generated_at:metadata.generated_at,games:shortlisted ? [] : [...games.values()],signals:selected,
+  return {search_player:request.player,generated_at:metadata.generated_at,games:shortlisted ? [] : [...games.values()],signals:selected,
     invalid_signals:invalid,total_count:data.total_count,
     pagination:{offset:request.offset,next_offset:!shortlisted && !complete ? request.offset+consumed : null,
       revision:data.revision,complete},research_window:'Latest 100 published game snapshots'};
