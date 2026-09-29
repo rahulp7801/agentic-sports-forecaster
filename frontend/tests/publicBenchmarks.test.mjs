@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import priorWeekOne from '../data/nfl-week1-2025-receptions.json' with {type:'json'};
 import priorWeekTwo from '../data/nfl-week2-2025-receptions.json' with {type:'json'};
 import weekOne from '../data/nfl-week1-2026.json' with {type:'json'};
-import {forecastChecks, forecastCohort, forecastEvidenceGate, forecastResult, highestConvictionForecast,
+import {constantDirectionCohort,forecastChecks, forecastCohort, forecastEvidenceGate, forecastResult, highestConvictionForecast,
   publicForecastBenchmark, replicatedReceptionEvidence} from '../lib/publicBenchmarks.ts';
 
 test('published Week 1 benchmark retains verified aggregate evidence', () => {
@@ -54,10 +54,10 @@ test('the same conviction rule replicates across separate 2025 and 2026 receptio
   assert.deepEqual(replicatedReceptionEvidence,{
     called_side_minimum:.6,
     research_threshold:4.5,
-    prior:{label:'2025 · Weeks 1–2',correct:historical.correct,sample:historical.sample,
+    prior:{...constantDirectionCohort(prior.flatMap(bundle=>bundle.records).filter(highestConvictionForecast)),label:'2025 · Weeks 1–2',correct:historical.correct,sample:historical.sample,
       game_count:historical.game_count,hit_rate:historical.hit_rate,
       game_cluster_interval:historical.game_cluster_interval},
-    current:{label:'2026 · Week 1',correct:holdout.correct,sample:holdout.sample,
+    current:{...constantDirectionCohort(current.records.filter(record=>record.prop_type==='receptions').filter(highestConvictionForecast)),label:'2026 · Week 1',correct:holdout.correct,sample:holdout.sample,
       game_count:holdout.game_count,hit_rate:holdout.hit_rate,
       game_cluster_interval:holdout.game_cluster_interval},
   });
@@ -82,4 +82,17 @@ test('benchmark boundary rejects corrupted counts, scores and hashes', () => {
     {...weekOne.benchmarks[0],evaluated_count:25}]}));
   assert.throws(()=>publicForecastBenchmark({...weekOne,benchmarks:[
     {...weekOne.benchmarks[0],brier_score:2}]}));
+});
+
+
+test('constant directions retain the identical outcome denominator and missing is never Under',()=>{
+  assert.deepEqual(constantDirectionCohort([]),{sample:0,always_under_correct:0,always_over_correct:0});
+  assert.deepEqual(constantDirectionCohort([{outcome:true},{outcome:false},{outcome:false}]),
+    {sample:3,always_under_correct:2,always_over_correct:1});
+  for(const outcome of [undefined,null,0,'false']) assert.throws(()=>constantDirectionCohort([{outcome}]),/Unverified/);
+  const prior=[priorWeekOne,priorWeekTwo].map(publicForecastBenchmark).flatMap(bundle=>bundle.records).filter(highestConvictionForecast);
+  const current=publicForecastBenchmark(weekOne).records.filter(record=>record.prop_type==='receptions').filter(highestConvictionForecast);
+  assert.deepEqual(constantDirectionCohort(prior),{sample:213,always_under_correct:181,always_over_correct:32});
+  assert.deepEqual(constantDirectionCohort(current),{sample:122,always_under_correct:94,always_over_correct:28});
+  assert.equal(forecastCohort(prior).correct,180);assert.equal(forecastCohort(current).correct,100);
 });

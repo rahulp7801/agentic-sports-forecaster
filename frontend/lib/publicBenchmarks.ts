@@ -65,6 +65,8 @@ export const replicatedReceptionEvidence = {
   prior: {
     label: '2025 · Weeks 1–2',
     correct: 180,
+    always_under_correct: 181,
+    always_over_correct: 32,
     sample: 213,
     game_count: 26,
     hit_rate: 180 / 213,
@@ -73,6 +75,8 @@ export const replicatedReceptionEvidence = {
   current: {
     label: '2026 · Week 1',
     correct: 100,
+    always_under_correct: 94,
+    always_over_correct: 28,
     sample: 122,
     game_count: 15,
     hit_rate: 100 / 122,
@@ -259,4 +263,12 @@ export function forecastChecks(benchmark: ForecastBenchmark) {
     log_loss: benchmark.log_loss_game_cluster_interval[1] < Math.log(2),
     calibration: benchmark.calibration_error <= 0.05,
   };
+}
+
+
+/** Fixed directions on the identical selected records, not market-price returns. */
+export function constantDirectionCohort(records:ForecastEvidenceRecord[]) {
+  if(records.some(record=>typeof record.outcome!=='boolean')) throw new Error('Unverified benchmark outcome');
+  return {sample:records.length,always_under_correct:records.filter(record=>record.outcome===false).length,
+    always_over_correct:records.filter(record=>record.outcome===true).length};
 }

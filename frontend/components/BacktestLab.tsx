@@ -5,11 +5,12 @@ import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { ArrowUpRight, Check, FlaskConical, RefreshCw, ShieldCheck, Sparkles } from 'lucide-react';
 import { BACKTEST_METRICS, formatBacktestMetric, mispricedProps, strategySuggestions,
   type BacktestMetric, type BacktestReport } from '@/lib/backtestLab';
-import {forecastChecks, forecastCohort, forecastEvidenceGate, forecastResult, highestConvictionForecast,
+import {constantDirectionCohort, forecastChecks, forecastCohort, forecastEvidenceGate, forecastResult, highestConvictionForecast,
   type ForecastBenchmarkBundle} from '@/lib/publicBenchmarks';
 import type { EVSignal, Sport } from '@/lib/types';
 import {fetchForecasts} from '@/lib/fetchForecasts';
 import styles from './BacktestLab.module.css';
+import ForecastBaselines from './ForecastBaselines';
 
 type Cohort = 'all' | 'recommendations';
 type Props = { sport: Sport; preview?: boolean };
@@ -105,12 +106,15 @@ export default function BacktestLab({ sport, preview = false }: Props) {
       || left.player_name.localeCompare(right.player_name)),
   [evidenceGrade, evidenceScope]);
   const evidenceStats = useMemo(() => forecastCohort(evidenceScope), [evidenceScope]);
+  const evidenceBaselines = useMemo(()=>constantDirectionCohort(evidenceScope),[evidenceScope]);
   const clearsEvidenceFloor = forecastEvidenceGate(evidenceStats);
   const priorReplication = useMemo(() => forecastCohort(benchmarks.slice(1)
     .flatMap(bundle => bundle.records)
     .filter(record => record.prop_type==='receptions' && highestConvictionForecast(record))), [benchmarks]);
   const currentReplication = useMemo(() => forecastCohort((benchmark?.records ?? [])
     .filter(record => record.prop_type==='receptions' && highestConvictionForecast(record))), [benchmark]);
+  const priorBaselines = useMemo(()=>constantDirectionCohort(benchmarks.slice(1).flatMap(bundle=>bundle.records).filter(record=>record.prop_type==='receptions' && highestConvictionForecast(record))),[benchmarks]);
+  const currentBaselines = useMemo(()=>constantDirectionCohort((benchmark?.records ?? []).filter(record=>record.prop_type==='receptions' && highestConvictionForecast(record))),[benchmark]);
   const displayedEvidence = evidence.slice(0, preview ? 6 : evidenceLimit);
 
   function toggleMetric(metric: BacktestMetric) {
@@ -234,12 +238,14 @@ export default function BacktestLab({ sport, preview = false }: Props) {
           <div><span>95% game-cluster interval</span><strong>{evidenceStats.game_cluster_interval ? evidenceStats.game_cluster_interval.map(value=>`${(value*100).toFixed(1)}%`).join('–') : 'Unavailable'}</strong><small>{evidenceStats.game_count} game clusters</small></div>
           <p data-clears-evidence-floor={clearsEvidenceFloor}>{clearsEvidenceFloor ? 'Observed cohort clears the 65% evidence floor at the lower game-cluster bound. ' : ''}{evidenceConviction==='highest' ? 'Highest conviction requires at least 60% model probability on the called side. This descriptive filter was inspected after outcomes and is not a priced sportsbook acceptance rule.' : 'All natural Over/Under calls are included. Correct and missed filters below never change this denominator.'}</p>
         </div>
+        <ForecastBaselines {...evidenceBaselines} correct={evidenceStats.correct} />
+        <p>Constant directions are scored on the same selected records. Correct/Missed display filters do not change these denominators. These are descriptive fixed-threshold comparisons without sportsbook prices.</p>
         {evidenceConviction==='highest' && forecastEvidenceGate(priorReplication)
           && forecastEvidenceGate(currentReplication) && <div className={styles.replicationProof}>
-          <div><span>Replicated reception cohort</span><h5>The same rule cleared 65% twice.</h5><p>Called-side probability at least 60%, fixed 4.5-reception research threshold, exclusive pregame history.</p></div>
-          <div><span>2025 · two weeks</span><strong>{(priorReplication.hit_rate!*100).toFixed(1)}%</strong><small>{priorReplication.correct}/{priorReplication.sample} · {priorReplication.game_count} games · lower bound {(priorReplication.game_cluster_interval![0]*100).toFixed(1)}%</small></div>
-          <div><span>2026 · Week 1</span><strong>{(currentReplication.hit_rate!*100).toFixed(1)}%</strong><small>{currentReplication.correct}/{currentReplication.sample} · {currentReplication.game_count} games · lower bound {(currentReplication.game_cluster_interval![0]*100).toFixed(1)}%</small></div>
-          <p>These are separate retrospective directional forecast cohorts with source-backed final stats. They still have no archived sportsbook prices, so they do not prove betting profit.</p>
+          <div><span>Replicated reception cohort</span><h5>Model and constant directions.</h5><p>Called-side probability at least 60%, fixed 4.5-reception research threshold, exclusive pregame history.</p></div>
+          <div><span>2025 · two weeks</span><strong>{(priorReplication.hit_rate!*100).toFixed(1)}%</strong><small>{priorReplication.correct}/{priorReplication.sample} · {priorReplication.game_count} games · lower bound {(priorReplication.game_cluster_interval![0]*100).toFixed(1)}%</small><ForecastBaselines {...priorBaselines} correct={priorReplication.correct} /></div>
+          <div><span>2026 · Week 1</span><strong>{(currentReplication.hit_rate!*100).toFixed(1)}%</strong><small>{currentReplication.correct}/{currentReplication.sample} · {currentReplication.game_count} games · lower bound {(currentReplication.game_cluster_interval![0]*100).toFixed(1)}%</small><ForecastBaselines {...currentBaselines} correct={currentReplication.correct} /></div>
+          <p>The model was below always choosing Under in the 2025 cohort and above it in 2026. These retrospective, model-selected records have no archived sportsbook prices and do not establish market outperformance or betting profit.</p>
         </div>}
         <div className={styles.evidenceFilters}>
           <div aria-label="Evidence conviction filter">

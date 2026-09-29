@@ -7,6 +7,7 @@ import { motion, useReducedMotion } from 'motion/react';
 import { marketFreshness, type MarketFreshness } from '@/lib/marketFreshness';
 import { replicatedReceptionEvidence } from '@/lib/publicBenchmarks';
 import HistoricalFlowDemo from './HistoricalFlowDemo';
+import ForecastBaselines from './ForecastBaselines';
 import ResponsibleUse from './ResponsibleUse';
 import ThemeToggle from './ThemeToggle';
 import styles from './LandingPage.module.css';
@@ -191,7 +192,7 @@ export default function LandingPage() {
           <div className={styles.heroOrb} aria-hidden="true" />
           <motion.div className={styles.heroCopy} initial={reduceMotion ? false : { opacity: 0, y: 28 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: .9, ease: [.2, .8, .2, 1] }}>
             <div className={styles.eyebrow}><Sparkles size={14} /> Evidence-first sports intelligence</div>
-            <h1>An edge you<br />can <span>inspect.</span></h1>
+            <h1>Forecasts you<br />can <span>inspect.</span></h1>
             <p>One clear view of sportsbook prices, prediction markets, player projections, and model evidence—built to show what is live, what is stale, and what is still unknown.</p>
             <div className={styles.heroActions}><a href="#demo" aria-label="Try the Week 1 demo"><span aria-hidden="true">▶</span> Try the demo <ArrowRight size={17} /></a><Link href="/terminal">Open dashboard <ArrowUpRight size={17} /></Link></div>
           </motion.div>
@@ -202,12 +203,12 @@ export default function LandingPage() {
         <section className={styles.results} id="results" aria-labelledby="results-title">
           <div className={styles.resultsIntro}>
             <div>
-              <span>Verified retrospective performance</span>
+              <span>Retrospective accuracy in context</span>
               <h2 id="results-title">{percent(replicatedReceptionEvidence.prior.hit_rate)}.<br />Then {percent(replicatedReceptionEvidence.current.hit_rate)}.</h2>
             </div>
             <div className={styles.resultsSummary}>
-              <div><ShieldCheck size={18} /><strong>Above 60% in both periods</strong></div>
-              <p>The same fixed reception rule was evaluated on two separate NFL periods. Every win and loss remains in the denominator.</p>
+              <div><ShieldCheck size={18} /><strong>Compare with constant directions</strong></div>
+              <p>The model trailed always choosing Under in 2025 and scored higher in 2026 on the same selected records. These historical comparisons do not establish a profitable edge.</p>
             </div>
           </div>
 
@@ -216,7 +217,8 @@ export default function LandingPage() {
               <article className={styles.resultCard} key={period.label}>
                 <span>{period.label}</span>
                 <strong>{percent(period.hit_rate)}</strong>
-                <p>{period.correct} correct <i>/</i> {period.sample} forecasts</p>
+                <p>{period.correct} correct <i>/</i> {period.sample} model calls</p>
+                <ForecastBaselines {...period} />
                 <dl>
                   <div><dt>Games</dt><dd>{period.game_count}</dd></div>
                   <div><dt>95% game-cluster interval</dt><dd>{percent(period.game_cluster_interval[0])}–{percent(period.game_cluster_interval[1])}</dd></div>
@@ -227,7 +229,7 @@ export default function LandingPage() {
 
           <div className={styles.resultsFoot}>
             <p><strong>Rule:</strong> at least {percent(replicatedReceptionEvidence.called_side_minimum)} probability on the called side of a fixed {replicatedReceptionEvidence.research_threshold} reception threshold, using only prior games.</p>
-            <p>Retrospective directional forecasts without archived sportsbook prices. These results establish repeatable accuracy, not betting profit.</p>
+            <p>Both constant directions use the same retrospectively selected records and fixed threshold. Archived sportsbook prices are unavailable; prospective profitability remains unproven.</p>
             <Link href="/terminal#nfl/backtest">Inspect every forecast <ArrowUpRight size={16} /></Link>
           </div>
         </section>
