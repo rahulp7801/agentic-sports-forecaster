@@ -127,3 +127,11 @@ def test_read_only_query_binds_scope_and_fails_on_truncation():
     db.execute.return_value.fetchall.return_value = [()] * (MAX_ROWS+1)
     with pytest.raises(ValueError,match='bound'):
         load_primary(db,inspect_bundle(bundle(),now=NOW),cutoff='2026-09-29',season_min=2024)
+
+
+def test_unreviewed_missing_categories_remain_visible_and_unknown():
+    result = report([primary(), primary(game_id=999999990,game_date='2026-09-19')])
+    for window in result['windows']:
+        assert window['scoped_primary_games'] == 2
+        assert window['remaining_unverified_null_game_ids'] == ['999999990']
+        assert window['hypothetical_with_verified_gaps']['n'] == 1

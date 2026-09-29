@@ -132,6 +132,8 @@ def build_report(bundle, primary_rows, *, cutoff, season_min, limit=40, now=None
             before = recent_sample(rows, field, limit)
             after = recent_sample(supplemented, field, limit)
             windows.append(dict(player_id=str(player), field=field, status='descriptive_only',
+                scoped_primary_games=len(rows),
+                remaining_unverified_null_game_ids=[str(r['game_id']) for r in supplemented if r[field] is None],
                 primary=before, hypothetical_with_verified_gaps=after,
                 added_game_ids=[g for g in after['game_ids'] if g not in before['game_ids']],
                 displaced_game_ids=[g for g in before['game_ids'] if g not in after['game_ids']]))

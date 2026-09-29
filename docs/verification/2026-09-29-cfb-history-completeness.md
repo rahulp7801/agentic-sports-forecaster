@@ -16,7 +16,7 @@ The audit checks the primary provider, combined asset commitment, normalized rec
 
 Each archived player/game is classified as complete, verified gap, unavailable, outside scope, missing primary game, invalid primary provenance, or source conflict. Any contradictory non-null receiving or independently checked rushing statistic prevents supplementation of that game's hypothetical sample. No new historical game rows are invented.
 
-For each receiving field, the report reproduces production's non-null filter before ordering and limiting the recent-game window. It compares that sample with a hypothetical sample containing only the verified missing fields and records added and displaced game IDs. Invalid primary provenance prevents a misleading clean sample for that athlete.
+For each receiving field, the report reproduces production's non-null filter before ordering and limiting the recent-game window. It compares that sample with a hypothetical sample containing only the verified missing fields and records added and displaced game IDs. Remaining unverified missing categories are enumerated so a targeted repair cannot appear to certify the whole history. Invalid primary provenance prevents a misleading clean sample for that athlete.
 
 ## Interpretation boundary
 
