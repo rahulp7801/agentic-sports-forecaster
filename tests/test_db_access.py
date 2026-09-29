@@ -102,6 +102,7 @@ def test_reader_cannot_write_or_read_audits_and_worker_cannot_rewrite_prediction
             for statement in ('DELETE FROM dashboard_snapshots WHERE false', 'SELECT * FROM analytics.predictions',
                               'SELECT * FROM nba_player_gamelogs',
                               'SELECT * FROM player_stats', 'SELECT * FROM provider_response_cache',
+                              'SELECT * FROM analytics.paper_selections',
                               'CREATE TABLE public.forbidden_test(id int)'):
                 with pytest.raises(psycopg.errors.InsufficientPrivilege):
                     reader.execute(statement)
@@ -138,13 +139,23 @@ def test_reader_cannot_write_or_read_audits_and_worker_cannot_rewrite_prediction
                 assert worker.execute('UPDATE ngs_stats SET avg_time_to_throw=2.6 WHERE id=%s',
                                       (ngs_id,)).rowcount == 1
                 assert worker.execute('DELETE FROM ngs_stats WHERE id=%s', (ngs_id,)).rowcount == 1
+                worker.execute("INSERT INTO analytics.predictions(id,scan_id,payload) VALUES (%s,%s,'{}')",(key,key))
+                assert worker.execute("""INSERT INTO analytics.paper_selections
+                    (protocol,sport,game_id,player_id,prediction_id,decision_at,valid_until,payload,payload_sha256)
+                    VALUES ('fixture','nfl',%s,'fixture',%s,clock_timestamp()-INTERVAL '1 minute',
+                        clock_timestamp()+INTERVAL '1 minute','{}',encode(sha256(convert_to('{}','UTF8')),'hex'))
+                    RETURNING recorded_at""",(key,key)).fetchone()[0]
+
             for statement in ('DELETE FROM dashboard_snapshots WHERE false',
                               'UPDATE public.alembic_version SET version_num=version_num',
                               'UPDATE player_prop_snapshots SET line=line WHERE false',
                               'DELETE FROM player_prop_snapshots WHERE false',
                               'UPDATE odds_snapshots SET line=line WHERE false',
                               "UPDATE analytics.predictions SET payload='{}' WHERE false",
-                              "UPDATE analytics.quotes SET probability=0 WHERE false"):
+                              "UPDATE analytics.quotes SET probability=0 WHERE false",
+                              "UPDATE analytics.paper_selections SET payload=payload WHERE false",
+                              "DELETE FROM analytics.paper_selections WHERE false",
+                              "TRUNCATE analytics.paper_selections"):
                 with pytest.raises(psycopg.errors.InsufficientPrivilege):
                     worker.execute(statement)
             for table in APPEND_TABLES:

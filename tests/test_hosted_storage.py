@@ -159,3 +159,44 @@ def test_postgres_admission_deadline_after_database_wait(monkeypatch,phase):
         quote_time=now,availability_time=now)==(False,'stale_quote')
     with connect() as db:
         assert db.execute('SELECT count(*) FROM exposure WHERE risk_day=?',(group,)).fetchone()[0]==0
+
+
+
+def test_paper_receipts_use_server_time_and_cannot_be_replaced_or_backdated():
+    import hashlib
+    from psycopg.errors import CheckViolation,ForeignKeyViolation
+    ledger=Ledger(database_url=os.environ['SPORTSBET_TEST_DATABASE_URL'])
+    group=uuid.uuid4().hex
+    prediction=ledger.record(group,dict(game_id=group,player='Paper fixture',sport='nfl',
+        prop_type='points',direction='over',line=20.5,sportsbook='book',american_odds=100,
+        model_probability=.6,game_start_time=(datetime.now(timezone.utc)+timedelta(hours=1)).isoformat(),
+        captured_at=datetime.now(timezone.utc).isoformat(),model_version='paper-test'))
+    payload='{}';sha=hashlib.sha256(payload.encode()).hexdigest()
+    statement="""INSERT INTO paper_selections(protocol,sport,game_id,player_id,prediction_id,
+        decision_at,valid_until,recorded_at,payload,payload_sha256)
+        VALUES ('fixture','nfl',?,?,?,clock_timestamp()-INTERVAL '1 minute',
+            clock_timestamp()+INTERVAL '1 minute','2000-01-01T00:00:00Z',?,?)
+        ON CONFLICT(protocol,sport,game_id,player_id) DO NOTHING RETURNING recorded_at"""
+    def append(_):
+        with ledger.connect() as db:
+            return db.execute(statement,(group,'player',prediction,payload,sha)).fetchone()
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        results=list(pool.map(append,range(3)))
+    inserted=[r for r in results if r is not None]
+    assert len(inserted)==1
+    assert inserted[0][0]>datetime.now(timezone.utc)-timedelta(seconds=30)
+    with pytest.raises(CheckViolation):
+        with ledger.connect() as db:
+            db.execute("""INSERT INTO paper_selections(protocol,sport,game_id,player_id,prediction_id,
+                decision_at,valid_until,recorded_at,payload,payload_sha256)
+                VALUES ('fixture','nfl',?,?,?,clock_timestamp()-INTERVAL '2 minutes',
+                    clock_timestamp()-INTERVAL '1 minute','2000-01-01T00:00:00Z',?,?)""",
+                (group,'expired',prediction,payload,sha))
+    with pytest.raises(CheckViolation):
+        with ledger.connect() as db:
+            db.execute(statement,(group,'forged-hash',prediction,payload,'0'*64))
+    with pytest.raises(ForeignKeyViolation):
+        with ledger.connect() as db:
+            db.execute(statement,(group,'missing-forecast','no-such-'+group,payload,sha))
+    with ledger.connect() as db:
+        assert db.execute('SELECT count(*) FROM paper_selections WHERE game_id=?',(group,)).fetchone()[0]==1

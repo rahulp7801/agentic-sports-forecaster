@@ -23,7 +23,7 @@ WRITE_TABLES = ('games', 'player_stats', 'nfl_snap_counts', 'cfb_player_gamelogs
 APPEND_TABLES = ('odds_snapshots', 'player_prop_snapshots', 'cfb_history_source_bundles', 'cfb_receiving_supplements',
                'nfl_history_source_bundles', 'nfl_receiving_supplements')
 CACHE_TABLES = ('provider_response_cache',)
-ANALYTICS_TABLES = ('predictions', 'exposure', 'quotes', 'api_usage')
+ANALYTICS_TABLES = ('predictions', 'exposure', 'quotes', 'api_usage', 'paper_selections')
 
 
 def deny_browser_roles(conn):
@@ -116,6 +116,7 @@ def apply_access(conn):
         conn.execute(sql.SQL('ALTER TABLE {} ENABLE ROW LEVEL SECURITY').format(target))
         conn.execute(sql.SQL('DROP POLICY IF EXISTS sportsbet_worker_access ON {}').format(target))
         conn.execute(sql.SQL('CREATE POLICY sportsbet_worker_access ON {} TO {} USING (true) WITH CHECK (true)').format(target, sql.Identifier(WORKER)))
+    conn.execute(sql.SQL('REVOKE UPDATE, DELETE, TRUNCATE ON analytics.paper_selections FROM {}').format(sql.Identifier(WORKER)))
     conn.execute(sql.SQL('GRANT UPDATE (outcome,outcome_source,outcome_ref,outcome_observed_at,actual_value,outcome_evidence) ON analytics.predictions TO {}').format(sql.Identifier(WORKER)))
     for table in ('exposure', 'api_usage'):
         conn.execute(sql.SQL('GRANT UPDATE ON {} TO {}').format(sql.Identifier('analytics', table), sql.Identifier(WORKER)))
