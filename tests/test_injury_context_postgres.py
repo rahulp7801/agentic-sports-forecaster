@@ -93,8 +93,8 @@ def test_tracking_observation_cutoff_precedes_latest_eight_window():
         try:
             conn.execute("INSERT INTO public.games(game_id,season,week,home_team,away_team,game_date) VALUES('ngs-cutoff-fixture',2026,3,'NE','NYJ','2026-09-30')")
             for season,week,value,observed in [(2025,w,1,NOW) for w in range(10,18)]+[(2026,1,100,LATE),(2026,2,8,NOW),(2026,3,999,NOW)]:
-                conn.execute('''INSERT INTO public.ngs_stats(player_gsis_id,season,week,stat_type,avg_separation,source_provider,source_url,source_sha256,source_observed_at)
-                    VALUES('00-9999999',%s,%s,'receiving',%s,'nflverse_ngs',%s,%s,%s)''',(season,week,value,'https://github.com/nflverse/nflverse-data/releases/download/nextgen_stats/ngs_receiving.parquet','a'*64,observed))
+                conn.execute('''INSERT INTO public.ngs_stats(player_gsis_id,season,week,stat_type,avg_separation,source_provider,source_url,source_sha256,source_record_sha256,source_observed_at)
+                    VALUES('00-9999999',%s,%s,'receiving',%s,'nflverse_ngs',%s,%s,%s,%s)''',(season,week,value,'https://github.com/nflverse/nflverse-data/releases/download/nextgen_stats/ngs_receiving.parquet','a'*64,'b'*64,observed))
             pool=MagicMock();pool.acquire.return_value=_Context(ContextConnection(conn))
             def run(stamp):return asyncio.run(load_ngs_evidence(pool,player_gsis_id='00-9999999',season=2026,game_date=date(2026,9,30),team='NE',prop_type='rec_yds',observed_before=stamp))
             earlier=run(NOW);assert earlier['sample_weeks']==8 and earlier['metrics']['avg_separation']==1.875
