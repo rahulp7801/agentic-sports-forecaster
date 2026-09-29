@@ -16,3 +16,9 @@ Older snapshots without a valid capture anchor retain their forecasts but omit t
 - PostgreSQL regression proving late records are excluded before the eight-week limit and current game weeks stay excluded.
 - Public-boundary tests for data arriving between quote and forecast, post-capture data, invalid capture timing and repeat projection.
 - No provider collection, historical forecast rewrites, model/evaluation version changes or threshold changes.
+
+## Restoring existing snapshot timestamps
+
+`quant.forecast_capture.restore_capture` can plan a metadata-only repair from retained ledger payloads. It matches the prediction ID, exact player/game/market/price/model terms and tracking evidence. Existing capture fields are never overwritten. The source and generation chronology must pass, and the retained record is committed by SHA-256.
+
+An operator applying a reviewed plan must lock and compare the original snapshot and retained ledger commitments. Update only the snapshot payload: preserve its `updated_at` and `generated_at` so the repair cannot make an old scan look fresh. No ledger forecast, probability, qualification flag, quote or source observation is rewritten. Live repair plans and source records stay local.
