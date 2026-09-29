@@ -733,7 +733,7 @@ async def test_participation_cohorts_do_not_infer_absence_from_team_coverage(spo
 def test_explicit_cfb_recovery_locks_forecast_and_preserves_source_payload():
     import json
     import psycopg
-    from test_cfb_final_evidence import bundle,prediction,NOW
+    from tests.test_cfb_final_evidence import bundle,prediction,NOW
     from sportsbet.ingestion.cfb_final_evidence import inspect_bundle,plan_recovery
     from sportsbet.quant.nfl_final_recovery import apply_plan
     from sportsbet.ledger import verified_settlement_evidence,VERIFIED_SETTLEMENT_SOURCE
