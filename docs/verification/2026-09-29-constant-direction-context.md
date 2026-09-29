@@ -17,3 +17,9 @@ Six public benchmark tests pass, including recomputation of all summary counts f
 ## Evidence still required
 
 Retain the frozen prospective market comparison and accepted-selection return gates. These unpriced accuracy figures cannot substitute for matched market probabilities, source-authenticated results, adequate independent game coverage or prospective return uncertainty bounds.
+
+## Deployment verifier correction
+
+PR #263 deployed successfully and the real production browser checks passed at all three widths, including no browser console errors. Its production workflow then failed because the final verifier still required removed promotional text. The readiness test HTML had been synthesized from the verifier's own marker array, allowing that stale requirement to pass CI.
+
+The verifier now requires both constant-direction labels, their baseline accuracies, the comparison table label and the explicit unproven-profitability disclosure. The readiness fixture is independently specified. A new test reproduced the stale-marker failure before the correction; all 15 readiness tests pass afterward, including rejection of the legacy headline and each missing required comparison/disclosure. Existing security probes, stylesheet checks, endpoint requirements and capture-identity checks remain intact. Run the corrected verifier against production, then carry the follow-up through CI and production verification.

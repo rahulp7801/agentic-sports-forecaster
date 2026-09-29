@@ -13,7 +13,14 @@ import {
   verifySecurityHeaders,
 } from '../scripts/verify-production.mjs';
 
-const deploymentHtml = `<html><head><link rel="stylesheet" href="/app.css"></head><body>${requiredHtmlMarkers.join(' ')}</body></html>`;
+// Independent example of the current server-rendered landing contract. Do not
+// synthesize this fixture from the verifier's own required marker array.
+const deploymentHtml = `<html><head><link rel="stylesheet" href="/app.css"></head><body>
+<section id="results"><p>Compare with constant directions</p>
+<table aria-label="Same-record direction comparison"><tr><th>Model</th><td>84.5%</td></tr><tr><th>Always Under</th><td>85.0%</td></tr><tr><th>Always Over</th><td>15.0%</td></tr></table>
+<table aria-label="Same-record direction comparison"><tr><th>Model</th><td>82.0%</td></tr><tr><th>Always Under</th><td>77.0%</td></tr><tr><th>Always Over</th><td>23.0%</td></tr></table>
+<p>Archived sportsbook prices are unavailable; prospective profitability remains unproven.</p>
+</section></body></html>`;
 const deploymentCss = requiredCssMarkers.join(' ');
 const securityHeaderValues = {
   'x-content-type-options': 'nosniff',
@@ -221,5 +228,26 @@ test('production readiness covers CFB consumer forecasts, replay, slate and hist
   for(const path of ['/api/slate?sport=cfb','/api/gamelogs?sport=cfb&player_id=1&exact=1&limit=1','/api/benchmarks?sport=cfb']) {
     assert.ok(publicPipelinePaths.includes(path));
     assert.deepEqual(readinessStatuses(path,{paidEnabled:false,publicEnabled:true}),[200]);
+  }
+});
+
+
+test('current baseline-aware landing contract passes the complete readiness check',async()=>{
+  const fetchImpl=async(url,options={})=>{
+    const parsed=new URL(url),path=parsed.pathname+parsed.search;
+    return {status:securityProbeStatus(path,options)??(['/.env','/signals_cache.json'].includes(path)?404:200),
+      headers:securityHeaders,text:async()=>path==='/app.css'?deploymentCss:deploymentHtml};
+  };
+  await verifyProduction({base:'https://example.test',fetchImpl,paidEnabled:true,publicEnabled:true});
+});
+
+test('readiness rejects legacy accuracy copy and each missing comparison or disclosure',async()=>{
+  const legacy='<section id="results">Above 60% in both periods 84.5% 82.0% not betting profit</section>';
+  for(const html of [legacy,...requiredHtmlMarkers.map(marker=>deploymentHtml.replaceAll(marker,''))]) {
+    let reads=0;
+    await assert.rejects(verifyProduction({base:'https://example.test',fetchImpl:async()=>{
+      reads++;return {status:200,headers:securityHeaders,text:async()=>html};
+    }}),/Production landing evidence is stale or incomplete/);
+    assert.equal(reads,1);
   }
 });
