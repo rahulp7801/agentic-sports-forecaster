@@ -727,3 +727,38 @@ async def test_participation_cohorts_do_not_infer_absence_from_team_coverage(spo
         assert unknown['unknown_games']==(6 if sport=='nfl' else 5)
     finally:
         await conn.close()
+
+
+@pytest.mark.serial
+def test_explicit_cfb_recovery_locks_forecast_and_preserves_source_payload():
+    import json
+    import psycopg
+    from tests.test_cfb_final_evidence import bundle,prediction,NOW
+    from sportsbet.ingestion.cfb_final_evidence import inspect_bundle,plan_recovery
+    from sportsbet.quant.nfl_final_recovery import apply_plan
+    from sportsbet.ledger import verified_settlement_evidence,VERIFIED_SETTLEMENT_SOURCE
+    url=os.environ['SPORTSBET_TEST_DATABASE_URL'];ledger=Ledger(database_url=url)
+    p=prediction(game_id=uuid.uuid4().hex);p.pop('prediction_id');p.pop('outcome')
+    key=ledger.record('explicit-cfb-recovery',p)
+    evidence=inspect_bundle(bundle(),now=NOW)
+    dsn=url.replace('postgresql+psycopg://','postgresql://',1)
+    try:
+        with psycopg.connect(dsn) as conn:
+            conn.execute('SET LOCAL search_path TO analytics, public')
+            before=conn.execute('SELECT payload FROM predictions WHERE id=%s',(key,)).fetchone()[0]
+            p=json.loads(before)
+            plan=plan_recovery([p|dict(prediction_id=key,outcome=None)],evidence)
+            assert apply_plan(conn,plan,sport='cfb')==1
+            payload,outcome,source,ref,observed,actual,proof=conn.execute(
+                'SELECT payload,outcome,outcome_source,outcome_ref,outcome_observed_at,actual_value,outcome_evidence FROM predictions WHERE id=%s',(key,)).fetchone()
+            assert payload==before and actual==0 and json.loads(outcome) is True
+            assert source==VERIFIED_SETTLEMENT_SOURCE
+            assert verified_settlement_evidence(p,True,source,ref,observed,actual,proof)
+        with psycopg.connect(dsn) as conn:
+            conn.execute('SET LOCAL search_path TO analytics, public')
+            with pytest.raises(ValueError,match='re-preview'):
+                apply_plan(conn,plan,sport='cfb')
+            assert conn.execute('SELECT payload FROM predictions WHERE id=%s',(key,)).fetchone()[0]==before
+    finally:
+        with psycopg.connect(dsn) as conn:
+            conn.execute('DELETE FROM analytics.predictions WHERE id=%s',(key,))

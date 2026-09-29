@@ -25,9 +25,12 @@ def pending_rows(db,evidence):
     return [json_object(payload)|dict(prediction_id=key,outcome=None) for key,payload in rows]
 
 
-def apply_plan(conn,plan):
+def apply_plan(conn,plan, *, sport="nfl"):
     """Caller owns one transaction; lock and validate every row before writing."""
+    if sport not in ('nfl','cfb'):raise ValueError('Unsupported recovery sport')
     updates=plan['updates'];keys=[u['prediction_id'] for u in updates]
+    if any(u['payload'].get('sport')!=sport for u in updates):
+        raise ValueError('Mixed recovery sports')
     if not keys:return 0
     if len(set(keys))!=len(keys):raise ValueError('Duplicate recovery prediction')
     retained=conn.execute('SELECT id,payload,outcome FROM analytics.predictions WHERE id=ANY(%s) ORDER BY id FOR UPDATE',(keys,)).fetchall()
@@ -44,7 +47,7 @@ def apply_plan(conn,plan):
         proof=u['evidence'];game={k:proof[k] for k in ('provider_event_id','date','home_abbr','away_abbr','home_name','away_name','completed','game_time')}
         stat_key=(current['player_id'],current['prop_type'],game['provider_event_id'])
         if stat_key not in stats:
-            stats[stat_key]=_actual(db,current,'nfl',game['date'],game)
+            stats[stat_key]=_actual(db,current,sport,game['date'],game)
         observed=stats[stat_key]
         if observed is not None and observed[0]!=u['actual']:
             raise ValueError('Final sources disagree; recovery aborted')
