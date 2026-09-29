@@ -20,7 +20,7 @@ The history JSON contains `nfl_base`, `nfl_receiving`, `nfl_games`, `cfb`, and `
 - Projection validation still runs after a cache lookup; clients still enforce quote age and game start. Existing CDN TTLs remain. Cache limits are per process and serialized payload sizes, not a promise about exact heap use or a global distributed rate limit.
 - Errors and rejected requests explicitly set browser, generic CDN, and Vercel CDN `no-store` headers.
 - Refresh controls reflect automatic refresh work as well as clicks. Partial refreshes are identified, failed checks are distinguished from an empty shortlist, and returning to the tab refreshes player previews too.
-- Loading copy describes checking available picks. Probability differences are labeled as model differences rather than established edge.
+- The pick board precedes the schedule so the primary result is easier to reach on mobile. Loading copy describes checking available picks. Probability differences are labeled as model differences rather than established edge.
 
 ## Verification
 
@@ -28,6 +28,6 @@ The history JSON contains `nfl_base`, `nfl_receiving`, `nfl_games`, `cfb`, and `
 - Read-only compiled-production-SQL parity: 12 contexts across all four supported prop types in NFL/CFB, including empty and populated NFL histories. No quote collection or database writes.
 - 233 frontend tests pass, including cache concurrency/cardinality/byte/expiry/error recovery and explicit error cache policies.
 - ESLint, TypeScript, and production build pass.
-- Browser and remote CI/deployment checks recorded after completion.
+- Browser failure/retry checks pass at 390px and 1440px with no horizontal overflow or page errors. Strict CSP remains enabled. Remote CI/deployment is verified separately after merge.
 
 Frozen model versions, forward protocols, qualification thresholds, collection schedules and quota limits are unchanged. No funds, credits, or bets are involved.
