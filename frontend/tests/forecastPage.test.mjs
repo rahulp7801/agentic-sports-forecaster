@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {forecastRequest,forecastPage} from '../lib/forecastPage.ts';
 import {fetchForecasts} from '../lib/fetchForecasts.ts';
-const now=Date.now(),stamp=new Date(now).toISOString();
+const now=Date.parse('2026-09-30T12:00:00Z'),stamp=new Date(now).toISOString();
 const base={id:'A',player:'A',team:'KC',opponent:'BUF',sport:'nfl',home_team:'Kansas City Chiefs',away_team:'Washington Commanders',game_id:'game',
   prop_type:'pass_yds',line:249.5,direction:'over',true_prob:.6,american_odds:100,push_probability:0,
-  sportsbook:'draftkings',model_version:'empirical-jeffreys-v4',sample_size:40,mean_stat:260,
+  sportsbook:'draftkings',model_version:'empirical-jeffreys-v4-nfl-history-v1',history_policy_version:'nfl-explicit-receiving-v1',sample_size:40,mean_stat:260,
   confidence_interval:[.55,.65],kelly_fraction:.01,gated:false,forecast_cutoff:new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(now+3600000),trade_plan:[],injury_flags:{},market_type:'player_pass_yds',
   snapped_at:stamp,game_start_time:new Date(now+3600000).toISOString(),
   availability:{status:'observed',roster_confirmed:true,subject_status:'Not listed on injury report',probability_adjusted:false,

@@ -57,7 +57,7 @@ def test_reviewed_nfl_archive_is_atomic_replay_safe_and_private():
             assert public['rec_yds']==public['receptions']==0
             assert public['pass_yds'] is public['rush_yds'] is None
             final=item['manifest']['game']
-            value,proof=_actual(Session(),dict(player_id=item['player_id'],prop_type='rec_yds'),'nfl',final['date'],final)
+            value,proof=_actual(Session(),dict(player_id=item['player_id'],prop_type='rec_yds',model_version='empirical-jeffreys-v4-nfl-history-v1'),'nfl',final['date'],final)
             assert value==0 and proof['provider']=='nflverse_espn_supplement'
             assert valid_supplement(proof['record'],proof['supplement_manifest'],proof['sha256'],proof['observed_at'],final)
             conn.execute('UPDATE public.games SET game_date=%s WHERE game_id=%s',('2026-09-21',g['game_id']))

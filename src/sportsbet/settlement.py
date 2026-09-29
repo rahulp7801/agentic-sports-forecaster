@@ -152,7 +152,8 @@ def _actual(db, prediction: dict, sport: str, day: str, game: dict):
             FROM player_stats ps JOIN games g
             ON g.season=ps.season AND g.week=ps.week AND ps.team IN (g.home_team,g.away_team)
             WHERE ps.player_id=? AND g.game_date=?'''
-        if prediction['prop_type'] in ('rec_yds','receptions'):
+        from sportsbet.model_contract import NFL_MODEL_VERSION
+        if prediction['prop_type'] in ('rec_yds','receptions') and prediction.get('model_version')==NFL_MODEL_VERSION:
             query=query.replace('ps.source_observed_at', 'ps.source_observed_at,ps.supplement_manifest')
             query=query.replace('FROM player_stats ps', 'FROM nfl_effective_receiving_gamelogs ps')
         rows=db.execute(query,(player_id,day)).fetchall()

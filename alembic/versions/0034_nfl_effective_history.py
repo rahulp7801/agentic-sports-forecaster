@@ -23,7 +23,7 @@ UNION ALL
 SELECT s.player_id,s.season,s.week,
     COALESCE((SELECT p.player_name FROM public.player_stats p WHERE p.player_id=s.player_id
         AND p.player_name IS NOT NULL ORDER BY p.season DESC,p.week DESC LIMIT 1),
-        s.manifest->'explicit_source'->'participation'->'row'->>'player_name'),
+        s.manifest->'explicit_source'->'participation'->'row'->>'player_name')::varchar(100),
     s.stat_row->>'team',
     CASE WHEN s.stat_row->>'team'=g.home_team THEN g.away_team ELSE g.home_team END,
     CASE WHEN s.stat_row->>'team'=g.home_team THEN 'home' ELSE 'away' END,
