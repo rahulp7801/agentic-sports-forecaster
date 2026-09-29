@@ -8,7 +8,7 @@ import re
 from sportsbet.arbitrage.ev import compute_expected_return, quote_terms
 from sportsbet.ledger import (quote_evidence_valid, settlement_identity_valid,
                               utc_timestamp, validated_selection, verified_settlement_evidence)
-from sportsbet.model_contract import MODEL_VERSION
+from sportsbet.model_contract import forecast_version_valid
 
 LOCK_BEFORE_START = timedelta(minutes=60)
 BOARD_POLICY_VERSION = 'pregame-t60-v1'
@@ -41,7 +41,7 @@ def _accepted(row: dict, sport: str) -> bool:
         generated = utc_timestamp(row['model_generated_at'])
         stake = Decimal(str(row['stake_fraction']))
         _, payout = quote_terms(row['american_odds'], Decimal(0))
-        return (row.get('sport') == sport and row.get('model_version') == MODEL_VERSION
+        return (row.get('sport') == sport and forecast_version_valid(row,captured)
             and row.get('accepted') is True and row.get('gate_reason') == 'accepted'
             and row.get('recommendation_policy_version') == 'confidence-floor-v2'
             and Decimal('0') < stake <= Decimal('.05')
@@ -77,6 +77,7 @@ def _signal(row: dict, state: str, lock_at: datetime) -> dict:
         sample_size=row['model_sample_size'],
         mean_stat=float(row['model_mean_stat']) if row.get('model_mean_stat') is not None else None,
         model_version=row['model_version'],
+        **({'history_policy_version':row['history_policy_version']} if row.get('history_policy_version') else {}),
         kelly_fraction=float(row['stake_fraction']), gated=False, gate_reason='accepted',
         snapped_at=utc_timestamp(row['quote_time']).isoformat(),
         captured_at=utc_timestamp(row['captured_at']).isoformat(),

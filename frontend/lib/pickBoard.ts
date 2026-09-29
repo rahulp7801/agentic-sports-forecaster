@@ -24,7 +24,8 @@ function record(value:unknown,sport:Sport,profileValues:unknown,now:number,histo
     || captured>snapshotTime || Date.parse(String(raw.snapped_at))>captured
     || typeof raw.kelly_fraction!=='number' || raw.kelly_fraction>0.05
     || !['recorded','locked','final'].includes(String(raw.board_state))) return null;
-  const signal=publicSignal(raw,captured);
+  // Validate retained picks at capture, including the v4 deployment overlap.
+  const signal=publicSignal(raw,captured,true);
   if(!signal || signal.sport!==sport || signal.gated || signal.kelly_fraction<=0) return null;
   let playerProfile=signal.player_profile;
   if(Array.isArray(profileValues) && profileValues.length<=500) {

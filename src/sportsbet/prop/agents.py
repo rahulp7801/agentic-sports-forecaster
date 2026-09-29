@@ -155,6 +155,7 @@ def make_prop_quant_agent(
                 player_id=player_id,
                 season=season,
                 as_of_date=state.get("as_of_date") or date.today(),
+                observed_before=state.get("observed_before"),
                 opponent_team=state.get("opponent_team"),
                 home_away=state.get("home_away"),
                 last_n_games=state.get("last_n_games"),

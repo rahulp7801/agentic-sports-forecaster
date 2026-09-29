@@ -53,7 +53,7 @@ def test_quotes_require_real_timestamps_and_sides():
     del raw['bookmakers'][0]['last_update']
     assert quotes_from_event(raw,'nba')==[]
 
-@pytest.mark.parametrize('sport',['nba','nfl'])
+@pytest.mark.parametrize('sport',['nba','nfl','cfb'])
 async def test_scheduled_graph_routes_real_quotes_and_retains_recency(sport,tmp_path):
     conn=AsyncMock()
     conn.fetch.return_value=[{'normalized_name':'player','player_id':'1'}]
@@ -77,13 +77,20 @@ async def test_scheduled_graph_routes_real_quotes_and_retains_recency(sport,tmp_
     with patch(target,quant),patch.object(ledger,'record_many',wraps=ledger.record_many) as record_many:
         result=await evaluate_event(pool,event(sport),sport,ledger,'scan')
     record_many.assert_called_once()
+    if sport=='cfb':
+        from sportsbet.ledger import quote_evidence_valid
+        for p in ledger.predictions():
+            assert p['history_policy_version']=='cfb-explicit-receiving-v1'
+            assert quote_evidence_valid(p)
+            assert datetime.fromisoformat(p['history_observed_before'])<=datetime.fromisoformat(p['model_generated_at'])
+        assert all(call.args[1].observed_before is not None for call in quant.call_args_list)
     assert len(record_many.call_args.args[1])==2
     assert len(result['signals'])==2
     assert all(s['trade_plan'] and len(s['trade_plan'])==3 and s['gated']
         and s['gate_reason']=='availability_unavailable' and s['kelly_fraction']==0 for s in result['signals'])
     assert {s['direction'] for s in result['signals']}=={'over','under'}
     assert len(ledger.predictions())==2
-    assert all(p['model_version']=='empirical-jeffreys-v4' and p['model_generated_at']==p['captured_at']
+    assert all(p['model_version']==('empirical-jeffreys-v4-cfb-history-v1' if sport=='cfb' else 'empirical-jeffreys-v4') and p['model_generated_at']==p['captured_at']
         and p['model_sample_size']==40 and len(p['model_confidence_interval'])==2
         and p['model_mean_stat']==24
         and p['home_team']==event(sport)['home_team'] and p['away_team']==event(sport)['away_team']

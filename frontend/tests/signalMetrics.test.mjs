@@ -364,3 +364,20 @@ test('forecast API exposes only a validated history player ID, distinct from ESP
   assert.equal(result.player_id,'00-0000001');assert.equal(result.true_prob,publicQuote.true_prob);
   assert.equal(publicSignals([{...publicQuote,player_id:'malformed'}],now).signals[0].player_id,undefined);
 });
+
+
+test('corrected CFB model requires its policy and preserves historical validation',()=>{
+  const current=Date.parse('2026-09-29T12:00:00Z');
+  const signal={...quote,sport:'cfb',forecast_cutoff:'2026-09-29',
+    model_version:'empirical-jeffreys-v4-cfb-history-v1',history_policy_version:'cfb-explicit-receiving-v1',
+    snapped_at:new Date(current).toISOString(),game_start_time:new Date(current+3600000).toISOString(),
+    availability:{...quote.availability,captured_at:new Date(current).toISOString()}};
+  assert.equal(signalMetrics(signal,current).gated,false);
+  assert.equal(signalMetrics({...signal,history_policy_version:undefined},current).gate_reason,'legacy_model');
+  assert.equal(signalMetrics({...signal,sport:'nfl'},current).gate_reason,'legacy_model');
+  assert.equal(signalMetrics({...signal,model_version:'empirical-jeffreys-v4'},current).gate_reason,'legacy_model');
+  assert.equal(signalMetrics({...quote,sport:'cfb'},now).gated,false);
+  assert.equal(signalMetrics({...signal,model_version:'empirical-jeffreys-v4'},current,true).gated,false);
+  const projected=publicSignals([{...publicQuote,...signal}],current).signals[0];
+  assert.equal(projected.history_policy_version,'cfb-explicit-receiving-v1');
+});

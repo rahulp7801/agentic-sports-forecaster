@@ -95,12 +95,16 @@ def test_cfb_asset_download_bounds_redirect_hosts_and_bytes():
 
 def test_cfb_prop_query_uses_college_table_exact_id_and_cutoff():
     params=PropParams(game_id='future',player_id='4429000',season=2024,sport='cfb',
-        prop_type='pass_yds',line=Decimal('250.5'),filters={},as_of_date=date(2026,9,20),last_n_games=40)
+        prop_type='pass_yds',line=Decimal('250.5'),filters={},as_of_date=date(2026,9,20),observed_before=datetime(2026,9,20,tzinfo=timezone.utc),last_n_games=40)
     sql,args=PropQueryBuilder.build(params)
-    assert 'FROM cfb_player_gamelogs' in sql and 'athlete_id = CAST($1 AS bigint)' in sql
+    assert 'FROM cfb_effective_gamelogs' in sql and 'athlete_id = CAST($1 AS bigint)' in sql
     assert 'game_date < $4' in sql and 'LIMIT $5' in sql
-    assert args==(4429000,2024,250.5,date(2026,9,20),40)
+    assert args==(4429000,2024,250.5,date(2026,9,20),40,datetime(2026,9,20,tzinfo=timezone.utc))
     assert '4429000' not in sql and '250.5' not in sql
+    assert 'source_observed_at <= $6' in sql and 's.inserted_at <= $6' in sql
+    for cutoff in (None,datetime(2026,9,20)):
+        with pytest.raises(ValueError,match='CFB queries'):
+            PropQueryBuilder.build(params.model_copy(update={'observed_before':cutoff}))
     for invalid_id in ('1 OR 1=1', '0', '9223372036854775808', '\u0661\u0662\u0663'):
         with pytest.raises(ValueError,match='CFB queries'):
             PropQueryBuilder.build(params.model_copy(update={'player_id':invalid_id}))
@@ -111,7 +115,7 @@ def test_cfb_prop_query_uses_college_table_exact_id_and_cutoff():
 def test_cfb_prop_query_binds_athlete_id_with_asyncpg():
     params=PropParams(game_id='future',player_id='4429000',season=2024,sport='cfb',
         prop_type='pass_yds',line=Decimal('250.5'),filters={},
-        as_of_date=date(2026,9,20),last_n_games=40)
+        as_of_date=date(2026,9,20),observed_before=datetime(2026,9,20,tzinfo=timezone.utc),last_n_games=40)
     sql,args=PropQueryBuilder.build(params)
     dsn=os.environ['SPORTSBET_TEST_DATABASE_URL'].replace('postgresql+psycopg://','postgresql://')
 

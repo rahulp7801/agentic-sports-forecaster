@@ -1,6 +1,14 @@
 """Shared identity for the model evaluated by scans and published metrics."""
 
 MODEL_VERSION = 'empirical-jeffreys-v4'
+CFB_MODEL_VERSION = 'empirical-jeffreys-v4-cfb-history-v1'
+CFB_HISTORY_POLICY = 'cfb-explicit-receiving-v1'
+CFB_HISTORY_FROZEN_AT = '2026-09-29T04:15:00+00:00'
+
+
+def model_version_for(sport: str) -> str:
+    return CFB_MODEL_VERSION if sport == 'cfb' else MODEL_VERSION
+
 
 PROP_MARKETS = {
     'nba': {'player_points': 'points', 'player_rebounds': 'rebounds',
@@ -18,4 +26,19 @@ QUOTE_PROVENANCE_MODEL_VERSIONS = frozenset({
     'empirical-v2',
     'empirical-jeffreys-v3',
     'empirical-jeffreys-v4',
+    CFB_MODEL_VERSION,
 })
+
+
+def forecast_version_valid(payload: dict, captured) -> bool:
+    from datetime import datetime
+    version = payload.get('model_version')
+    if payload.get('sport') != 'cfb':
+        return version == MODEL_VERSION
+    cutoff = datetime.fromisoformat(CFB_HISTORY_FROZEN_AT)
+    if captured.utcoffset() is None:
+        return False
+    if version == MODEL_VERSION:
+        return True  # Retained v4 picks remain valid, including deployment overlap.
+    return (version == CFB_MODEL_VERSION and captured >= cutoff
+        and payload.get('history_policy_version') == CFB_HISTORY_POLICY)

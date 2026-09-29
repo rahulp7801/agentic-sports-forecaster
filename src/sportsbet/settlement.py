@@ -136,7 +136,7 @@ def _actual(db, prediction: dict, sport: str, day: str, game: dict):
             raise ValueError('Invalid CFB game identity')
         fields=STAT_FIELDS['cfb']
         query=f'''SELECT {','.join(fields)},source_provider,source_sha256,
-            source_record_sha256,source_observed_at FROM cfb_player_gamelogs
+            source_record_sha256,source_observed_at,supplement_manifest FROM cfb_effective_gamelogs
             WHERE athlete_id=? AND game_id=?'''
         # ESPN's slate date is in Eastern time; the source row can use the UTC date.
         # Exact event and athlete IDs carry identity across that midnight boundary.
@@ -174,8 +174,9 @@ def _actual(db, prediction: dict, sport: str, day: str, game: dict):
     value=Decimal(str(record[column]))
     if not value.is_finite() or (sport=='nba' and value < 0):
         raise ValueError('Invalid observed stat')
-    provider,digest,record_digest,observed=rows[0][len(fields):]
-    expected={'nba':{'nba','espn'},'nfl':{'nflverse'},'cfb':{'sportsdataverse_espn'}}[sport]
+    provider,digest,record_digest,observed=rows[0][len(fields):len(fields)+4]
+    supplement=rows[0][len(fields)+4] if sport=='cfb' else None
+    expected={'nba':{'nba','espn'},'nfl':{'nflverse'},'cfb':{'sportsdataverse_espn','sportsdataverse_espn_supplement'}}[sport]
     if (provider not in expected or not isinstance(digest,str) or not re.fullmatch('[0-9a-f]{64}',digest)
             or not isinstance(record_digest,str) or not re.fullmatch('[0-9a-f]{64}',record_digest)):
         raise StatProvenanceError('Invalid stat source')
@@ -198,8 +199,12 @@ def _actual(db, prediction: dict, sport: str, day: str, game: dict):
         raise StatProvenanceError('Invalid stat observation time') from None
     evidence_record={key:(record[key].isoformat() if isinstance(record[key],(date,datetime)) else record[key])
         for key in evidence_fields}
+    if provider=='sportsdataverse_espn_supplement':
+        from sportsbet.ingestion.cfb_supplement_proof import valid_supplement
+        if not valid_supplement(evidence_record,supplement,digest,observed,game['game_time']):
+            raise StatProvenanceError('Invalid composite CFB evidence')
     return value,dict(provider=provider,sha256=digest,record_sha256=record_digest,
-        observed_at=observed,record=evidence_record)
+        observed_at=observed,record=evidence_record,**({'supplement_manifest':supplement} if supplement else {}))
 
 
 def settle_final_props(ledger: Ledger, sport: str, schedule: dict) -> dict:
@@ -272,6 +277,8 @@ def settle_final_props(ledger: Ledger, sport: str, schedule: dict) -> dict:
             stat_provider=provenance['provider'],stat_source_sha256=provenance['sha256'],
             stat_record_sha256=provenance['record_sha256'],
             stat_observed_at=provenance['observed_at'].isoformat(),stat_row=provenance['record'])
+        if provenance.get('supplement_manifest') is not None:
+            evidence['stat_supplement_manifest']=provenance['supplement_manifest']
         digest=hashlib.sha256(json.dumps(evidence,sort_keys=True,separators=(',',':')).encode()).hexdigest()
         reference=f"espn_schedule+{provenance['provider']}:{game['provider_event_id']}:sha256:{digest}"
         observed_at=max(schedule_observed,provenance['observed_at'])

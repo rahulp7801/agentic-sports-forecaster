@@ -313,6 +313,7 @@ def test_cfb_settlement_uses_exact_espn_game_and_source_backed_stat(tmp_path,gam
             team_name TEXT,team_abbreviation TEXT,opponent_id INTEGER,opponent_name TEXT,
             opponent_abbreviation TEXT,source_provider TEXT,source_sha256 TEXT,
             source_record_sha256 TEXT,source_observed_at TEXT)''')
+        db.execute('CREATE VIEW cfb_effective_gamelogs AS SELECT *,NULL AS supplement_manifest FROM cfb_player_gamelogs')
         db.execute('INSERT INTO cfb_player_gamelogs VALUES ('+','.join('?' for _ in range(21))+')',
             (*row.values(),'sportsdataverse_espn','a'*64,row_sha256(row),
             datetime.now(timezone.utc).isoformat()))
@@ -342,6 +343,7 @@ def test_cfb_settlement_rejects_wrong_game_or_team(tmp_path):
             team_name TEXT,team_abbreviation TEXT,opponent_id INTEGER,opponent_name TEXT,
             opponent_abbreviation TEXT,source_provider TEXT,source_sha256 TEXT,
             source_record_sha256 TEXT,source_observed_at TEXT)''')
+        db.execute('CREATE VIEW cfb_effective_gamelogs AS SELECT *,NULL AS supplement_manifest FROM cfb_player_gamelogs')
     assert settle_final_props(ledger,'cfb',game)['reasons']=={'stat_not_found_or_ambiguous':1}
     game['games'][0]['provider_event_id']='bad-game-id'
     assert settle_final_props(ledger,'cfb',game)['reasons']=={'invalid_prediction_or_evidence':1}
