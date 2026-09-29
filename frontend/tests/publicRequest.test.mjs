@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {publicRequest} from '../lib/publicRequest.ts';
+import {gameLogRequest} from '../lib/publicGameLogs.ts';
 const request=(path,method='GET',headers={})=>({url:'https://example.test'+path,method,headers:new Headers(headers)});
 test('API boundary rejects mutation, ambiguous query values, excess input and foreign browser reads',()=>{
   for(const method of ['POST','PUT','PATCH','DELETE','TRACE','OPTIONS']) assert.equal(publicRequest(request('/api/signals',method)),405);
@@ -19,4 +20,17 @@ test('ordinary API queries and a forged prefetch header still use the same bound
   assert.equal(publicRequest(request('/api/signals?x=1','GET',{'next-router-prefetch':'1'})),400);
   assert.equal(publicRequest(request('/api/scans','GET',{'sec-fetch-site':'same-origin',origin:'https://example.test'})),null);
   assert.equal(publicRequest(request('/terminal?readiness=1')),null);
+});
+
+test('identity-bound history requests pass the outer boundary and inner validation together',()=>{
+  for(const [sport,id] of [['nfl','00-0000001'],['nba','1630639'],['cfb','201']]) {
+    const params=new URLSearchParams({sport,player_id:id,player:'Renamed Player',exact:'1',before:'2026-09-27',limit:'20'});
+    const req=request('/api/gamelogs?'+params);
+    assert.equal(publicRequest(req),null);
+    assert.equal(gameLogRequest(new URL(req.url).searchParams).playerId,id);
+    assert.equal(publicRequest(request('/api/gamelogs?'+params+'&player_id='+id)),400);
+  }
+  assert.equal(publicRequest(request('/api/gamelogs?player_id='+ '1'.repeat(129))),400);
+  assert.equal(publicRequest(request('/api/signals?player_id=201')),400);
+  assert.throws(()=>gameLogRequest(new URLSearchParams({sport:'nfl',player_id:"1' OR 1=1"})));
 });
