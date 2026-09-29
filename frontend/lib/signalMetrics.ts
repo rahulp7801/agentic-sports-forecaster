@@ -5,6 +5,9 @@ const CURRENT_MODEL_VERSION = 'empirical-jeffreys-v4';
 const CFB_MODEL_VERSION = 'empirical-jeffreys-v4-cfb-history-v1';
 const CFB_HISTORY_POLICY = 'cfb-explicit-receiving-v1';
 const CFB_HISTORY_FROZEN_AT = Date.parse('2026-09-29T04:15:00+00:00');
+const NFL_MODEL_VERSION = 'empirical-jeffreys-v4-nfl-history-v1';
+const NFL_HISTORY_POLICY = 'nfl-explicit-receiving-v1';
+const NFL_HISTORY_FROZEN_AT = Date.parse('2026-09-29T05:45:00+00:00');
 
 /** Validate display metrics without inventing uncertainty or execution eligibility. */
 export function expectedProfit(expectedReturn: unknown, stake: number): number | null {
@@ -25,7 +28,11 @@ export function signalMetrics(s: Record<string, unknown>, now = Date.now(), reta
     ? retained && s.model_version===CURRENT_MODEL_VERSION ? false
       : now < CFB_HISTORY_FROZEN_AT ? s.model_version!==CURRENT_MODEL_VERSION
       : s.model_version!==CFB_MODEL_VERSION || s.history_policy_version!==CFB_HISTORY_POLICY
-    : s.model_version!==CURRENT_MODEL_VERSION;
+    : s.sport==='nfl'
+      ? retained && s.model_version===CURRENT_MODEL_VERSION ? false
+        : now < NFL_HISTORY_FROZEN_AT ? s.model_version!==CURRENT_MODEL_VERSION
+        : s.model_version!==NFL_MODEL_VERSION || s.history_policy_version!==NFL_HISTORY_POLICY
+      : s.model_version!==CURRENT_MODEL_VERSION;
   const stale = !Number.isFinite(quoteTime) || now - quoteTime > 300000 || quoteTime > now + 60000;
   const missingStart = !Number.isFinite(start), started = Number.isFinite(start) && start <= now;
   const availability = s.availability as AvailabilityEvidence | undefined;
@@ -287,6 +294,8 @@ export function publicSignal(value:unknown, now=Date.now(), retained=false):EVSi
     confidence_interval:interval,model_version:s.model_version,game_start_time:s.game_start_time,
     ...(s.sport==='cfb' && s.model_version===CFB_MODEL_VERSION && s.history_policy_version===CFB_HISTORY_POLICY
       ? {history_policy_version:CFB_HISTORY_POLICY} : {}),
+    ...(s.sport==='nfl' && s.model_version===NFL_MODEL_VERSION && s.history_policy_version===NFL_HISTORY_POLICY
+      ? {history_policy_version:NFL_HISTORY_POLICY} : {}),
     kelly_fraction:metrics.kelly_fraction as number,american_odds:s.american_odds,
     sportsbook:s.sportsbook,
     // Preserve stored forecasts, but withhold the obsolete generated claim of exact on/off evidence.

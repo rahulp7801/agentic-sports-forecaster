@@ -54,7 +54,7 @@ def test_browser_role_migration_closes_owner_view_and_preserves_data():
                               'public.provider_response_cache', 'public.ngs_stats',
                               'public.cfb_history_source_bundles', 'public.cfb_receiving_supplements',
                               'public.cfb_effective_gamelogs', 'public.nfl_history_source_bundles',
-                              'public.nfl_receiving_supplements'):
+                              'public.nfl_receiving_supplements', 'public.nfl_effective_receiving_gamelogs'):
                     assert not conn.execute(sa.text("SELECT has_table_privilege(:role,:table,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE')"),
                                             {'role': role, 'table': table}).scalar_one()
         for role in ('anon', 'authenticated'):

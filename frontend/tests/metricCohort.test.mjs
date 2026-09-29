@@ -38,3 +38,9 @@ test('CFB metrics select their own published and local model cohort',()=>{
       '--sport','cfb','--model-version','empirical-jeffreys-v4-cfb-history-v1']);
   }
 });
+
+
+test('NFL metrics select the corrected-history cohort',()=>{
+  assert.deepEqual(metricLedgerArgs('all','nfl'),['-m','sportsbet.ledger','--sport','nfl',
+    '--model-version','empirical-jeffreys-v4-nfl-history-v1']);
+});

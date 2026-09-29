@@ -18,7 +18,7 @@ from sportsbet.db.connection import create_async_pool
 from sportsbet.graph.graph import create_graph
 from sportsbet.ingestion.prop_odds import PlayerPropSnapshotCreate, parse_event_quotes, write_player_prop_snapshots
 from sportsbet.ledger import Ledger
-from sportsbet.model_contract import MODEL_VERSION, model_version_for, CFB_HISTORY_POLICY
+from sportsbet.model_contract import MODEL_VERSION, model_version_for, history_policy_for
 from sportsbet.prop.agents import make_prop_quant_agent
 from sportsbet.prop.availability import (blocks_unadjusted_teammate_context,
                                          fetch_event_availability, player_availability, nfl_roster_history_bindings)
@@ -512,8 +512,8 @@ async def evaluate_event(pool, event: dict, sport: str, ledger: Ledger, scan_id:
             quote_time=quote.snapped_at.isoformat(),model_generated_at=now.isoformat(),
             quote_source_provider=quote.source_provider,quote_source_sha256=quote.source_sha256,
             quote_source_record_sha256=quote.source_record_sha256,accepted=accepted,gate_reason=reason,
-            stake_fraction=float(signal.kelly_fraction) if accepted else 0,model_version=model_version_for(sport),
-            **({'history_policy_version':CFB_HISTORY_POLICY,'history_observed_before':selection_time.isoformat()} if sport=='cfb' else {}),
+            stake_fraction=float(signal.kelly_fraction) if accepted else 0,model_version=model_version_for(sport, selection_time),
+            **({'history_policy_version':history_policy_for(sport),'history_observed_before':selection_time.isoformat()} if sport in ('cfb','nfl') else {}),
             recommendation_policy_version=RECOMMENDATION_POLICY_VERSION,
             **paired_market_baseline(quote, quotes))
         if player in identity_evidence:
@@ -552,8 +552,8 @@ async def evaluate_event(pool, event: dict, sport: str, ledger: Ledger, scan_id:
                 sportsbook=quote.sportsbook,american_odds=quote.price,snapped_at=quote.snapped_at.isoformat(),
                 game_start_time=start.isoformat(),sample_size=prop.sample_size,mean_stat=float(prop.mean_stat) if prop.mean_stat is not None else None,
                 confidence_interval=[float(x) for x in model_interval] if model_interval else None,
-                model_version=model_version_for(sport),
-                **({'history_policy_version':CFB_HISTORY_POLICY} if sport=='cfb' else {}),strength='unrated',trade_plan=trade_plan,injury_flags={},market_type=market,
+                model_version=model_version_for(sport, selection_time),
+                **({'history_policy_version':history_policy_for(sport)} if sport in ('cfb','nfl') else {}),strength='unrated',trade_plan=trade_plan,injury_flags={},market_type=market,
                 availability=availability_evidence,forecast_cutoff=game_date.isoformat(),
                 **({'next_gen_stats':ngs_evidence} if ngs_evidence else {}))
             payload.update(availability=availability_evidence,trade_plan=trade_plan,

@@ -12,14 +12,14 @@ from pathlib import Path
 from decimal import Decimal
 from sportsbet.graph.models import EVSignal, QuantResult
 from sportsbet.model_contract import (MODEL_VERSION, PROP_MARKETS, QUOTE_PROVENANCE_MODEL_VERSIONS,
-    CFB_MODEL_VERSION, forecast_version_valid)
+    CFB_MODEL_VERSION, NFL_MODEL_VERSION, forecast_version_valid)
 from sportsbet.quant.backtest import BacktestSignal, BacktestEngine
 
 DEFAULT_PATH = Path('.checkpoints/analytics.sqlite')
 MAX_RECOMMENDATION_FRACTION = Decimal('0.05')
 VERIFIED_SETTLEMENT_SOURCE = 'observed_final_stats'
 SETTLEMENT_REF = re.compile(
-    r'^espn_schedule\+(nba|espn|nflverse|sportsdataverse_espn|sportsdataverse_espn_supplement):([^:]{1,80}):sha256:([0-9a-f]{64})$')
+    r'^espn_schedule\+(nba|espn|nflverse|nflverse_espn_supplement|sportsdataverse_espn|sportsdataverse_espn_supplement):([^:]{1,80}):sha256:([0-9a-f]{64})$')
 STAT_COLUMNS = {
     'nba': {'points': 'points', 'rebounds': 'rebounds', 'assists': 'assists'},
     'nfl': {'pass_yds': 'passing_yards', 'rush_yds': 'rushing_yards',
@@ -132,12 +132,12 @@ def quote_evidence_valid(payload: dict) -> bool:
         from sportsbet.ingestion.prop_odds import PlayerPropSnapshotCreate, prop_quote_evidence_valid
         from sportsbet.quant.vig import american_to_raw_prob
         sport=payload['sport']
-        if payload.get('model_version') == CFB_MODEL_VERSION:
+        if payload.get('model_version') in (CFB_MODEL_VERSION, NFL_MODEL_VERSION):
             captured=utc_timestamp(payload['captured_at'])
             generated=utc_timestamp(payload['model_generated_at'])
             history_cutoff=utc_timestamp(payload['history_observed_before'])
             if (not forecast_version_valid(payload,history_cutoff)
-                    or sport!='cfb' or not history_cutoff<=generated<=captured):
+                    or sport not in ('cfb','nfl') or not history_cutoff<=generated<=captured):
                 return False
         markets=PROP_MARKETS[sport]
         provider_markets=[market for market,prop in markets.items() if prop==payload['prop_type']]
@@ -204,6 +204,11 @@ def verified_settlement_evidence(payload: dict, outcome, source, source_ref,
             from sportsbet.ingestion.cfb_supplement_proof import valid_supplement
             if sport!='cfb' or not valid_supplement(row,proof.get('stat_supplement_manifest'),
                     proof['stat_source_sha256'],proof['stat_observed_at'],proof['game_time']):
+                return False
+        if proof['stat_provider']=='nflverse_espn_supplement':
+            from sportsbet.ingestion.nfl_supplement_proof import valid_supplement
+            if sport!='nfl' or not valid_supplement(row,proof.get('stat_supplement_manifest'),
+                    proof['stat_source_sha256'],proof['stat_observed_at'],proof):
                 return False
         actual = Decimal(str(actual_value))
         if (not actual.is_finite() or actual != Decimal(str(proof['actual_value']))
