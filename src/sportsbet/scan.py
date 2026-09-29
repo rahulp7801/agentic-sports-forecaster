@@ -603,6 +603,9 @@ async def evaluate_event(pool, event: dict, sport: str, ledger: Ledger, scan_id:
     from sportsbet.quant.cross_book_paper import record as record_paper
     await record_paper(pool,[dict(payload,prediction_id=key) for key,(payload,_)
         in zip(prediction_ids,audited,strict=True)],sport)
+    from sportsbet.quant.model_selection_paper import record as record_model_paper
+    await record_model_paper(pool,[dict(payload,prediction_id=key) for key,(payload,_)
+        in zip(prediction_ids,audited,strict=True)],sport)
     estimates=counts['evaluated_selections']
     model_status=('no_quotes' if not selections else 'unavailable' if not prepared or not estimates
         else 'complete' if len(prepared)==len(selections) and estimates==len(prepared) else 'partial')
