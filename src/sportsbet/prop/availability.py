@@ -181,9 +181,11 @@ async def fetch_event_availability(event: dict, sport: str, *, player_names: set
                 injury_url = base+'/injuries' if groups else roster_url
                 result.append(dict(name=team['displayName'], abbreviation=team['abbreviation'],
                                    portraits={athlete['displayName']:dict(player_id=str(athlete.get('id','')),
-                                       jersey=str(athlete.get('jersey','')),position=athlete.get('position',{}).get('abbreviation',''),
+                                       jersey=str(athlete.get('jersey','')),position=(athlete['position'].get('abbreviation','')
+                                           if isinstance(athlete.get('position'),dict) else ''),
                                        player_image_url=athlete.get('headshot',{}).get('href','')) for athlete in athletes
-                                       if str(athlete.get('id','')).isdigit() and athlete.get('headshot',{}).get('href')==
+                                       if str(athlete.get('id','')).isdigit() and isinstance(athlete.get('headshot'),dict)
+                                       and athlete['headshot'].get('href')==
                                        f"https://a.espncdn.com/i/headshots/{'college-football' if sport=='cfb' else sport}/players/full/{athlete['id']}.png"},
                                    roster_names=names, roster_statuses={athlete['displayName']:
                                        athlete.get('status',{}).get('name','Unknown') for athlete in athletes},reports=flags,

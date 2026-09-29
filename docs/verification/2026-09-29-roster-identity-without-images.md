@@ -8,7 +8,7 @@ The public projection also returned an athlete ID only alongside an exact image 
 
 ## Change and boundaries
 
-Derive the optional ESPN athlete ID from a unique exact roster-name/ID binding with the expected sport-specific roster URL and SHA-256 commitment. Keep the ID when the photo is absent. If a portrait points to another athlete, omit the image and retain the roster-bound identity. Public projection independently validates numeric IDs and exact ESPN image URLs.
+Derive the optional ESPN athlete ID from a unique exact roster-name/ID binding with the expected sport-specific roster URL and SHA-256 commitment. Keep the ID when the photo is absent. Missing, null or malformed optional photo metadata cannot make the entire roster response unavailable. If a portrait points to another athlete, omit the image and retain the roster-bound identity. Public projection independently validates numeric IDs and exact ESPN image URLs.
 
 Existing roster freshness, subject and teammate gates, probability estimates and stake thresholds remain unchanged. This repairs the input producer; the frozen recent-role model, source artifact, receipt verifier and evaluator remain unchanged. No historical captures are recreated and no missing image is synthesized or fetched. No paid collection, budget, reserve or workflow changes; PR #194 remains excluded.
 

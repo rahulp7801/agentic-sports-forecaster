@@ -47,7 +47,7 @@ def test_only_confirmed_acute_teammate_absences_block_the_baseline():
 
 
 @pytest.mark.parametrize('sport,missing_team',[('nfl',False),('nba',False),('nba',True),('cfb',False),('cfb',True)])
-@pytest.mark.parametrize('photo',[True,False])
+@pytest.mark.parametrize('photo',[True,False,None,'invalid'])
 async def test_exact_team_rosters_and_archived_response_hashes(sport,missing_team,photo,tmp_path,monkeypatch):
     monkeypatch.chdir(tmp_path)
     now=datetime.now(timezone.utc).isoformat()
@@ -65,7 +65,10 @@ async def test_exact_team_rosters_and_archived_response_hashes(sport,missing_tea
             body['team']=dict(id=identity)
             image_sport='college-football' if sport=='cfb' else sport
             athletes=[dict(id='123',headshot={'href':f'https://a.espncdn.com/i/headshots/{image_sport}/players/full/123.png'},displayName='Player' if identity=='1' else 'Opponent',status={'name':'Active'})]
-            if not photo:athletes[0].pop('headshot')
+            if photo is False:athletes[0].pop('headshot')
+            elif photo is None:athletes[0]['headshot']=None
+            elif photo=='invalid':athletes[0]['headshot']='not-an-object'
+            athletes[0]['position']=None  # Optional presentation metadata may be absent.
             body['athletes']=[dict(items=athletes)] if sport in ('nfl','cfb') else athletes
         return httpx.Response(200,json=body)
     original=httpx.AsyncClient
@@ -76,7 +79,7 @@ async def test_exact_team_rosters_and_archived_response_hashes(sport,missing_tea
         image_sport='college-football' if sport=='cfb' else sport
         evidence=player_availability(result,'Player',datetime.now(timezone.utc),sport=sport)[0]
         assert evidence['player_id']=='123'
-        if photo:assert evidence['player_image_url']==f'https://a.espncdn.com/i/headshots/{image_sport}/players/full/123.png'
+        if photo is True:assert evidence['player_image_url']==f'https://a.espncdn.com/i/headshots/{image_sport}/players/full/123.png'
         else:assert 'player_image_url' not in evidence
         assert player_availability(result,'Opponent',datetime.now(timezone.utc))[0]['status']==('unavailable' if missing_team else 'observed')
         assert len(list((tmp_path/'.local/availability').glob('*.json')))==1
