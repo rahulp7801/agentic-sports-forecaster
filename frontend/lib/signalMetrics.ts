@@ -1,3 +1,4 @@
+import {validPlayerId} from './publicGameLogs.ts';
 import type {AvailabilityContextSplit,AvailabilityEvidence,EVSignal,ModelSport,NextGenMetric,NextGenStatsEvidence,PlayerProfile,PropType,Sport} from './types';
 
 const CURRENT_MODEL_VERSION = 'empirical-jeffreys-v4';
@@ -272,7 +273,7 @@ export function publicSignal(value:unknown, now=Date.now()):EVSignal|null {
       || (metrics.expected_return !== null && !finite(metrics.expected_return))) return null;
   const gateReason=typeof metrics.gate_reason === 'string' ? metrics.gate_reason : undefined;
   const interval=metrics.confidence_interval as [number,number]|null;
-  return {id:s.id,player:s.player,team:s.team,opponent:s.opponent,home_team:s.home_team,
+  return {id:s.id,player:s.player,...(validPlayerId(s.player_id,sport) ? {player_id:s.player_id} : {}),team:s.team,opponent:s.opponent,home_team:s.home_team,
     away_team:s.away_team,sport,prop_type:prop,line:s.line as number,direction:s.direction,
     true_prob:s.true_prob,implied_prob:metrics.implied_prob as number,ev_pct:metrics.ev_pct as number,
     expected_return:metrics.expected_return as number|null,push_probability:s.push_probability,

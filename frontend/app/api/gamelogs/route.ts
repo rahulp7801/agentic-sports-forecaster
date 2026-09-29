@@ -11,14 +11,15 @@ export async function GET(request: Request) {
   try {query=gameLogRequest(new URL(request.url).searchParams);} catch {
     return NextResponse.json({error:'Invalid game-log request'}, {status:400,headers:NO_STORE_HEADERS});
   }
-  const {sport,player,limit,before,exact}=query;
+  const {sport,player,limit,before,exact,playerId}=query;
   let validatingRows=false;
   try {
     const {rows} = await databaseQuery<{payload: unknown}>(
       'SELECT payload FROM dashboard_gamelogs WHERE sport=$1 '
-      + 'AND ($2=\'\' OR CASE WHEN $5 THEN lower(player_name)=lower($2) ELSE strpos(lower(player_name),lower($2))>0 END) '
+      + 'AND ($6::text IS NULL OR player_id=$6) '
+      + 'AND ($6::text IS NOT NULL OR $2=\'\' OR CASE WHEN $5 THEN lower(player_name)=lower($2) ELSE strpos(lower(player_name),lower($2))>0 END) '
       + 'AND ($4::date IS NULL OR game_date<$4::date) '
-      + 'ORDER BY game_date DESC,player_name,game_key LIMIT $3', [sport,player,limit,before,exact],'gamelogs');
+      + 'ORDER BY game_date DESC,player_name,game_key LIMIT $3', [sport,player,limit,before,exact,playerId ?? null],'gamelogs');
     validatingRows=true;
     return NextResponse.json({logs:publicGameLogs(rows.map(row=>row.payload),sport)},
       {headers:PUBLIC_CACHE_HEADERS.archive});

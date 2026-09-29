@@ -28,3 +28,17 @@ test('college-football game-log requests retain exact player lookup',()=>{
   const request=gameLogRequest(new URLSearchParams({sport:'cfb',player:'A.J. Player',exact:'1',limit:'20'}));
   assert.deepEqual(request,{sport:'cfb',player:'A.J. Player',limit:20,exact:true,before:null});
 });
+
+
+test('stable IDs are sport-bound public fields and bounded query parameters',()=>{
+  const base={date:'2026-09-20',player:'Player',team:'BUF',opponent:'DET'};
+  for(const [sport,id] of [['nfl','00-0000001'],['nba','2544'],['cfb','4430807']]) {
+    assert.equal(publicGameLogs([{...base,player_id:id,private_key:'hidden'}],sport)[0].player_id,id);
+    const q=gameLogRequest(new URLSearchParams({sport,player_id:id,exact:'1'}));
+    assert.equal(q.playerId,id);assert.equal(q.exact,true);
+  }
+  for(const id of ['',"00-0000001' OR 1=1",'2544',' 00-0000001','00-1'])
+    assert.throws(()=>gameLogRequest(new URLSearchParams({sport:'nfl',player_id:id})));
+  assert.throws(()=>publicGameLogs([{...base,player_id:'00-0000001'}],'cfb'));
+  assert.throws(()=>publicGameLogs([{...base,player_id:2544}],'nba'));
+});

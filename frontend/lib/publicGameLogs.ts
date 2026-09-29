@@ -9,6 +9,11 @@ const STATS = {
 const NONNEGATIVE = new Set(['points','rebounds','assists','threes','steals','blocks','minutes',
   'pass_tds','receptions']);
 
+export function validPlayerId(value:unknown,sport:ModelSport):value is string {
+  return typeof value==='string' && (sport==='nfl' ? /^00-\d{7}$/.test(value)
+    : /^[1-9]\d{0,14}$/.test(value));
+}
+
 function row(value: unknown): Row {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid game log');
   return value as Row;
@@ -37,6 +42,10 @@ function gameLog(value: unknown, sport: ModelSport) {
   }
   const result:Row={date:date(source.date),player:text(source.player,100),team:text(source.team,20),
     opponent:text(source.opponent,20)};
+  if(source.player_id!==undefined) {
+    if(!validPlayerId(source.player_id,sport)) throw new Error('Invalid player identity');
+    result.player_id=source.player_id;
+  }
   if (typeof source.is_home === 'boolean') result.is_home=source.is_home;
   for (const key of STATS[sport]) {
     const value=source[key];
@@ -62,10 +71,12 @@ export function gameLogRequest(params:URLSearchParams) {
   const limit=params.get('limit') ?? '40';
   const exact=params.get('exact') ?? '0';
   const before=params.get('before');
+  const playerId=params.get('player_id');
   if(!['nba','nfl','cfb'].includes(sport) || rawPlayer!==player || player.normalize('NFC')!==player
     || (player!=='' && !/^[\p{L}\p{M}.'’ -]{1,80}$/u.test(player))
     || !/^[0-9]{1,3}$/.test(limit) || Number(limit)<1 || Number(limit)>200 || !['0','1'].includes(exact)
-    || (exact==='1' && !player)) throw new Error('Invalid game-log request');
+    || (exact==='1' && !player && !playerId)
+    || (playerId!==null && !validPlayerId(playerId,sport as ModelSport))) throw new Error('Invalid game-log request');
   return {sport:sport as ModelSport,player,limit:Number(limit),exact:exact==='1',
-    before:before===null ? null : date(before)};
+    before:before===null ? null : date(before),...(playerId!==null ? {playerId} : {})};
 }

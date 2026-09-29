@@ -403,3 +403,46 @@ def test_verified_settlement_evidence_constraint_preserves_legacy_rows() -> None
         assert 'outcome_evidence' not in {
             column['name'] for column in sa.inspect(engine).get_columns('predictions',schema='analytics')}
     engine.dispose();alembic.command.downgrade(cfg,'base')
+
+
+@pytest.mark.serial
+@pytest.mark.skipif(not os.environ.get('SPORTSBET_TEST_DATABASE_URL'), reason='Disposable database required')
+def test_gamelog_identity_view_preserves_rows_and_security_on_upgrade_and_downgrade():
+    url=os.environ['SPORTSBET_TEST_DATABASE_URL'];cfg=get_alembic_cfg(url)
+    alembic.command.upgrade(cfg,'0029_ngs_evidence');engine=sa.create_engine(url)
+    with engine.begin() as conn:
+        for player,points in [(101,9),(102,30)]:
+            conn.execute(sa.text("""INSERT INTO nba_player_gamelogs
+                (player_id,game_id,season,game_date,player_name,team_abbreviation,opponent_team,points,
+                 source_provider,source_sha256,source_record_sha256,source_observed_at)
+                VALUES (:player,'same-game',2025,'2026-01-01','Same Name','BOS','NYK',:points,
+                    'nba',repeat('a',64),repeat('b',64),NOW())"""),dict(player=player,points=points))
+        conn.execute(sa.text("INSERT INTO games(game_id,season,week,home_team,away_team,game_date) VALUES ('id-game',2026,1,'BUF','NYJ','2026-09-10')"))
+        conn.execute(sa.text("""INSERT INTO player_stats(player_id,player_name,season,week,team,receptions,
+            source_provider,source_sha256,source_record_sha256,source_observed_at)
+            VALUES ('00-0000001','NFL Player',2026,1,'BUF',4,'nflverse',repeat('a',64),repeat('b',64),NOW())"""))
+        conn.execute(sa.text("""INSERT INTO cfb_player_gamelogs(athlete_id,game_id,season,week,game_date,
+            player_name,team_id,team_name,team_abbreviation,opponent_id,opponent_name,opponent_abbreviation,
+            is_home,receiving_yards,source_provider,source_sha256,source_player_sha256,source_schedule_sha256,
+            source_record_sha256,source_observed_at)
+            VALUES (201,'cfb-game',2026,1,'2026-09-10','CFB Player',1,'Home','HOM',2,'Away','AWY',true,50,
+                'sportsdataverse_espn',repeat('a',64),repeat('b',64),repeat('c',64),repeat('d',64),NOW())"""))
+    try:
+        alembic.command.upgrade(cfg,'head')
+        with engine.connect() as conn:
+            rows=conn.execute(sa.text('SELECT sport,player_id,payload FROM dashboard_gamelogs ORDER BY sport,player_id')).all()
+            assert len(rows)==4
+            assert all(payload['player_id']==player for _,player,payload in rows)
+            assert conn.execute(sa.text("SELECT payload->>'points' FROM dashboard_gamelogs WHERE sport='nba' AND player_id='101'")).scalar_one()=='9'
+            assert conn.execute(sa.text("SELECT reloptions FROM pg_class WHERE oid='public.dashboard_gamelogs'::regclass")).scalar_one()==['security_barrier=true']
+            assert not conn.execute(sa.text("SELECT EXISTS(SELECT 1 FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a WHERE c.oid='public.dashboard_gamelogs'::regclass AND a.grantee=0)")).scalar_one()
+        alembic.command.downgrade(cfg,'0029_ngs_evidence')
+        with engine.connect() as conn:
+            assert conn.execute(sa.text('SELECT count(*) FROM dashboard_gamelogs')).scalar_one()==4
+            assert 'player_id' not in {c['name'] for c in sa.inspect(conn).get_columns('dashboard_gamelogs')}
+            assert all('player_id' not in row[0] for row in conn.execute(sa.text('SELECT payload FROM dashboard_gamelogs')))
+        alembic.command.upgrade(cfg,'head')
+        with engine.connect() as conn:
+            assert conn.execute(sa.text('SELECT count(*) FROM dashboard_gamelogs WHERE player_id IS NOT NULL')).scalar_one()==4
+    finally:
+        engine.dispose();alembic.command.downgrade(cfg,'base')

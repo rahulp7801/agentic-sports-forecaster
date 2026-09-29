@@ -1,5 +1,5 @@
 import type {EVSignal} from './types';
-import {publicGameLogs} from './publicGameLogs.ts';
+import {publicGameLogs,validPlayerId} from './publicGameLogs.ts';
 
 /** Descriptive outcomes at this line, never a betting replay or a new forecast. */
 export function historyCutoff(signal:EVSignal) {
@@ -15,8 +15,12 @@ export function historyCutoff(signal:EVSignal) {
 export function forecastHistory(value:unknown,signal:EVSignal,count=20) {
   if(!Number.isSafeInteger(count) || count<1 || count>200) throw new Error('Invalid history window');
   const cutoff=historyCutoff(signal);
-  const logs=publicGameLogs(value,signal.sport)
-    .filter(row=>String(row.player).toLowerCase()===signal.player.toLowerCase() && String(row.date)<cutoff)
+  if(signal.player_id!==undefined && !validPlayerId(signal.player_id,signal.sport)) throw new Error('Invalid forecast identity');
+  const validated=publicGameLogs(value,signal.sport);
+  if(!signal.player_id && validated.some(row=>row.player_id!==undefined
+    && String(row.player).toLowerCase()===signal.player.toLowerCase())) throw new Error('Stable forecast identity unavailable');
+  const logs=validated
+    .filter(row=>(signal.player_id ? row.player_id===signal.player_id : String(row.player).toLowerCase()===signal.player.toLowerCase()) && String(row.date)<cutoff)
     .sort((a,b)=>String(b.date).localeCompare(String(a.date))).slice(0,count);
   let wins=0,losses=0,ties=0,missing=0,sum=0;
   const seen=new Set<string>();
@@ -39,4 +43,25 @@ export function forecastHistory(value:unknown,signal:EVSignal,count=20) {
   });
   return {rows,wins,losses,ties,missing,decided:wins+losses,rate:wins+losses ? wins/(wins+losses) : null,
     mean:logs.length-missing ? sum/(logs.length-missing) : null};
+}
+
+/** Disjoint recent windows preserve missing observations instead of replacing them. */
+export function recentForm(value:unknown,signal:EVSignal) {
+  const history=forecastHistory(value,signal,20);
+  const summarize=(rows:typeof history.rows)=>{
+    const known=rows.filter(row=>row.stat!==null);
+    const decided=known.filter(row=>row.outcome!=='Tie');
+    const wins=decided.filter(row=>row.outcome==='Matched direction').length;
+    return {games:rows.length,observed:known.length,missing:rows.length-known.length,
+      mean:known.length ? known.reduce((sum,row)=>sum+row.stat!,0)/known.length : null,
+      wins,decided:decided.length,rate:decided.length ? wins/decided.length : null,
+      newest:rows[0]?.date ?? null,oldest:rows.at(-1)?.date ?? null,
+      teams:[...new Set(rows.map(row=>row.team))]};
+  };
+  const recent=summarize(history.rows.slice(0,5));
+  const previous=summarize(history.rows.slice(5,10));
+  const daysBeforeForecast=recent.newest
+    ? Math.floor((Date.parse(signal.forecast_cutoff!)-Date.parse(recent.newest))/86400000) : null;
+  return {recent,previous,daysBeforeForecast,
+    meanChange:recent.mean!==null && previous.mean!==null ? recent.mean-previous.mean : null};
 }

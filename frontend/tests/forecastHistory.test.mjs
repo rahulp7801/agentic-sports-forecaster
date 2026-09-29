@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {forecastHistory,historyCutoff} from '../lib/forecastHistory.ts';
+import {forecastHistory,historyCutoff,recentForm} from '../lib/forecastHistory.ts';
 import {gameLogRequest} from '../lib/publicGameLogs.ts';
 
 const signal={player:'Player',sport:'nfl',forecast_cutoff:'2026-09-17',snapped_at:'2026-09-17T01:00:00Z',prop_type:'receptions',line:4,direction:'under'};
@@ -38,4 +38,34 @@ test('historical API query bounds exact names, limits and strict calendar cutoff
   assert.equal(parse('limit=200').limit,200);assert.equal(parse('').before,null);
   assert.equal(parse('sport=nba&player=Luka%20Don%C4%8Di%C4%87').player,'Luka Dončić');
   for(const value of ['before=2026-02-31','before=0000-01-01','before=2026-09-17T00:00Z','before=','exact=1','exact=2','limit=Infinity','limit=0','limit=201','limit=999999','sport=mlb','player=A%00B','player=%25','player=%20Player','player=%F0%9F%8F%88']) assert.throws(()=>parse(value));
+});
+
+
+test('stable athlete identity wins over display names without mixing same-name players',()=>{
+  const identified={...signal,player_id:'00-0000001'};
+  const rows=[{...row('2026-09-15',3),player_id:'00-0000002'},
+    {...row('2026-09-15',1,'Renamed Player'),player_id:'00-0000001'}];
+  assert.deepEqual(forecastHistory(rows,identified).rows.map(r=>r.stat),[1]);
+  assert.equal(forecastHistory([row('2026-09-15',3)],identified).rows.length,0);
+  assert.throws(()=>forecastHistory(rows,signal));
+  assert.throws(()=>forecastHistory(rows,{...signal,player_id:'invalid'}));
+});
+
+test('recent form keeps disjoint windows, missing rows, dates and team changes',()=>{
+  const rows=[9,8,7,undefined,5,4,3,2,1,0].map((stat,index)=>({
+    ...row(`2026-09-${String(15-index).padStart(2,'0')}`,stat),team:index===2?'ATL':'BUF'}));
+  const before=structuredClone(rows);const form=recentForm(rows,signal);
+  assert.equal(form.recent.games,5);assert.equal(form.recent.observed,4);assert.equal(form.recent.missing,1);
+  assert.equal(form.recent.mean,7.25);assert.equal(form.previous.mean,2);
+  assert.equal(form.meanChange,5.25);assert.equal(form.previous.decided,4);
+  assert.equal(form.previous.rate,1);assert.equal(form.daysBeforeForecast,2);
+  assert.deepEqual(form.recent.teams,['BUF','ATL']);assert.deepEqual(rows,before);
+});
+
+test('small and offseason history do not imply a full or current sample',()=>{
+  const form=recentForm([row('2026-05-01',undefined)],signal);
+  assert.equal(form.recent.games,1);assert.equal(form.recent.mean,null);
+  assert.equal(form.previous.games,0);assert.equal(form.meanChange,null);
+  assert.ok(form.daysBeforeForecast>30);
+  assert.equal(recentForm([],signal).daysBeforeForecast,null);
 });
