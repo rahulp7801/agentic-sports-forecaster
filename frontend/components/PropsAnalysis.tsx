@@ -65,6 +65,9 @@ function ConfidenceBar({ ci, mean, line }: { ci: [number, number] | null; mean: 
 
 export default function PropsAnalysis({ sport,initialPlayer='' }: PropsAnalysisProps) {
   const [playerFilter, setPlayerFilter] = useState(initialPlayer);
+  const [searchPlayer,setSearchPlayer]=useState(initialPlayer.trim().normalize('NFC'));
+  const canonicalPlayer=playerFilter.trim().normalize('NFC');
+  const validPlayerSearch=canonicalPlayer==='' || /^[\p{L}\p{M}.'\u2019 -]{1,80}$/u.test(canonicalPlayer);
   const [propFilter, setPropFilter] = useState<string>('all');
   const [minEV, setMinEV] = useState(0);
   const [library,setLibrary]=useState<Awaited<ReturnType<typeof fetchForecasts>>|null>(null);
@@ -82,7 +85,7 @@ export default function PropsAnalysis({ sport,initialPlayer='' }: PropsAnalysisP
   const [sort,setSort]=useState('quality');
   const [refresh,setRefresh]=useState(0);
   const [storageNotice,setStorageNotice]=useState('');
-  const coverageNotice=library && !library.complete ? `Showing ${allProps.length} of ${library.total_count} recent forecasts. Search and filters apply to this loaded research window; the qualified shortlist is checked independently.${library.cursor && library.cursor.offset>=1000 ? ' This view is capped at 1,000 archive rows.' : ''}` : '';
+  const coverageNotice=library && library.search_player===canonicalPlayer && !library.complete ? `Showing ${allProps.length} of ${library.total_count} matching forecasts. Other filters apply to these loaded rows; the qualified shortlist is checked independently.${library.cursor && library.cursor.offset>=1000 ? ' This view is capped at 1,000 matching rows. Narrow the player search to find additional records.' : ''}` : '';
   const reduceMotion=useReducedMotion();
   useEffect(()=>{
     const timer=window.setTimeout(()=>{
@@ -108,15 +111,21 @@ export default function PropsAnalysis({ sport,initialPlayer='' }: PropsAnalysisP
     return ()=>{window.clearInterval(timer);window.clearTimeout(initial);};
   },[]);
 
+  useEffect(()=>{
+    if(!validPlayerSearch) return;
+    const timer=window.setTimeout(()=>{setSearchPlayer(canonicalPlayer);setSelectedId(null);},350);
+    return()=>window.clearTimeout(timer);
+  },[canonicalPlayer,validPlayerSearch]);
+
   useEffect(() => {
     const controller = new AbortController();
-    request.current=controller;
+    request.current=controller;busy.current=false;
     const load=async () => {
       if(busy.current || document.visibilityState==='hidden') return;
       busy.current=true;
       setLoading(true);
       try {
-        const body=await fetchForecasts(sport,AbortSignal.any([controller.signal,AbortSignal.timeout(15_000)]),'library',fetch,36);
+        const body=await fetchForecasts(sport,AbortSignal.any([controller.signal,AbortSignal.timeout(15_000)]),'library',fetch,36,undefined,false,searchPlayer);
         if(!controller.signal.aborted) {
           setLibrary(previous=>body.revision && previous?.revision===body.revision && previous.total_count===body.total_count ? {...previous,
             generated_at:body.generated_at,signals:[...new Map([...previous.signals,...body.signals].map(p=>[p.id,p])).values()]} : body);
@@ -125,21 +134,20 @@ export default function PropsAnalysis({ sport,initialPlayer='' }: PropsAnalysisP
       } catch {
         if(!controller.signal.aborted) setError('Refresh unavailable. Previously loaded forecasts remain visible; quote freshness still applies.');
       } finally {
-        busy.current=false;
-        if(!controller.signal.aborted) setLoading(false);
+        if(request.current===controller) {busy.current=false;if(!controller.signal.aborted) setLoading(false);}
       }
     };
     const initial=window.setTimeout(load,0);
     const poll=window.setInterval(load,600_000);
     return () => {window.clearTimeout(initial);window.clearInterval(poll);controller.abort();};
-  }, [sport,refresh]);
+  }, [sport,refresh,searchPlayer]);
 
   async function loadMore() {
     const controller=request.current,cursor=library?.cursor;
     if(!controller || controller.signal.aborted || !cursor || cursor.offset>=1000 || busy.current) return;
     busy.current=true;setLoading(true);
     try {
-      const body=await fetchForecasts(sport,AbortSignal.any([controller.signal,AbortSignal.timeout(15_000)]),'library',fetch,Math.min(1000,cursor.offset+300),cursor);
+      const body=await fetchForecasts(sport,AbortSignal.any([controller.signal,AbortSignal.timeout(15_000)]),'library',fetch,Math.min(1000,cursor.offset+300),cursor,false,searchPlayer);
       if(controller.signal.aborted) return;
       setLibrary(previous=>previous && previous.revision===body.revision ? {...body,
         signals:[...new Map([...previous.signals,...body.signals].map(p=>[p.id,p])).values()],
@@ -148,12 +156,12 @@ export default function PropsAnalysis({ sport,initialPlayer='' }: PropsAnalysisP
       setError('');
     } catch {
       if(!controller.signal.aborted) setError('More forecasts could not be loaded. The published window may have changed; use Refresh to start from the latest records. Your loaded research remains visible.');
-    } finally {busy.current=false;if(!controller.signal.aborted)setLoading(false);}
+    } finally {if(request.current===controller) {busy.current=false;if(!controller.signal.aborted)setLoading(false);}}
   }
 
   const leagueProps=PROP_TYPES.filter(p=>sport==='nba' ? !['pass_yds','pass_tds','rush_yds','rec_yds','receptions'].includes(p) : ['pass_yds','pass_tds','rush_yds','rec_yds','receptions'].includes(p));
   const effectivePropFilter=leagueProps.includes(propFilter as PropType) ? propFilter : 'all';
-  const currentProps=publicSignals(allProps,now).signals;
+  const currentProps=publicSignals(library?.search_player===canonicalPlayer ? allProps : [],now).signals;
   const effectiveWindow=windowFilter==='latest' ? latestForecastWindow(currentProps,now) : windowFilter;
   const players=[...new Map(currentProps.map(p=>[p.player,p])).values()];
   const selected=currentProps.find(p=>p.id===selectedId && p.sport===sport);
@@ -162,14 +170,14 @@ export default function PropsAnalysis({ sport,initialPlayer='' }: PropsAnalysisP
     if(scope==='saved' && !shortlist.includes(`${p.sport}:${p.player}`)) return false;
     if(scope==='eligible' && p.gated) return false;
     if(effectiveWindow!=='all' && forecastWindow(p,now)!==effectiveWindow) return false;
-    if (playerFilter && !p.player.toLowerCase().includes(playerFilter.toLowerCase())) return false;
+    if (canonicalPlayer && !p.player.toLowerCase().includes(canonicalPlayer.toLowerCase())) return false;
     if (effectivePropFilter !== 'all' && p.prop_type !== effectivePropFilter) return false;
     if (minEV>0 && p.ev_pct < minEV / 100) return false;
     return true;
   }).sort((a,b)=>sort==='quality' ? Number(a.gated)-Number(b.gated) || compareQuality(a,b) : sort==='player' ? a.player.localeCompare(b.player) : sort==='sample' ? (b.sample_size ?? 0)-(a.sample_size ?? 0) : b.ev_pct-a.ev_pct);
   const propGroups=groupAlternateLines(props);
 
-  if (loading && !allProps.length) return <ForecastSkeleton />;
+  if (loading && !library) return <ForecastSkeleton />;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
@@ -177,10 +185,13 @@ export default function PropsAnalysis({ sport,initialPlayer='' }: PropsAnalysisP
         <div><h2>Player board</h2><p>One primary threshold per market, with every alternate line kept within reach.</p></div>
         <button className={styles.uxButton} type="button" onClick={()=>setRefresh(n=>n+1)} disabled={loading} aria-label="Refresh forecasts"><RefreshCw size={16} />{loading?'Refreshing...':'Refresh'}</button>
       </div>
+      <p id="player-search-scope" className={styles.forecastIntro}>Search recorded players across the latest 100 scanned games. Results use captured forecasts and prices; they do not trigger a new scan.</p>
+      {!validPlayerSearch && <p role="alert" className={styles.notice}>Use a player name with letters, spaces, apostrophes, periods or hyphens, up to 80 characters.</p>}
+      {validPlayerSearch && library && library.search_player!==canonicalPlayer && !error && <p role="status" className={styles.forecastIntro}>Searching recorded players...</p>}
       {coverageNotice && <p role="status" style={{padding:'8px 20px',color:'var(--text-secondary)'}}>{coverageNotice}</p>}
-      {library?.cursor && library.cursor.offset<1000 && <div style={{padding:'0 20px 12px'}}><button className={styles.uxButton} type="button" disabled={loading} onClick={()=>void loadMore()}>{loading ? 'Loading forecasts...' : 'Load more recorded forecasts'}</button></div>}
+      {library?.search_player===canonicalPlayer && library?.cursor && library.cursor.offset<1000 && <div style={{padding:'0 20px 12px'}}><button className={styles.uxButton} type="button" disabled={loading} onClick={()=>void loadMore()}>{loading ? 'Loading forecasts...' : 'Load more recorded forecasts'}</button></div>}
       <div className={styles.forecastControls}>
-        <input aria-label="Search player" className="term-input" placeholder="Find a player..." value={playerFilter} onChange={e=>{setPlayerFilter(e.target.value);setVisibleCount(24);}} />
+        <input aria-label="Search player" maxLength={80} aria-describedby="player-search-scope" className="term-input" placeholder="Find a player..." value={playerFilter} onChange={e=>{setPlayerFilter(e.target.value);setVisibleCount(24);}} />
         <select aria-label="Forecast window" className="term-select" value={windowFilter} onChange={e=>{setWindowFilter(e.target.value);setVisibleCount(24);}}><option value="latest">Available forecasts</option><option value="upcoming">Upcoming games</option><option value="archive">Past games</option><option value="all">All recorded forecasts</option></select>
         <button className={styles.uxButton} type="button" aria-pressed={scope==='saved'} onClick={()=>setScope(scope==='saved'?'all':'saved')}><Bookmark size={16} />Saved players</button>
         <details className={styles.forecastFilters}>
