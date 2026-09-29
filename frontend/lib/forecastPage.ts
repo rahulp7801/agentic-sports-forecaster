@@ -93,7 +93,7 @@ export function forecastPage(data:ForecastPageInput,request:ReturnType<typeof fo
     if(signal) {
       const values=data.profiles?.['player-profiles:'+signal.sport]?.profiles;
       if(Array.isArray(values) && values.length<=500) {
-        const matches=values.map(value=>publicPlayerProfile(value,signal.sport,signal.player,now)).filter(Boolean);
+        const matches=values.map(value=>publicPlayerProfile(value,signal.sport,signal.player,now,signal.availability?.player_id)).filter(Boolean);
         if(matches.length===1) signal={...signal,player_profile:matches[0]};
       }
       const size=new TextEncoder().encode(JSON.stringify(signal)).length;

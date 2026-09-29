@@ -253,11 +253,11 @@ function publicNextGenStats(value:unknown,sport:Sport,prop:PropType,capturedAt?:
     ...(timestamp(evidence.observed_before) ? {observed_before:evidence.observed_before} : {})};
 }
 
-/** Current identity metadata never supplies historical availability or eligibility. */
-export function publicPlayerProfile(value:unknown,sport:Sport,player:string,now=Date.now()):PlayerProfile|undefined {
+/** Bind current metadata to the captured ESPN athlete, never a model ID in another namespace. */
+export function publicPlayerProfile(value:unknown,sport:Sport,player:string,now=Date.now(),rosterPlayerId?:string):PlayerProfile|undefined {
   if(!value || typeof value!=='object' || Array.isArray(value)) return undefined;
   const p=value as Record<string,unknown>;
-  if(p.player!==player || !bounded(p.name,100) || !bounded(p.team,5)
+  if(!rosterPlayerId || p.player_id!==rosterPlayerId || p.player!==player || !bounded(p.name,100) || !bounded(p.team,5)
     || !bounded(p.player_id,20) || !/^[1-9][0-9]*$/.test(p.player_id)
     || p.image_url!==`https://a.espncdn.com/i/headshots/${sport==='cfb'?'college-football':sport}/players/full/${p.player_id}.png`
     || !timestamp(p.captured_at) || Date.parse(p.captured_at)>now+60000
@@ -317,7 +317,7 @@ export function publicSignal(value:unknown, now=Date.now(), retained=false):EVSi
     && Date.parse(s.captured_at)<Date.parse(s.game_start_time) && Date.parse(s.captured_at)<=now+60000
     ? s.captured_at : undefined;
   const nextGenStats=publicNextGenStats(s.next_gen_stats,sport,prop,capturedAt,availability?.team);
-  const playerProfile=publicPlayerProfile(s.player_profile,sport,s.player,now);
+  const playerProfile=publicPlayerProfile(s.player_profile,sport,s.player,now,availability?.player_id);
   const metrics=signalMetrics({...s,availability},now,retained);
   if (!finite(metrics.implied_prob) || !finite(metrics.ev_pct)
       || (metrics.expected_return !== null && !finite(metrics.expected_return))) return null;

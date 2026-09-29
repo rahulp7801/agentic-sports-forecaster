@@ -29,7 +29,7 @@ function record(value:unknown,sport:Sport,profileValues:unknown,now:number,histo
   if(!signal || signal.sport!==sport || signal.gated || signal.kelly_fraction<=0) return null;
   let playerProfile=signal.player_profile;
   if(Array.isArray(profileValues) && profileValues.length<=500) {
-    const matches=profileValues.map(item=>publicPlayerProfile(item,sport,signal.player,now)).filter(Boolean);
+    const matches=profileValues.map(item=>publicPlayerProfile(item,sport,signal.player,now,signal.availability?.player_id)).filter(Boolean);
     if(matches.length===1) playerProfile=matches[0];
   }
   const result=raw.result;

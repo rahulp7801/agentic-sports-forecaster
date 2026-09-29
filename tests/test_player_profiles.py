@@ -69,3 +69,12 @@ async def test_scheduled_profile_refresh_uses_recorded_slate_without_new_quotes(
     publications.clear();data['status']='unavailable'
     assert (await run(['nfl']))['nfl']==dict(profiles=0,unavailable=1)
     assert publications==[]  # Provider failure cannot overwrite the last capture.
+
+
+@pytest.mark.parametrize('portraits',[{}, {'Player': {'jersey': '0'}}, {'Player': {'player_id': '123', 'player_image_url': 'wrong'}}])
+def test_verified_roster_without_valid_photo_does_not_crash_profile_refresh(portraits):
+    now,data=context()
+    data['sport']='nfl'
+    data['teams'][0]['roster_source_url']='https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/2/roster'
+    data['teams'][0]['portraits']=portraits
+    assert profile(data,'Player',None,now) is None
