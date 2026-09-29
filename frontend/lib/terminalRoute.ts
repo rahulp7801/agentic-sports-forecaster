@@ -5,7 +5,7 @@ export const TERMINAL_VIEWS = [
 ] as const;
 
 export type TerminalView = typeof TERMINAL_VIEWS[number];
-const CFB_VIEWS=new Set<TerminalView>(['dashboard','results','props','arbitrage','parlay']);
+const CFB_VIEWS=new Set<TerminalView>(['dashboard','results','props','arbitrage','parlay','gamelogs']);
 
 export function parseTerminalHash(hash: string): { sport: Sport; view: TerminalView } | null {
   const [sport, view] = hash.replace(/^#/, '').split('/');

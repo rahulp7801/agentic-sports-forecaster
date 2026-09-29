@@ -15,3 +15,11 @@ test('over frequency excludes missing stats and ties, and accepts a zero thresho
   assert.equal(overFrequency(logs,'rebounds',20).rate,null);
   assert.equal(overFrequency(logs,'points',NaN),null);
 });
+
+
+test('CFB recorded results preserve explicit receiving zeros and unknown categories',()=>{
+  const log=gameLog({player:'Recorded Receiver',date:'2026-09-26',team:'AAA',opponent:'BBB',rec_yds:0,receptions:0,rush_yds:null},'cfb','1');
+  assert.equal(log.sport,'cfb');assert.equal(log.rec_yds,0);assert.equal(log.receptions,0);
+  assert.equal(log.rush_yds,undefined);assert.equal(log.pass_tds,undefined);
+  assert.deepEqual(overFrequency([log],'rec_yds',.5),{wins:0,losses:1,pushes:0,missing:0,decided:1,rate:0});
+});
