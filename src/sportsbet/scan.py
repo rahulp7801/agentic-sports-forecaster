@@ -420,13 +420,23 @@ async def evaluate_event(pool, event: dict, sport: str, ledger: Ledger, scan_id:
             log.warning('shadow_history_unavailable',sport=sport,error_type=type(exc).__name__)
             return {},'history_read_failed'
 
+    # Keep frozen v1 captures on their original baseline; corrected history has
+    # a separately frozen candidate and receipt verifier.
+    role_model=None
+    if settings.role_history_shadow_enabled and sport=='nfl':
+        from sportsbet.quant import nfl_role_shadow as role_model
+        from sportsbet.quant.nfl_recent_role_params import BASELINE_VERSION, FROZEN_AT as RECENT_ROLE_FROZEN_AT
+        if (model_version_for(sport,selection_time)==BASELINE_VERSION
+                and selection_time>=datetime.fromisoformat(RECENT_ROLE_FROZEN_AT)):
+            from sportsbet.quant import nfl_recent_role_shadow as role_model
     # Read once alongside the existing model work, with a bounded research budget.
     async def capture_role_history():
         if not settings.role_history_shadow_enabled or sport!='nfl':return {},None
         try:
-            from sportsbet.quant.nfl_role_shadow import load_inputs
+            kwargs={'observed_before':selection_time} if role_model.VERSION=='nfl-recent-role-shadow-v2' else {}
+            requests={s[5] for s in prepared if MARKETS[sport][s[1]] in role_model.MARKETS[sport]}
             async with asyncio.timeout(5):
-                return await load_inputs(pool,sport,season,game_date,{s[5] for s in prepared}),None
+                return await role_model.load_inputs(pool,sport,season,game_date,requests,**kwargs),None
         except Exception as exc:
             log.warning('role_history_unavailable',error_type=type(exc).__name__)
             return {},'history_read_failed'
@@ -570,12 +580,11 @@ async def evaluate_event(pool, event: dict, sport: str, ledger: Ledger, scan_id:
                     'status':'unavailable','reason':'shadow_evaluation_failed'}
             shadow_counts[payload['history_shadow'].get('reason','predicted')]+=1
         if settings.role_history_shadow_enabled and sport=='nfl':
-            from sportsbet.quant.nfl_role_shadow import shadow_record as role_record,VERSION as ROLE_VERSION,POLICY as ROLE_POLICY
             try:
-                payload['role_history_shadow']=role_record(payload,role_inputs.get(player_id,{}),unavailable=role_unavailable)
+                payload['role_history_shadow']=role_model.shadow_record(payload,role_inputs.get(player_id,{}),unavailable=role_unavailable)
             except Exception as exc:
                 log.warning('role_shadow_evaluation_failed',error_type=type(exc).__name__)
-                payload['role_history_shadow']=dict(model_version=ROLE_VERSION,policy_version=ROLE_POLICY,
+                payload['role_history_shadow']=dict(model_version=role_model.VERSION,policy_version=role_model.POLICY,
                     status='unavailable',reason='shadow_evaluation_failed')
             role_counts[payload['role_history_shadow'].get('reason','predicted')]+=1
         audited.append((payload,public_signal))
@@ -810,6 +819,9 @@ async def run(sports: list[str], daily_credit_limit: int, event_ids: frozenset[s
             publish_history_shadow(prediction_rows,sport,publish_snapshot)
             from sportsbet.quant.nfl_role_shadow_audit import publish_role_history_shadow
             publish_role_history_shadow(prediction_rows,sport,publish_snapshot)
+            if sport=='nfl':
+                from sportsbet.quant.nfl_recent_role_audit import publish_role_history_shadow as publish_recent_role
+                publish_recent_role(prediction_rows,sport,publish_snapshot)
         return reports
     except Exception as exc:
         log.warning('scan_failed',scan_id=scan_id,operation=operation,**error_fields(exc))

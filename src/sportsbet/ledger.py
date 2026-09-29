@@ -401,7 +401,11 @@ class Ledger:
                             payload['history_shadow_input_sha256']=commitment
                         payload['history_shadow']=_unavailable_shadow(payload['history_shadow'])
                 if isinstance(payload.get('role_history_shadow'),dict):
-                    from sportsbet.quant.nfl_role_shadow import verified_shadow_probability as verified_role
+                    from sportsbet.quant.nfl_recent_role_params import VERSION as RECENT_ROLE_VERSION
+                    if payload['role_history_shadow'].get('model_version')==RECENT_ROLE_VERSION:
+                        from sportsbet.quant.nfl_recent_role_shadow import verified_shadow_probability as verified_role
+                    else:
+                        from sportsbet.quant.nfl_role_shadow import verified_shadow_probability as verified_role
                     receipt=datetime.now(timezone.utc)
                     payload['role_history_shadow_recorded_at']=receipt.isoformat()
                     if payload['role_history_shadow'].get('status')=='predicted' and (
