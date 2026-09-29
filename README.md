@@ -1,6 +1,6 @@
 # Agentic EV Analytics
 
-NFL/NBA player-prop research plus a manual CFB beta, built on a deterministic LangGraph pipeline, PostgreSQL game history, and a Next.js dashboard. The graph estimates historical outcome frequencies and evaluates real bookmaker payouts. No LLM API key is currently consumed. These estimates have not established predictive profitability.
+NBA, NFL and CFB player-prop research, built on a deterministic LangGraph pipeline, PostgreSQL game history, and a Next.js dashboard. The graph estimates historical outcome frequencies and evaluates real bookmaker payouts. No LLM API key is currently consumed. These estimates have not established predictive profitability.
 
 Production: https://agentic-ev-analytics-platform.vercel.app
 
@@ -33,7 +33,8 @@ On Windows use `npm.cmd` if PowerShell blocks npm.ps1. Backend commands run from
 | `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID` | GitHub Actions repository variables | Vercel team/project identifiers |
 | `DATA_PIPELINE_ENABLED` | GitHub Actions repository variable | Set `true` only after migration, backfill, and live-data checks |
 | `PUBLIC_DATA_PIPELINE_ENABLED` | GitHub Actions repository variable | Enable verified public-only Kalshi/schedule collection and daily stat refresh without supplying `ODDS_API_KEY` |
-| `ODDS_DAILY_CREDIT_LIMIT` | GitHub Actions repository variable | Persistent provider credit ceiling; default 25 |
+| `ODDS_DAILY_CREDIT_LIMIT` | GitHub Actions repository variable | Shared daily provider credit ceiling; 20 |
+| `ODDS_ROLLING_CREDIT_LIMIT` | Worker environment / GitHub Actions repository variable | Shared ceiling across 31 UTC dates; 450 |
 
 Optional Python settings are documented in `.env.example`: bankroll, Kelly multiplier, vig method, and experimental adjustments (off by default). Never use `NEXT_PUBLIC_` for credentials. Local `.env` files are not automatically uploaded to GitHub or Vercel.
 
@@ -41,19 +42,16 @@ The Vercel role needs SELECT only on `dashboard_snapshots` and the `dashboard_ga
 
 ## Data operations
 
-After migrating, backfill the history before the first scan:
+For a new database, migrate and backfill history before its first scan. Existing production history is already populated; do not repeat a backfill to refresh the dashboard:
 
 ```sh
 uv run python -m sportsbet.refresh --sport both --backfill
-uv run python -m sportsbet.scan --sport both --daily-credit-limit 25
-# CFB stays manual so it cannot silently consume the NFL/NBA budget:
 uv run python -m sportsbet.refresh --sport cfb --backfill
-uv run python -m sportsbet.scan --sport cfb --daily-credit-limit 25
 ```
 
 `refresh` selects season years from the current date, uses regular-season samples, and upserts stats to apply provider corrections. Initial NFL and CFB backfills cover three season years; NBA covers current/prior season. Daily refresh covers the active season. NFL schedules must be present for pre-game cutoffs. CFB history comes from the public versioned SportsDataverse ESPN player-box and schedule releases and needs no additional API key. CFB uses exact ESPN athlete/game IDs and never reads NFL player tables.
 
-The **Live paid market data** Actions workflow offers `scan`, `refresh`, and `backfill` dispatches. When explicitly enabled, it refreshes stats daily and attempts scans every 30 minutes. Scans share a persistent daily credit budget and recommendation-exposure ledger. The default 25-credit ceiling does **not** cover a full slate repeatedly; a capped worker stops requesting additional events. Establish an appropriate provider plan and measured coverage before enabling schedules. Published quotes older than five minutes cannot recommend a stake. A completed worker with partial provider/model coverage leaves a GitHub warning and keeps the published dashboard state degraded; crashes, configuration errors, schema drift, and evidence-scan failures still fail the workflow.
+The **Live paid market data** Actions workflow offers `daily`, `monitor`, `public_daily`, `public_monitor`, `scan`, `watch`, `refresh`, and `backfill` dispatches. With `DATA_PIPELINE_ENABLED=true`, daily and half-hour scan attempts include NBA, NFL and CFB (`all`). The free NFL history/NGS refresh is scheduled for 10:29 and 22:29 UTC. GitHub scheduling is best-effort. Scans share a persistent 20-credit daily limit, 450-credit rolling limit and recommendation-exposure ledger. Keep the staged pregame reserve enabled and use only existing free API-key quota; do not purchase credits, activate billing, raise these limits or clear usage records. No redundant quote collection is needed to refresh the dashboard. Published quotes older than five minutes cannot recommend a stake. A completed worker with partial provider/model coverage leaves a GitHub warning and keeps the published dashboard state degraded; crashes, configuration errors, schema drift, and evidence-scan failures still fail the workflow.
 
 Each successful scan also publishes a bounded pregame pick board from immutable accepted prediction rows. Before one hour to kickoff, the board retains the newest approved capture per player and labels its recorded price for repricing. Exactly 60 minutes before kickoff, that selection freezes; captures after the cutoff and all in-game lines are excluded. The separate **Past results** view starts only with these prospective records and shows a win, loss or push only after the existing source-bound final-stat verifier reproduces it. Missing or unverified results, including voids without reproducible final-stat evidence, stay pending. The public API recomputes record identities, lock times, eligibility, totals and win rate before displaying them.
 
@@ -61,7 +59,7 @@ The public website only reads results. It cannot start scans or spend provider c
 
 ## Model and metric contract
 
-- The current `empirical-jeffreys-v4` cohort uses one shared NBA/NFL/CFB finite-sample estimator for per-game prop outcomes. It preserves observed push mass and uses a fixed Jeffreys half-count for decided Over/Under outcomes, preventing exact 0%/100% forecasts from finite histories. NBA matchup/availability cohorts below the 20-observation signal gate fall back to the same cutoff-safe rolling window. See [model and validation details](docs/model-validation.md).
+- NBA uses `empirical-jeffreys-v4`; NFL uses `empirical-jeffreys-v4-nfl-history-v1`; CFB uses `empirical-jeffreys-v4-cfb-history-v1`. All use the shared finite-sample estimator for per-game prop outcomes. The NFL/CFB versions admit authenticated explicit receiving supplements under their separate frozen history policies. Older forecasts retain their original model version and evidence; version-specific evaluations remain separate. The estimator preserves observed push mass and uses a fixed Jeffreys half-count for decided Over/Under outcomes, preventing exact 0%/100% forecasts from finite histories. NBA matchup/availability cohorts below the 20-observation signal gate fall back to the same cutoff-safe rolling window. See [model and validation details](docs/model-validation.md).
 - Free NFL Next Gen Stats are ingested from nflverse with raw-file and row commitments, an exclusive pregame cutoff, and a bounded local cache. Valid tracking metrics appear as explanatory evidence only; the existing experimental probability adjustment remains disabled. See the [Next Gen Stats evidence contract](docs/next-gen-stats-plan.md).
 - Target-date queries use only earlier game dates; the most recent 40 qualifying games are selected after filters. Missing or ambiguous player identities are skipped.
 - Quotes must match player, event, market, line and Over/Under side. Synthetic PrizePicks payouts are not treated as bookmaker prices.
@@ -101,7 +99,7 @@ and bounded integer-lot optimization. See [market analysis architecture and rese
 for the read-only Kalshi collector, typed input contract, replay commands, and
 remaining integration limits. These scenario results are not executed bets.
 
-All commits and workflows belong to https://github.com/rahulp7801/Agentic-EV-analytics-platform. Work on feature branches, open a PR, then merge to `master` after required checks pass. Direct pushes and protection bypasses are prohibited. Production jobs only run from `master`.
+All commits and workflows belong to https://github.com/rahulp7801/agentic-sports-forecaster. Work on feature branches, open a PR, then merge to `master` after required checks pass. Direct pushes and protection bypasses are prohibited. Production jobs only run from `master`.
 
 Historical quote replay requires explicit input; it never generates example wins or prices:
 
@@ -140,7 +138,7 @@ npx tsc --noEmit
 npm run build
 ```
 
-PostgreSQL tests require `SPORTSBET_TEST_DATABASE_URL` pointing to a **disposable** database. Tests never fall back to the runtime database. Pytest stores generated temporary files and cache under ignored `.local/` by default. CFB model scans and history refreshes remain manual; `both` still means NFL+NBA so adding CFB cannot silently increase scheduled paid usage.
+PostgreSQL tests require `SPORTSBET_TEST_DATABASE_URL` pointing to a **disposable** database. Tests never fall back to the runtime database. Pytest stores generated temporary files and cache under ignored `.local/` by default. `both` means NFL+NBA; `all` includes CFB and is used by the enabled scheduled daily/scan workflow. All three sports share the same 20/450 limits and pregame reserve.
 
 ## Readiness still requiring evidence
 
@@ -194,8 +192,8 @@ budgeted coverage, not a promise that every available market is scanned.
 GitHub's **Live paid market data → daily** operation runs a deterministic LangGraph workflow:
 history refresh and market collection run independently, then eligible prop scans
 run after both finish. A failed history refresh blocks that league's prop scan.
-The half-hourly `monitor` operation refreshes market observations and requires a
-successful history refresh within36 hours before running props. Market collection
+The `monitor` operation refreshes market observations and requires a
+successful history refresh within 36 hours before running props. Market collection
 continues when history is unavailable; interrupted refreshes still block props.
 Each full run requests one budgeted sportsbook h2h snapshot per league before
 props use the remaining daily/rolling allowance. Kalshi and PrizePicks collection
@@ -204,11 +202,10 @@ Both daily and monitor evidence archives pass the same secret gate before upload
 A completed refresh records a successful ingestion attempt; it does not
 prove that the upstream provider has supplied every recently completed game.
 
-Run it locally with `uv run python -m sportsbet.daily --sport both --mode daily`.
+For an explicitly planned collection run, the local equivalent is `uv run python -m sportsbet.daily --sport all --mode daily`; it shares the same quota and must not duplicate scheduled collection.
 Per-stage results are persisted for diagnosis; degraded coverage makes the worker
 exit unsuccessfully. Manual `scan` remains a maintenance operation that bypasses
-the refresh-age gate. Scheduled daily/monitor runs remain disabled until hosted
-database access and a manual production run are verified.
+the refresh-age gate. Production daily and half-hour scan attempts are enabled. For a new deployment, verify hosted database access and a manual production run before enabling its schedule.
 
 The independent `public_daily` and `public_monitor` operations use the same graph
 without sportsbook requests or prop recommendations. Both publish ESPN schedules
@@ -256,10 +253,10 @@ worker evidence and do not cross the public boundary.
 Paid requests share both a daily ceiling and `ODDS_ROLLING_CREDIT_LIMIT` (default450
 credits across31 UTC dates), enforced atomically in the persistent ledger. This
 counts this application's reservations, including failed requests, not usage by
-other clients of the same API key or the provider's billing cycle. The free plan's
-500 monthly credits cannot provide continuous full-slate prop coverage; see the
-[provider's plans](https://the-odds-api.com/). Set limits deliberately for the
-subscribed plan and measured coverage. Never clear usage records to reset a budget.
+other clients of the same API key or the provider's billing cycle. The deployed
+policy is 20 daily and 450 rolling credits from existing free API-key quota.
+Coverage is limited by that allowance. Do not buy credits, enable billing or
+change these limits to make a scan run. Never clear usage records to reset a budget.
 
 GitHub's **Live paid market data → watch** operation publishes snapshots and retains public
 evidence artifacts for90 days. Download archives for longer retention. Replay
