@@ -284,15 +284,29 @@ class Ledger:
 
     def reserve(self, signal: EVSignal, line: float | None,
                 limit: float = float(MAX_RECOMMENDATION_FRACTION),
-                risk_day: str | None = None) -> tuple[bool, str]:
+                risk_day: str | None = None, *, game_start_time: datetime | None = None,
+                quote_time: datetime | None = None,
+                availability_time: datetime | None = None) -> tuple[bool, str]:
         if not signal.game_id:
             return False, 'missing_game_identity'
         group = json.dumps([signal.game_id, signal.player_name or signal.market_type])
         identity = json.dumps([group, signal.market_type, signal.direction, line])
-        day = risk_day or datetime.now(timezone.utc).date().isoformat()
+        from sportsbet.prop.admission import admission_timing_reason
+        timed = any(value is not None for value in (game_start_time,quote_time,availability_time))
+        def timing_reason():
+            return admission_timing_reason(datetime.now(timezone.utc),game_start_time=game_start_time,
+                quote_time=quote_time,availability_time=availability_time) if timed else None
+        # Validate before opening a connection; recheck after waiting for a lock.
+        reason = timing_reason()
+        if reason:
+            return False, reason
         amount = float(signal.kelly_fraction)
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
+            reason = timing_reason()
+            if reason:
+                return False, reason
+            day = risk_day or datetime.now(timezone.utc).date().isoformat()
             other = db.execute('SELECT identity FROM exposure WHERE group_key=? AND identity<>?', (group,identity)).fetchone()
             if other:
                 return False, 'correlated_exposure'
@@ -304,6 +318,9 @@ class Ledger:
             total = db.execute('SELECT COALESCE(SUM(fraction),0) FROM exposure WHERE risk_day=?',(day,)).fetchone()[0]
             if total + delta > limit + 1e-12:
                 return False, 'daily_exposure_limit'
+            reason = timing_reason()
+            if reason:
+                return False, reason
             db.execute('INSERT INTO exposure VALUES (?,?,?,?) ON CONFLICT(identity) DO UPDATE SET fraction=CASE WHEN exposure.fraction > excluded.fraction THEN exposure.fraction ELSE excluded.fraction END',
                        (identity,group,day,amount))
         return True, 'accepted'

@@ -22,6 +22,7 @@ from sportsbet.model_contract import MODEL_VERSION, model_version_for, history_p
 from sportsbet.prop.agents import make_prop_quant_agent
 from sportsbet.prop.availability import (blocks_unadjusted_teammate_context,
                                          fetch_event_availability, player_availability, nfl_roster_history_bindings)
+from sportsbet.prop.admission import admission_timing_reason
 from sportsbet.prop.injury_context import historical_availability_splits, relevant_availability_reports
 from sportsbet.prop.ngs_evidence import load_ngs_evidence
 from sportsbet.arbitrage.ev import compute_expected_return, quote_terms
@@ -505,12 +506,19 @@ async def evaluate_event(pool, event: dict, sport: str, ledger: Ledger, scan_id:
                     log.warning('ngs_evidence_unavailable',error_type=type(exc).__name__)
                     ngs_contexts[ngs_key]=None
             ngs_evidence=ngs_contexts[ngs_key]
+        # Context queries can cross kickoff, quote expiry or availability expiry.
+        # Capture the decision after those awaits and guard the reservation again
+        # inside its transaction, where a database lock can introduce more delay.
+        now=datetime.now(timezone.utc)
+        admission_times=dict(game_start_time=start,quote_time=quote.snapped_at,
+            availability_time=timestamp(availability_evidence['captured_at'])
+                if availability_evidence.get('status')=='observed' else None)
+        timing_reason=admission_timing_reason(now,**admission_times)
         if signal:
-            if now >= start: reason='game_started'
-            elif not -60 <= (now-quote.snapped_at).total_seconds() <= 300: reason='stale_quote'
+            if timing_reason: reason=timing_reason
             elif recommendation_quality(signal)[0]<=0: reason='edge_not_confident'
             elif availability_reason: reason=availability_reason
-            else: accepted,reason=ledger.reserve(signal,float(line))
+            else: accepted,reason=ledger.reserve(signal,float(line),**admission_times)
         payload=dict(game_id=event['id'],player=player,player_id=player_id,sport=sport,
             game_date=game_date.isoformat(),home_team=event['home_team'],away_team=event['away_team'],
             prop_type=MARKETS[sport][market],direction=side.lower(),line=float(line),

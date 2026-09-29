@@ -129,3 +129,33 @@ def test_prospective_database_scope_matches_frozen_in_memory_cohort():
     finally:
         with writer.connect() as db:
             db.execute('DELETE FROM predictions WHERE scan_id=?',(group,))
+
+@pytest.mark.parametrize('phase',['lock','queries'])
+def test_postgres_admission_deadline_after_database_wait(monkeypatch,phase):
+    from contextlib import contextmanager
+    import sportsbet.ledger as ledger_module
+    now=datetime(2026,9,30,12,tzinfo=timezone.utc);clock=[now]
+    class Clock(datetime):
+        @classmethod
+        def now(cls,tz=None):return clock[0]
+    monkeypatch.setattr(ledger_module,'datetime',Clock)
+    ledger=Ledger(database_url=os.environ['SPORTSBET_TEST_DATABASE_URL']);connect=ledger.connect
+    group=uuid.uuid4().hex
+    signal=EVSignal(game_id=group,player_name='Timing fixture',direction='over',market_type='player_points',
+        ev_percentage=Decimal('.1'),true_probability=Decimal('.6'),implied_probability=Decimal('.5'),
+        kelly_fraction=Decimal('.01'),trade_plan=[])
+    @contextmanager
+    def delayed():
+        with connect() as db:
+            class Session:
+                def execute(self,sql,args=()):
+                    result=db.execute(sql,args)
+                    if (phase=='lock' and sql=='BEGIN IMMEDIATE') or (phase=='queries' and sql.startswith('SELECT COALESCE')):
+                        clock[0]=now+timedelta(seconds=301)
+                    return result
+            yield Session()
+    monkeypatch.setattr(ledger,'connect',delayed)
+    assert ledger.reserve(signal,20.5,risk_day=group,game_start_time=now+timedelta(hours=1),
+        quote_time=now,availability_time=now)==(False,'stale_quote')
+    with connect() as db:
+        assert db.execute('SELECT count(*) FROM exposure WHERE risk_day=?',(group,)).fetchone()[0]==0
