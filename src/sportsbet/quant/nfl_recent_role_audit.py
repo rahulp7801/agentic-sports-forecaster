@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 from collections import Counter
 from datetime import date, datetime, timezone
 import json
@@ -22,11 +23,18 @@ from sportsbet.quant.priced_market_audit import _eligible,_verified_outcome
 from sportsbet.quant.nfl_recent_role_shadow import REASONS as UNAVAILABLE_REASONS
 
 
+def evaluator_sha256():
+    from sportsbet.quant import history_tuning, market_baseline, priced_market_audit
+    modules=[history_tuning,market_baseline,priced_market_audit]
+    paths=[Path(__file__),*(Path(module.__file__) for module in modules)]
+    return {p.name:hashlib.sha256(p.read_text(encoding='utf-8-sig').encode()).hexdigest() for p in paths}
+
+
 def report_role_history_shadow(rows: list[dict], sport: str) -> dict:
     if sport not in ('nba','nfl','cfb'):
         raise ValueError('Invalid shadow sport')
     report=dict(model_version=VERSION,policy_version=POLICY,artifact_sha256=ARTIFACT_SHA256,
-        implementation_sha256=implementation_sha256(),frozen_at=FROZEN_AT,sport=sport,
+        implementation_sha256=implementation_sha256(),evaluator_sha256=evaluator_sha256(),frozen_at=FROZEN_AT,sport=sport,
         generated_at=datetime.now(timezone.utc).isoformat(),status='collecting',promote=False,
         scope='Untraded prospective probability comparison; no candidate acceptance policy or ROI.',
         minimum_paired_games=50,markets={},excluded=0)
