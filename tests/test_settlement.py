@@ -438,3 +438,46 @@ def test_invalid_stored_result_remains_pending_on_missing_source(tmp_path):
     assert result['pending']==1 and result['retained_verified']==0
     assert result['reasons']=={'stat_not_found_or_ambiguous':1}
     assert result['retained_recheck_reasons']=={} and ledger.predictions()==before
+
+
+@pytest.mark.parametrize('current_first',[False,True])
+@pytest.mark.parametrize('available_source',['primary','effective'])
+@pytest.mark.parametrize('prop_type',['rec_yds','receptions'])
+def test_nfl_settlement_cache_preserves_model_evidence_scope(
+        tmp_path,monkeypatch,current_first,available_source,prop_type):
+    from sportsbet.model_contract import NFL_MODEL_VERSION
+    from sportsbet import settlement
+    ledger=Ledger(tmp_path/'versions.sqlite')
+    _,payload=prediction(ledger,sport='nfl',prop_type=prop_type,player_id='gsis-7',line=.5)
+    # Keep all game/player/market terms identical. Only the frozen model's
+    # permitted receiving source differs, including when that source is absent.
+    old=dict(payload,prediction_id='old',model_version='empirical-jeffreys-v4')
+    current=dict(payload,prediction_id='current',model_version=NFL_MODEL_VERSION)
+    monkeypatch.setattr(ledger,'predictions',lambda: [current,old] if current_first else [old,current])
+    with ledger.connect() as db:
+        columns="""(player_id TEXT, season INTEGER, week INTEGER,
+            team TEXT, passing_yards INTEGER, rushing_yards INTEGER, receiving_yards INTEGER,
+            receptions INTEGER, source_provider TEXT, source_sha256 TEXT,
+            source_record_sha256 TEXT, source_observed_at TEXT)"""
+        db.execute('CREATE TABLE player_stats '+columns)
+        db.execute('CREATE TABLE effective_stats '+columns)
+        db.execute('CREATE VIEW nfl_effective_receiving_gamelogs AS SELECT *,NULL AS supplement_manifest FROM effective_stats')
+        db.execute('CREATE TABLE games (season INTEGER, week INTEGER, home_team TEXT, away_team TEXT, game_date TEXT)')
+        row=dict(player_id='gsis-7',season=2026,week=1,team='HOM',passing_yards=0,
+            rushing_yards=0,receiving_yards=21,receptions=2)
+        table='player_stats' if available_source=='primary' else 'effective_stats'
+        db.execute('INSERT INTO '+table+' VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',(
+            *row.values(),'nflverse','b'*64,stat_row_sha256('nfl',row),datetime.now(timezone.utc).isoformat()))
+        db.execute("INSERT INTO games VALUES (2026,1,'HOM','AWY',?)",(payload['game_date'],))
+    written={};reads=[];actual=settlement._actual
+    def read(*args):
+        reads.append(args[1]['model_version'])
+        return actual(*args)
+    monkeypatch.setattr(settlement,'_actual',read)
+    monkeypatch.setattr(ledger,'settle',lambda outcomes,**kwargs:written.update(outcomes))
+    result=settle_final_props(ledger,'nfl',schedule(payload))
+    expected='old' if available_source=='primary' else 'current'
+    assert written=={expected:True}
+    assert result['settled']==1 and result['pending']==1
+    assert result['reasons']=={'stat_not_found_or_ambiguous':1}
+    assert len(reads)==2
