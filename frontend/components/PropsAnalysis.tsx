@@ -206,7 +206,7 @@ export default function PropsAnalysis({ sport,initialPlayer='' }: PropsAnalysisP
         </details>
         <div className={styles.viewSwitch} aria-label="Forecast view"><button type="button" aria-pressed={view==='cards'} onClick={()=>setView('cards')}><LayoutGrid size={16} />Cards</button><button type="button" aria-pressed={view==='table'} onClick={()=>setView('table')}><List size={16} />Table</button></div>
       </div>
-      <div className={styles.forecastSummary} role="status"><span>{propGroups.length} player markets / {props.length} recorded lines / {new Set(props.map(p=>p.player)).size} players</span><span>{propGroups.filter(group=>!group.pick.gated).length} research eligible</span></div>
+      <div className={styles.forecastSummary} role="status"><span>{propGroups.length} player markets / {props.length} recorded lines / {new Set(props.map(p=>p.player)).size} {new Set(props.map(p=>p.player)).size===1 ? 'player' : 'players'}</span><span>{propGroups.filter(group=>!group.pick.gated).length} research eligible</span></div>
       {storageNotice && <p role="status" className={styles.forecastIntro}>{storageNotice}</p>}
 
       {error && <div className={styles.notice} role="alert">{error}</div>}
