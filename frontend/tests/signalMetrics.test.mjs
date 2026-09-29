@@ -448,3 +448,26 @@ test('tracking periods bind exact sample weeks to the captured roster team',()=>
   }
   assert.ok(project({sample_periods:undefined,roster_team:undefined}).next_gen_stats);
 });
+
+test('participation window and nested cohort fields are projected without changing current availability',()=>{
+  const split={player:'Receiver',status:'Questionable',position:'WR',team:'KC',relationship:'teammate',unit:'offense',
+    source:'nflverse_snap_counts',participation:'recorded unit snaps',evidence_version:'recorded-participation-v2',
+    unknown_games:1,active:{games:2,mean:260,hit_rate:.5,private:'secret'},
+    absent:{games:0,mean:null,hit_rate:null,private:'secret'},
+    sample_window:{cutoff:publicQuote.forecast_cutoff,active:{oldest:'2025-09-01',newest:'2025-09-08',private:'secret'},
+      absent:null,unknown:{oldest:'2026-09-01',newest:'2026-09-01'},private:'secret'}};
+  const project=sample_window=>publicSignals([{...publicQuote,availability:{...quote.availability,
+    context_splits:[{...split,sample_window}]}}],now).signals[0];
+  const result=project(split.sample_window),retained=result.availability.context_splits[0];
+  assert.deepEqual(retained.active,{games:2,mean:260,hit_rate:.5});
+  assert.deepEqual(retained.absent,{games:0,mean:null,hit_rate:null});
+  assert.equal(retained.sample_window.private,undefined);assert.equal(retained.sample_window.active.private,undefined);
+  assert.deepEqual(publicSignals([result],now).signals[0].availability.context_splits,[retained]);
+  for(const sample_window of [{...split.sample_window,cutoff:'2027-01-01'},
+    {...split.sample_window,active:{oldest:'2026-09-01',newest:publicQuote.forecast_cutoff}},null]) {
+    const value=project(sample_window);assert.equal(value.availability.context_splits,undefined);
+    assert.equal(value.availability.roster_confirmed,true);assert.equal(value.true_prob,publicQuote.true_prob);
+    assert.equal(value.gated,result.gated);
+  }
+  assert.equal(project(undefined).availability.context_splits[0].sample_window,undefined);
+});
