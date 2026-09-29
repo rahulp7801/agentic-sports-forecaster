@@ -30,7 +30,7 @@ def deny_browser_roles(conn):
     """Supabase defaults can grant named browser roles independently of PUBLIC/RLS."""
     targets: list[sql.Composable] = [sql.Identifier('public', table) for table in
                                      (*READ_TABLES, *CACHE_TABLES, 'alembic_version',
-                                      'ev_signals', 'dashboard_gamelogs', 'cfb_effective_gamelogs')]
+                                      'ev_signals', 'dashboard_gamelogs', 'cfb_effective_gamelogs', 'nfl_effective_receiving_gamelogs')]
     targets.extend(sql.Identifier('analytics', table) for table in ANALYTICS_TABLES)
     grantees: list[sql.Composable] = [sql.SQL('PUBLIC')]
     for role in ('anon', 'authenticated'):
@@ -65,6 +65,7 @@ def apply_access(conn):
     conn.execute(sql.SQL('GRANT SELECT ON public.dashboard_snapshots TO {}').format(sql.Identifier(READER)))
     conn.execute(sql.SQL('GRANT SELECT ON public.dashboard_gamelogs TO {}').format(sql.Identifier(READER)))
     conn.execute(sql.SQL('GRANT SELECT ON public.cfb_effective_gamelogs TO {}').format(sql.Identifier(WORKER)))
+    conn.execute(sql.SQL('GRANT SELECT ON public.nfl_effective_receiving_gamelogs TO {}').format(sql.Identifier(WORKER)))
     for table in READ_TABLES:
         target = sql.Identifier('public', table)
         conn.execute(sql.SQL('GRANT SELECT ON {} TO {}').format(target, sql.Identifier(WORKER)))

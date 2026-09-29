@@ -18,5 +18,6 @@ export function metricSnapshotKey(cohort: MetricCohort, sport: MetricSport = 'al
 export function metricLedgerArgs(cohort: MetricCohort, sport: MetricSport = 'all') {
   return ['-m', 'sportsbet.ledger', ...(cohort === 'recommendations' ? ['--recommendations-only'] : []),
     ...(sport === 'all' ? [] : ['--sport', sport]),
-    ...(sport === 'cfb' ? ['--model-version','empirical-jeffreys-v4-cfb-history-v1'] : [])];
+    ...(sport === 'cfb' ? ['--model-version','empirical-jeffreys-v4-cfb-history-v1']
+      : sport === 'nfl' ? ['--model-version','empirical-jeffreys-v4-nfl-history-v1'] : [])];
 }

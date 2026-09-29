@@ -34,6 +34,53 @@ def test_reviewed_nfl_archive_is_atomic_replay_safe_and_private():
             assert conn.execute('SELECT response_text FROM public.nfl_history_source_bundles').fetchone()[0] == raw
             conn.execute('RESET ROLE')
             item, = plan['updates']
+            from datetime import date,datetime,timedelta
+            from decimal import Decimal
+            import re
+            from sportsbet.graph.models import PropParams
+            from sportsbet.prop.query_builder import PropQueryBuilder
+            from sportsbet.model_contract import NFL_HISTORY_FROZEN_AT
+            from sportsbet.settlement import _actual
+            from sportsbet.ingestion.nfl_supplement_proof import valid_supplement
+            inserted=conn.execute('SELECT inserted_at FROM public.nfl_receiving_supplements').fetchone()[0]
+            available=max(inserted,datetime.fromisoformat(NFL_HISTORY_FROZEN_AT),datetime.fromisoformat(item['observed_at']))
+            def sample(cutoff):
+                params=PropParams(sport='nfl',player_id=item['player_id'],season=2024,game_id='future',
+                    prop_type='rec_yds',line=Decimal('0.5'),filters={},as_of_date=date(2026,9,30),
+                    observed_before=cutoff,last_n_games=40)
+                query,args=PropQueryBuilder.build(params);ordered=[]
+                def bind(match):ordered.append(args[int(match[1])-1]);return '%s'
+                return conn.execute(re.sub(r'\$(\d+)',bind,query),ordered).fetchone()
+            assert sample(available)==(1,0,0,0)
+            import asyncio
+            from sportsbet.prop.injury_context import _nfl_split
+            snap=bundle()['participation'][0]
+            snap_row=snap['row']|{k:snap[k] for k in ('source_provider','source_sha256','source_record_sha256','source_observed_at')}
+            conn.execute('INSERT INTO public.nfl_snap_counts ('+','.join(snap_row)+') VALUES ('+','.join(['%s']*len(snap_row))+')',tuple(snap_row.values()))
+            class ContextConnection:
+                async def fetchrow(self,query,*args):
+                    ordered=[]
+                    def bind(match):ordered.append(args[int(match[1])-1]);return '%s'
+                    cur=conn.execute(re.sub(r'\$(\d+)',bind,query),ordered)
+                    return dict(zip([c.name for c in cur.description],cur.fetchone(),strict=True))
+            candidate=dict(stat_team='DEN',participant_id=snap_row['pfr_player_id'],unit='offense',
+                relationship='teammate',player='Context fixture',status='Questionable',position='TE',team='DEN')
+            context=asyncio.run(_nfl_split(ContextConnection(),item['player_id'],2024,date(2026,9,30),'rec_yds',.5,'under',candidate,available))
+            assert context['active']['games']==1 and context['active']['mean']==0 and context['active']['hit_rate']==1
+            assert asyncio.run(_nfl_split(ContextConnection(),item['player_id'],2024,date(2026,9,30),'rec_yds',.5,'under',candidate,inserted-timedelta(microseconds=1))) is None
+
+            assert sample(inserted-timedelta(microseconds=1))[0]==0
+            public=conn.execute("SELECT payload FROM public.dashboard_gamelogs WHERE sport='nfl' AND player_id=%s AND game_key=%s",(item['player_id'],g['game_id'])).fetchone()[0]
+            assert public['rec_yds']==public['receptions']==0
+            assert public['pass_yds'] is public['rush_yds'] is None
+            final=item['manifest']['game']
+            value,proof=_actual(Session(),dict(player_id=item['player_id'],prop_type='rec_yds',model_version='empirical-jeffreys-v4-nfl-history-v1'),'nfl',final['date'],final)
+            assert value==0 and proof['provider']=='nflverse_espn_supplement'
+            assert valid_supplement(proof['record'],proof['supplement_manifest'],proof['sha256'],proof['observed_at'],final)
+            conn.execute('UPDATE public.games SET game_date=%s WHERE game_id=%s',('2026-09-21',g['game_id']))
+            assert sample(available)[0]==0
+            conn.execute('UPDATE public.games SET game_date=%s WHERE game_id=%s',(g['game_date'],g['game_id']))
+
             assert conn.execute('SELECT stat_row FROM public.nfl_receiving_supplements').fetchone()[0] == item['stat_row']
             assert conn.execute('SELECT count(*) FROM public.player_stats WHERE player_id=%s',(item['player_id'],)).fetchone()[0] == 0
             with pytest.raises(ValueError,match='re-preview'):
@@ -58,5 +105,10 @@ def test_reviewed_nfl_archive_is_atomic_replay_safe_and_private():
             replay = plan_supplements(raw,*load_state(Session(),evidence),now=NOW)
             assert replay['updates'] == [] and replay['complete'] == replay['retained'] == 1
             assert conn.execute('SELECT rushing_yards FROM public.player_stats WHERE player_id=%s',(item['player_id'],)).fetchone()[0] == 3
+            assert sample(available)[0]==1  # Primary arrival replaces, never duplicates, the archived game.
+            conn.execute('UPDATE public.player_stats SET receptions=1 WHERE player_id=%s',(item['player_id'],))
+            assert sample(available)[0]==0  # Conflicting receiving sources block the player's effective history.
+            assert conn.execute('SELECT count(*) FROM public.nfl_receiving_supplements').fetchone()[0]==1
+
         finally:
             conn.rollback()

@@ -280,6 +280,19 @@ class PropQueryBuilder:
             args.append(params.as_of_date)
             next_idx += 1
 
+        from datetime import datetime
+        from sportsbet.model_contract import NFL_HISTORY_FROZEN_AT
+        corrected = params.sport == 'nfl' and params.prop_type in ('rec_yds','receptions') and params.observed_before is not None
+        if corrected and params.observed_before.utcoffset() is not None:
+            corrected = params.observed_before >= datetime.fromisoformat(NFL_HISTORY_FROZEN_AT)
+        if corrected:
+            if params.observed_before.utcoffset() is None or params.as_of_date is None:
+                raise ValueError('Corrected NFL history requires aware source and exclusive game cutoffs')
+            sql += (f"  AND source_observed_at <= ${next_idx}"
+                f" AND (supplement_inserted_at IS NULL OR supplement_inserted_at <= ${next_idx})\n")
+            args.append(params.observed_before)
+            next_idx += 1
+
         if params.last_n_games is not None:
             # Select recent games AFTER every filter, including cutoff/location.
             conditions = sql.split("WHERE ", 1)[1]
@@ -289,4 +302,6 @@ class PropQueryBuilder:
             )
             args.append(params.last_n_games)
 
+        if corrected:
+            sql = sql.replace('FROM player_stats', 'FROM nfl_effective_receiving_gamelogs AS player_stats')
         return sql, tuple(args)

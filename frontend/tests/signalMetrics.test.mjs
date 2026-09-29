@@ -381,3 +381,16 @@ test('corrected CFB model requires its policy and preserves historical validatio
   const projected=publicSignals([{...publicQuote,...signal}],current).signals[0];
   assert.equal(projected.history_policy_version,'cfb-explicit-receiving-v1');
 });
+
+
+test('NFL corrected-history policy gates current signals while retaining old picks',()=>{
+  const when=Date.parse('2026-09-30T12:00:00Z');
+  const legacy={...quote,sport:'nfl',forecast_cutoff:'2026-09-30',
+    snapped_at:new Date(when).toISOString(),game_start_time:new Date(when+3600000).toISOString(),
+    availability:{...quote.availability,captured_at:new Date(when).toISOString()}};
+  assert.equal(signalMetrics(legacy,when).gate_reason,'legacy_model');
+  assert.equal(signalMetrics(legacy,when,true).gated,false);
+  assert.equal(signalMetrics({...legacy,model_version:'empirical-jeffreys-v4-nfl-history-v1',
+    history_policy_version:'nfl-explicit-receiving-v1'},when).gated,false);
+  assert.equal(signalMetrics({...legacy,model_version:'empirical-jeffreys-v4-nfl-history-v1'},when).gate_reason,'legacy_model');
+});

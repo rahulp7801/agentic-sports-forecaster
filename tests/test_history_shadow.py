@@ -262,6 +262,9 @@ async def test_scan_shadow_has_no_effect_on_primary_forecasts_or_exposure(tmp_pa
         if failed_read:
             assert row['history_shadow']['reason']=='history_read_failed'
             assert 'private database detail' not in str(row)
+        elif row['model_version']=='empirical-jeffreys-v4-nfl-history-v1':
+            assert row['history_shadow']['reason']=='unsupported_baseline'
+            assert shadow.verified_shadow_probability(row) is None
         else:
             assert shadow.verified_shadow_probability(row) is not None
         assert row['accepted'] is False and row['stake_fraction']==0

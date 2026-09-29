@@ -152,6 +152,10 @@ def _actual(db, prediction: dict, sport: str, day: str, game: dict):
             FROM player_stats ps JOIN games g
             ON g.season=ps.season AND g.week=ps.week AND ps.team IN (g.home_team,g.away_team)
             WHERE ps.player_id=? AND g.game_date=?'''
+        from sportsbet.model_contract import NFL_MODEL_VERSION
+        if prediction['prop_type'] in ('rec_yds','receptions') and prediction.get('model_version')==NFL_MODEL_VERSION:
+            query=query.replace('ps.source_observed_at', 'ps.source_observed_at,ps.supplement_manifest')
+            query=query.replace('FROM player_stats ps', 'FROM nfl_effective_receiving_gamelogs ps')
         rows=db.execute(query,(player_id,day)).fetchall()
     if len(rows)!=1:
         return None
@@ -175,8 +179,8 @@ def _actual(db, prediction: dict, sport: str, day: str, game: dict):
     if not value.is_finite() or (sport=='nba' and value < 0):
         raise ValueError('Invalid observed stat')
     provider,digest,record_digest,observed=rows[0][len(fields):len(fields)+4]
-    supplement=rows[0][len(fields)+4] if sport=='cfb' else None
-    expected={'nba':{'nba','espn'},'nfl':{'nflverse'},'cfb':{'sportsdataverse_espn','sportsdataverse_espn_supplement'}}[sport]
+    supplement=rows[0][len(fields)+4] if len(rows[0])>len(fields)+4 else None
+    expected={'nba':{'nba','espn'},'nfl':{'nflverse','nflverse_espn_supplement'},'cfb':{'sportsdataverse_espn','sportsdataverse_espn_supplement'}}[sport]
     if (provider not in expected or not isinstance(digest,str) or not re.fullmatch('[0-9a-f]{64}',digest)
             or not isinstance(record_digest,str) or not re.fullmatch('[0-9a-f]{64}',record_digest)):
         raise StatProvenanceError('Invalid stat source')
@@ -203,6 +207,10 @@ def _actual(db, prediction: dict, sport: str, day: str, game: dict):
         from sportsbet.ingestion.cfb_supplement_proof import valid_supplement
         if not valid_supplement(evidence_record,supplement,digest,observed,game['game_time']):
             raise StatProvenanceError('Invalid composite CFB evidence')
+    if provider=='nflverse_espn_supplement':
+        from sportsbet.ingestion.nfl_supplement_proof import valid_supplement
+        if not valid_supplement(evidence_record,supplement,digest,observed,game):
+            raise StatProvenanceError('Invalid composite NFL evidence')
     return value,dict(provider=provider,sha256=digest,record_sha256=record_digest,
         observed_at=observed,record=evidence_record,**({'supplement_manifest':supplement} if supplement else {}))
 
