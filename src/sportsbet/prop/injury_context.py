@@ -75,8 +75,17 @@ def _summary(games: int, mean: object, hits: int) -> dict:
                 hit_rate=round(hits/games,4) if games else None)
 
 
+def _has_observation_cutoff(observed_before: datetime | None) -> bool:
+    if observed_before is None:
+        return False
+    if not isinstance(observed_before, datetime) or observed_before.utcoffset() is None:
+        raise ValueError('Context observation cutoff requires an aware timestamp')
+    return True
+
+
 async def _nfl_split(conn, player_id: str, season: int, cutoff: date, prop_type: str,
                      line: float, direction: str, candidate: dict, observed_before: datetime | None = None) -> dict | None:
+    bounded = _has_observation_cutoff(observed_before)
     column = PROP_COLUMN_MAP[prop_type]
     operator = '>' if direction == 'over' else '<'
     relation = 'team' if candidate['relationship'] == 'teammate' else 'opponent_team'
@@ -85,14 +94,14 @@ async def _nfl_split(conn, player_id: str, season: int, cutoff: date, prop_type:
     snap_column = 'offense_snaps' if candidate['unit'] == 'offense' else 'defense_snaps'
     stat_team=candidate['stat_team']
     from sportsbet.model_contract import NFL_HISTORY_FROZEN_AT
-    corrected = (prop_type in ('rec_yds','receptions') and observed_before is not None
-        and observed_before.utcoffset() is not None
+    corrected = (prop_type in ('rec_yds','receptions') and bounded
         and observed_before >= datetime.fromisoformat(NFL_HISTORY_FROZEN_AT))
     table = 'nfl_effective_receiving_gamelogs' if corrected else 'player_stats'
     providers = "('nflverse','nflverse_espn_supplement')" if corrected else "('nflverse')"
-    stat_cutoff = ('AND ps.source_observed_at <= $7 AND '
-        '(ps.supplement_inserted_at IS NULL OR ps.supplement_inserted_at <= $7)') if corrected else ''
-    snap_cutoff = 'AND source_observed_at <= $7' if corrected else ''
+    stat_cutoff = 'AND ps.source_observed_at <= $7' if bounded else ''
+    if corrected:
+        stat_cutoff += ' AND (ps.supplement_inserted_at IS NULL OR ps.supplement_inserted_at <= $7)'
+    snap_cutoff = 'AND source_observed_at <= $7' if bounded else ''
     row = await conn.fetchrow(f'''WITH tenure AS (
         SELECT MIN(season*100+week) AS first_week FROM nfl_snap_counts
         WHERE pfr_player_id=$6 AND team=$5 AND {snap_column}>0 {snap_cutoff}
@@ -128,7 +137,7 @@ async def _nfl_split(conn, player_id: str, season: int, cutoff: date, prop_type:
         AVG(value) FILTER (WHERE NOT active) absent_mean,
         COUNT(*) FILTER (WHERE NOT active AND value {operator} $3::double precision) absent_hits,
         COUNT(*) FILTER (WHERE active IS NULL) unknown_games
-      FROM labeled''',player_id,season,line,cutoff,stat_team,candidate['participant_id'],*([observed_before] if corrected else []))
+      FROM labeled''',player_id,season,line,cutoff,stat_team,candidate['participant_id'],*([observed_before] if bounded else []))
     if not row or sum(int(row[key] or 0) for key in ('active_games','absent_games','unknown_games'))==0:
         return None
     active_games, absent_games = int(row['active_games'] or 0), int(row['absent_games'] or 0)
@@ -140,27 +149,34 @@ async def _nfl_split(conn, player_id: str, season: int, cutoff: date, prop_type:
 
 
 async def _nba_split(conn, player_id: str, season: int, cutoff: date, prop_type: str,
-                     line: float, direction: str, candidate: dict) -> dict | None:
+                     line: float, direction: str, candidate: dict, observed_before: datetime | None = None) -> dict | None:
+    bounded = _has_observation_cutoff(observed_before)
     column = NBA_GAMELOG_COLUMN_MAP[prop_type]
     value = '(points+rebounds+assists)' if prop_type == 'pra' else column
     operator = '>' if direction == 'over' else '<'
     relation = 'team_abbreviation' if candidate['relationship'] == 'teammate' else 'opponent_team'
     stat_team = candidate['stat_team']
-    identities = await conn.fetch('''SELECT DISTINCT player_id FROM nba_player_gamelogs
-        WHERE LOWER(player_name)=LOWER($1) AND team_abbreviation=$2''',candidate['player'],stat_team)
+    identity_cutoff = ("AND game_date < $3 AND source_observed_at <= $4 "
+        "AND source_provider IN ('nba','espn') "
+        "AND source_sha256 ~ '^[0-9a-f]{64}$' AND source_record_sha256 ~ '^[0-9a-f]{64}$'") if bounded else ''
+    identities = await conn.fetch(f'''SELECT DISTINCT player_id FROM nba_player_gamelogs
+        WHERE LOWER(player_name)=LOWER($1) AND team_abbreviation=$2 {identity_cutoff}''',
+        candidate['player'],stat_team,*([cutoff,observed_before] if bounded else []))
     if len(identities) != 1:
         return None
     participant_id = identities[0]['player_id']
+    stat_cutoff = 'AND source_observed_at <= $7' if bounded else ''
+    participant_cutoff = 'AND gl.source_observed_at <= $7' if bounded else ''
     row = await conn.fetchrow(f'''WITH tenure AS (
         SELECT MIN(game_date) first_game FROM nba_player_gamelogs
-        WHERE player_id=$6 AND team_abbreviation=$5 AND minutes>0
+        WHERE player_id=$6 AND team_abbreviation=$5 AND minutes>0 {stat_cutoff}
           AND source_provider IN ('nba','espn')
           AND source_sha256 ~ '^[0-9a-f]{{64}}$'
           AND source_record_sha256 ~ '^[0-9a-f]{{64}}$'
     ), target AS (
         SELECT game_id,{value}::float AS value
         FROM nba_player_gamelogs
-        WHERE player_id=$1 AND season >= $2 AND game_date < $4 AND {relation}=$5
+        WHERE player_id=$1 AND season >= $2 AND game_date < $4 AND {relation}=$5 {stat_cutoff}
           AND game_date >= (SELECT first_game FROM tenure)
           AND source_provider IN ('nba','espn')
           AND source_sha256 ~ '^[0-9a-f]{{64}}$'
@@ -175,7 +191,7 @@ async def _nba_split(conn, player_id: str, season: int, cutoff: date, prop_type:
             AND gl.minutes IS NOT NULL AND gl.minutes BETWEEN 0 AND 999.9)
             THEN BOOL_AND(gl.minutes>0) END
           FROM nba_player_gamelogs gl
-          WHERE gl.game_id=target.game_id AND gl.player_id=$6 AND gl.team_abbreviation=$5
+          WHERE gl.game_id=target.game_id AND gl.player_id=$6 AND gl.team_abbreviation=$5 {participant_cutoff}
         ) AS active FROM target
     ) SELECT COUNT(*) FILTER (WHERE active) active_games,
         AVG(value) FILTER (WHERE active) active_mean,
@@ -184,7 +200,7 @@ async def _nba_split(conn, player_id: str, season: int, cutoff: date, prop_type:
         AVG(value) FILTER (WHERE NOT active) absent_mean,
         COUNT(*) FILTER (WHERE NOT active AND value {operator} $3::double precision) absent_hits,
         COUNT(*) FILTER (WHERE active IS NULL) unknown_games
-      FROM labeled''',int(player_id),season,line,cutoff,stat_team,participant_id)
+      FROM labeled''',int(player_id),season,line,cutoff,stat_team,participant_id,*([observed_before] if bounded else []))
     if not row or sum(int(row[key] or 0) for key in ('active_games','absent_games','unknown_games'))==0:
         return None
     active_games, absent_games = int(row['active_games'] or 0), int(row['absent_games'] or 0)
@@ -208,7 +224,7 @@ async def historical_availability_splits(pool, *, context: dict | None, subject_
             for candidate in candidates:
                 result = await (_nfl_split(conn,player_id,season,cutoff,prop_type,line,direction,candidate,observed_before)
                     if sport == 'nfl' else
-                    _nba_split(conn,player_id,season,cutoff,prop_type,line,direction,candidate))
+                    _nba_split(conn,player_id,season,cutoff,prop_type,line,direction,candidate,observed_before))
                 if result:
                     rows.append(result)
     except asyncpg.UndefinedTableError:

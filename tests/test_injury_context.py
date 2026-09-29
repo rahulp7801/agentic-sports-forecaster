@@ -79,3 +79,29 @@ async def test_nba_split_uses_canonical_team_and_integer_subject_identity():
     assert conn.args[0] == 123 and conn.args[-2:] == ('LAC',321)
     assert result['absent']=={'games':5,'mean':29.0,'hit_rate':.8}
     assert 'stat_team' not in result
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('split,prop', [(_nfl_split,'pass_yds'),(_nfl_split,'rush_yds'),(_nfl_split,'receptions'),(_nba_split,'points')])
+async def test_context_rejects_naive_observation_cutoff_before_query(split,prop):
+    from datetime import datetime
+    with pytest.raises(ValueError,match='aware timestamp'):
+        await split(None,'123',2024,date(2026,9,30),prop,1.5,'over',{},datetime(2026,9,29))
+
+
+@pytest.mark.asyncio
+async def test_public_context_dispatch_passes_observation_cutoff_to_nba(monkeypatch):
+    from datetime import datetime,timezone
+    from sportsbet.prop import injury_context as context_module
+    now=datetime(2026,9,29,tzinfo=timezone.utc);candidate={'player':'Fixture'}
+    monkeypatch.setattr(context_module,'current_contexts',lambda *args:[candidate])
+    class Lease:
+        async def __aenter__(self):return 'connection'
+        async def __aexit__(self,*args):pass
+    class Pool:
+        def acquire(self):return Lease()
+    async def split(*args):
+        assert args[-1]==now and args[-2] is candidate
+        return {'active':{'games':1}}
+    monkeypatch.setattr(context_module,'_nba_split',split)
+    result=await context_module.historical_availability_splits(Pool(),context={},subject_team='BOS',subject_player='Target',sport='nba',player_id='123',season=2024,cutoff=date(2026,9,30),prop_type='points',line=1.5,direction='over',observed_before=now)
+    assert result==[{'active':{'games':1}}]
