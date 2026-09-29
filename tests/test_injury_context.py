@@ -105,3 +105,21 @@ async def test_public_context_dispatch_passes_observation_cutoff_to_nba(monkeypa
     monkeypatch.setattr(context_module,'_nba_split',split)
     result=await context_module.historical_availability_splits(Pool(),context={},subject_team='BOS',subject_player='Target',sport='nba',player_id='123',season=2024,cutoff=date(2026,9,30),prop_type='points',line=1.5,direction='over',observed_before=now)
     assert result==[{'active':{'games':1}}]
+
+@pytest.mark.parametrize('change',[
+    {'active_oldest':None}, {'active_oldest':date(2026,9,5)},
+    {'active_newest':date(2026,9,30)}, {'unknown_oldest':date(2026,9,1)},
+])
+def test_context_sample_window_rejects_missing_reversed_future_or_empty_group_dates(change):
+    from sportsbet.prop.injury_context import _sample_window
+    row=dict(active_games=2,active_oldest=date(2026,9,1),active_newest=date(2026,9,4),absent_games=0,unknown_games=0)
+    assert _sample_window(row|change,date(2026,9,30)) is None
+
+
+def test_context_sample_window_keeps_groups_separate_and_empty_groups_explicit():
+    from sportsbet.prop.injury_context import _sample_window
+    row=dict(active_games=2,active_oldest=date(2025,9,1),active_newest=date(2025,9,8),
+        absent_games=1,absent_oldest=date(2026,9,1),absent_newest=date(2026,9,1),unknown_games=0)
+    assert _sample_window(row,date(2026,9,30))==dict(cutoff='2026-09-30',
+        active=dict(oldest='2025-09-01',newest='2025-09-08'),
+        absent=dict(oldest='2026-09-01',newest='2026-09-01'),unknown=None)

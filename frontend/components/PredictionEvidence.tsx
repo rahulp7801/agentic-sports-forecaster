@@ -4,6 +4,7 @@ import styles from './ResearchViews.module.css';
 import PlayerPortrait from './PlayerPortrait';
 import PlayerHistory from './PlayerHistory';
 import {trackingSampleSummary} from '@/lib/trackingSample';
+import {contextWindowText} from '@/lib/contextWindow';
 
 export const REASONS:Record<string,string>={
   missing_prediction_cutoff:'The retained history cutoff does not match the target game date.',
@@ -93,6 +94,7 @@ export default function PredictionEvidence({signal,onClose}:{signal:EVSignal;onC
             {availability.context_splits.map(split=><article key={`${split.relationship}-${split.player}`}>
               <header><strong>{split.player}</strong><span>{split.team} {split.position} · {split.relationship} {split.unit} · {split.status}</span></header>
               <dl>{cohort(split.source==='nflverse_snap_counts' ? `Recorded ${split.unit} snaps` : 'Recorded minutes above zero',split.active)}{split.source==='nba_final_box_scores' && cohort('Recorded zero minutes',split.absent)}</dl>
+              <div aria-label="Participation sample dates">{contextWindowText(split).map(text=><p key={text}>{text}</p>)}</div>
               <p>{split.unknown_games} game{split.unknown_games===1?'':'s'} with unknown participation, excluded from the hit rates. Missing rows{split.source==='nflverse_snap_counts' ? ' and unverified zero snap counts' : ''} do not establish absence.</p>
               <small>{split.participation}. Descriptive comparison; roster changes, role and matchup can confound the difference.</small>
             </article>)}

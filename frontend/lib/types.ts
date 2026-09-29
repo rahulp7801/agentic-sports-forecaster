@@ -6,6 +6,8 @@ export type PropType = 'points' | 'rebounds' | 'assists' | 'threes' | 'pra' | 's
 export type SignalStrength = 'high' | 'medium' | 'low' | 'unrated';
 export type Direction = 'over' | 'under';
 
+export interface ContextDateRange {oldest:string;newest:string}
+
 export interface AvailabilityContextSplit {
   player: string;
   status: string;
@@ -17,6 +19,7 @@ export interface AvailabilityContextSplit {
   participation: 'recorded unit snaps' | 'recorded minutes';
   evidence_version: 'recorded-participation-v2';
   unknown_games: number;
+  sample_window?: {cutoff:string;active:ContextDateRange|null;absent:ContextDateRange|null;unknown:ContextDateRange|null};
   active: {games:number; mean:number|null; hit_rate:number|null};
   absent: {games:number; mean:number|null; hit_rate:number|null};
 }

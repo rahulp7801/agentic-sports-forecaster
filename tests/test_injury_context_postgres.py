@@ -48,8 +48,11 @@ def test_nfl_nonreceiving_context_excludes_late_stats_snaps_and_tenure(prop,colu
             earlier=run(NOW)
             assert earlier['active']==dict(games=1,mean=10.0,hit_rate=0.0)
             assert earlier['unknown_games']==1
+            assert earlier['sample_window']==dict(cutoff='2026-09-30',active=dict(oldest='2025-09-02',newest='2025-09-02'),absent=None,unknown=dict(oldest='2025-09-04',newest='2025-09-04'))
             later=run(LATE)
             assert later['active']==dict(games=3,mean=46.67,hit_rate=.6667) and later['unknown_games']==0
+            assert later['sample_window']['active']==dict(oldest='2025-09-02',newest='2025-09-04')
+            assert later['sample_window']['unknown'] is None
             assert run(None)==later  # Legacy no-cutoff interface retained.
             conn.execute('UPDATE public.nfl_snap_counts SET source_observed_at=%s WHERE pfr_player_id=%s',(LATE,participant))
             assert run(NOW) is None
@@ -68,6 +71,8 @@ def test_nba_context_excludes_late_identity_stats_minutes_and_tenure():
                 game=token+str(day)
                 insert(subject,game,date(2026,9,day),value,LATE if day==2 else NOW,player_name='Target '+token)
                 insert(participant,game,date(2026,9,day),0,LATE if day==3 else NOW)
+            insert(subject,token+'zero',date(2026,9,4),25,NOW,player_name='Target '+token)
+            insert(participant,token+'zero',date(2026,9,4),0,NOW,minutes=0)
             # Neither a late identity receipt nor a future game may make the
             # pre-cutoff participant binding ambiguous.
             insert(800000003,token+'late',date(2026,9,1),0,LATE)
@@ -75,6 +80,8 @@ def test_nba_context_excludes_late_identity_stats_minutes_and_tenure():
             def run(stamp):return asyncio.run(_nba_split(ContextConnection(conn),str(subject),2024,date(2026,9,30),'points',15.5,'over',candidate,stamp))
             earlier=run(NOW)
             assert earlier['active']==dict(games=1,mean=10.0,hit_rate=0.0) and earlier['unknown_games']==1
+            assert earlier['absent']==dict(games=1,mean=25.0,hit_rate=1.0)
+            assert earlier['sample_window']==dict(cutoff='2026-09-30',active=dict(oldest='2026-09-01',newest='2026-09-01'),absent=dict(oldest='2026-09-04',newest='2026-09-04'),unknown=dict(oldest='2026-09-03',newest='2026-09-03'))
             assert run(LATE) is None  # A genuinely ambiguous available identity is rejected.
             conn.execute('DELETE FROM public.nba_player_gamelogs WHERE player_name=%s AND player_id IN (800000003,800000004)',(name,))
             later=run(LATE)

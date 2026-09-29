@@ -1,5 +1,6 @@
+import {publicContextWindow} from './contextWindow.ts';
 import {validPlayerId} from './publicGameLogs.ts';
-import type {AvailabilityContextSplit,AvailabilityEvidence,EVSignal,ModelSport,NextGenMetric,NextGenStatsEvidence,PlayerProfile,PropType,Sport} from './types';
+import type {AvailabilityEvidence,EVSignal,ModelSport,NextGenMetric,NextGenStatsEvidence,PlayerProfile,PropType,Sport} from './types';
 
 const CURRENT_MODEL_VERSION = 'empirical-jeffreys-v4';
 const CFB_MODEL_VERSION = 'empirical-jeffreys-v4-cfb-history-v1';
@@ -100,7 +101,7 @@ function rosterSource(value:unknown,sport:Sport):value is string {
   } catch {return false;}
 }
 
-function publicAvailability(value:unknown,sport:Sport,historyPlayerId?:unknown):AvailabilityEvidence|undefined {
+function publicAvailability(value:unknown,sport:Sport,historyPlayerId?:unknown,forecastCutoff?:unknown):AvailabilityEvidence|undefined {
   if (!value || typeof value!=='object' || Array.isArray(value)) return undefined;
   const a=value as Record<string,unknown>;
   if(a.status==='unavailable') return {status:'unavailable',roster_confirmed:false,
@@ -170,10 +171,14 @@ function publicAvailability(value:unknown,sport:Sport,historyPlayerId?:unknown):
         || Number(active!.games)+Number(absent!.games)+row.unknown_games<1
         || Number(active!.games)+Number(absent!.games)+row.unknown_games>40
         || (sport==='nfl' && absent!.games!==0)) return undefined;
+      const window=row.sample_window===undefined ? undefined : publicContextWindow(row.sample_window,
+        {active:Number(active!.games),absent:Number(absent!.games),unknown:row.unknown_games},forecastCutoff);
+      if(window===null) continue;
+      const projectCohort=(item:Record<string,unknown>)=>({games:item.games as number,mean:item.mean as number|null,hit_rate:item.hit_rate as number|null});
       contextSplits.push({player:row.player,status:row.status,position:row.position,team:row.team,
         relationship:row.relationship as 'teammate'|'opponent',unit:row.unit as 'offense'|'defense',
-        source,participation,evidence_version:'recorded-participation-v2',unknown_games:row.unknown_games,active:active as AvailabilityContextSplit['active'],
-        absent:absent as AvailabilityContextSplit['absent']});
+        source,participation,evidence_version:'recorded-participation-v2',unknown_games:row.unknown_games,active:projectCohort(active!),
+        absent:projectCohort(absent!),...(window ? {sample_window:window} : {})});
     }
   }
   return {status:'observed',roster_confirmed:true,subject_status:a.subject_status,
@@ -305,7 +310,7 @@ export function publicSignal(value:unknown, now=Date.now(), retained=false):EVSi
       || Object.entries(flags).length>20 || Object.entries(flags).some(
         ([key,item])=>!bounded(key,64) || !bounded(item,300,true))
       || !bounded(s.market_type,100)) return null;
-  const availability=publicAvailability(s.availability,sport,s.player_id);
+  const availability=publicAvailability(s.availability,sport,s.player_id,s.forecast_cutoff);
   // The quote can precede inference. Retain the actual forecast capture time
   // rather than treating the earlier price timestamp as source availability.
   const capturedAt=timestamp(s.captured_at) && Date.parse(s.captured_at)>=Date.parse(s.snapped_at)

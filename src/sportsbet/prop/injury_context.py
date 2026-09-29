@@ -75,6 +75,23 @@ def _summary(games: int, mean: object, hits: int) -> dict:
                 hit_rate=round(hits/games,4) if games else None)
 
 
+def _sample_window(row: dict, cutoff: date) -> dict | None:
+    """Retain the actual dated cohorts without changing their statistics."""
+    result = {'cutoff': cutoff.isoformat()}
+    for group in ('active', 'absent', 'unknown'):
+        oldest, newest = row.get(group + '_oldest'), row.get(group + '_newest')
+        count = int(row.get(group + '_games') or 0)
+        if count == 0:
+            if oldest is not None or newest is not None:
+                return None
+            result[group] = None
+        elif type(oldest) is date and type(newest) is date and oldest <= newest < cutoff:
+            result[group] = {'oldest': oldest.isoformat(), 'newest': newest.isoformat()}
+        else:
+            return None
+    return result
+
+
 def _has_observation_cutoff(observed_before: datetime | None) -> bool:
     if observed_before is None:
         return False
@@ -109,7 +126,9 @@ async def _nfl_split(conn, player_id: str, season: int, cutoff: date, prop_type:
           AND source_sha256 ~ '^[0-9a-f]{{64}}$'
           AND source_record_sha256 ~ '^[0-9a-f]{{64}}$'
     ), target AS (
-        SELECT ps.season,ps.week,ps.{column}::float AS value
+        SELECT ps.season,ps.week,ps.{column}::float AS value,
+            (SELECT MIN(g.game_date) FROM games g WHERE g.season=ps.season AND g.week=ps.week
+              AND (g.home_team=ps.team OR g.away_team=ps.team) AND g.game_date < $4) AS game_date
         FROM {table} ps
         WHERE ps.player_id=$1 AND ps.season >= $2 AND ps.{column} IS NOT NULL
           AND ps.{relation}=$5
@@ -122,7 +141,7 @@ async def _nfl_split(conn, player_id: str, season: int, cutoff: date, prop_type:
             AND (g.home_team=ps.team OR g.away_team=ps.team) AND g.game_date < $4)
         ORDER BY ps.season DESC,ps.week DESC LIMIT 40
     ), labeled AS (
-        SELECT value,(SELECT CASE WHEN COUNT(*)=1 AND BOOL_AND(
+        SELECT value,game_date,(SELECT CASE WHEN COUNT(*)=1 AND BOOL_AND(
             sc.source_provider='nflverse'
             AND sc.source_sha256 ~ '^[0-9a-f]{{64}}$'
             AND sc.source_record_sha256 ~ '^[0-9a-f]{{64}}$'
@@ -136,12 +155,21 @@ async def _nfl_split(conn, player_id: str, season: int, cutoff: date, prop_type:
         COUNT(*) FILTER (WHERE NOT active) absent_games,
         AVG(value) FILTER (WHERE NOT active) absent_mean,
         COUNT(*) FILTER (WHERE NOT active AND value {operator} $3::double precision) absent_hits,
-        COUNT(*) FILTER (WHERE active IS NULL) unknown_games
+        COUNT(*) FILTER (WHERE active IS NULL) unknown_games,
+        MIN(game_date) FILTER (WHERE active) active_oldest,
+        MAX(game_date) FILTER (WHERE active) active_newest,
+        MIN(game_date) FILTER (WHERE NOT active) absent_oldest,
+        MAX(game_date) FILTER (WHERE NOT active) absent_newest,
+        MIN(game_date) FILTER (WHERE active IS NULL) unknown_oldest,
+        MAX(game_date) FILTER (WHERE active IS NULL) unknown_newest
       FROM labeled''',player_id,season,line,cutoff,stat_team,candidate['participant_id'],*([observed_before] if bounded else []))
     if not row or sum(int(row[key] or 0) for key in ('active_games','absent_games','unknown_games'))==0:
         return None
     active_games, absent_games = int(row['active_games'] or 0), int(row['absent_games'] or 0)
     evidence={key:candidate[key] for key in ('player','status','position','team','relationship','unit')}
+    window = _sample_window(row, cutoff)
+    if window is not None:
+        evidence['sample_window'] = window
     return evidence | dict(active=_summary(active_games,row['active_mean'],int(row['active_hits'] or 0)),
         absent=_summary(absent_games,row['absent_mean'],int(row['absent_hits'] or 0)),
         unknown_games=int(row['unknown_games'] or 0),evidence_version='recorded-participation-v2',
@@ -174,7 +202,7 @@ async def _nba_split(conn, player_id: str, season: int, cutoff: date, prop_type:
           AND source_sha256 ~ '^[0-9a-f]{{64}}$'
           AND source_record_sha256 ~ '^[0-9a-f]{{64}}$'
     ), target AS (
-        SELECT game_id,{value}::float AS value
+        SELECT game_id,game_date,{value}::float AS value
         FROM nba_player_gamelogs
         WHERE player_id=$1 AND season >= $2 AND game_date < $4 AND {relation}=$5 {stat_cutoff}
           AND game_date >= (SELECT first_game FROM tenure)
@@ -184,7 +212,7 @@ async def _nba_split(conn, player_id: str, season: int, cutoff: date, prop_type:
           AND {value} IS NOT NULL
         ORDER BY game_date DESC LIMIT 40
     ), labeled AS (
-        SELECT value,(SELECT CASE WHEN COUNT(*)=1 AND BOOL_AND(
+        SELECT value,game_date,(SELECT CASE WHEN COUNT(*)=1 AND BOOL_AND(
             gl.source_provider IN ('nba','espn')
             AND gl.source_sha256 ~ '^[0-9a-f]{{64}}$'
             AND gl.source_record_sha256 ~ '^[0-9a-f]{{64}}$'
@@ -199,12 +227,21 @@ async def _nba_split(conn, player_id: str, season: int, cutoff: date, prop_type:
         COUNT(*) FILTER (WHERE NOT active) absent_games,
         AVG(value) FILTER (WHERE NOT active) absent_mean,
         COUNT(*) FILTER (WHERE NOT active AND value {operator} $3::double precision) absent_hits,
-        COUNT(*) FILTER (WHERE active IS NULL) unknown_games
+        COUNT(*) FILTER (WHERE active IS NULL) unknown_games,
+        MIN(game_date) FILTER (WHERE active) active_oldest,
+        MAX(game_date) FILTER (WHERE active) active_newest,
+        MIN(game_date) FILTER (WHERE NOT active) absent_oldest,
+        MAX(game_date) FILTER (WHERE NOT active) absent_newest,
+        MIN(game_date) FILTER (WHERE active IS NULL) unknown_oldest,
+        MAX(game_date) FILTER (WHERE active IS NULL) unknown_newest
       FROM labeled''',int(player_id),season,line,cutoff,stat_team,participant_id,*([observed_before] if bounded else []))
     if not row or sum(int(row[key] or 0) for key in ('active_games','absent_games','unknown_games'))==0:
         return None
     active_games, absent_games = int(row['active_games'] or 0), int(row['absent_games'] or 0)
     evidence={key:candidate[key] for key in ('player','status','position','team','relationship','unit')}
+    window = _sample_window(row, cutoff)
+    if window is not None:
+        evidence['sample_window'] = window
     return evidence | dict(active=_summary(active_games,row['active_mean'],int(row['active_hits'] or 0)),
         absent=_summary(absent_games,row['absent_mean'],int(row['absent_hits'] or 0)),
         unknown_games=int(row['unknown_games'] or 0),evidence_version='recorded-participation-v2',
