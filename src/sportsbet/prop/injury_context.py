@@ -54,9 +54,13 @@ def current_contexts(context: dict | None, subject_team: str, subject_player: st
             continue
         row=dict(row)
         if sport == 'nfl':
-            roster_ids = {name: identity for identity,name in team.get('roster_ids', {}).items()}
-            espn_id = roster_ids.get(row['player'])
-            player_id = pfr.get(espn_id) if espn_id else None
+            # Preserve roster ambiguity before consulting the crosswalk. A
+            # missing mapping for one same-name player does not identify the other.
+            matches = [identity for identity,name in team.get('roster_ids', {}).items()
+                       if name == row['player']]
+            if len(matches) != 1:
+                continue
+            player_id = pfr.get(matches[0])
             if not player_id:
                 continue
             row['participant_id'] = player_id

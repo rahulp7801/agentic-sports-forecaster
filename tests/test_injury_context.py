@@ -123,3 +123,37 @@ def test_context_sample_window_keeps_groups_separate_and_empty_groups_explicit()
     assert _sample_window(row,date(2026,9,30))==dict(cutoff='2026-09-30',
         active=dict(oldest='2025-09-01',newest='2025-09-08'),
         absent=dict(oldest='2026-09-01',newest='2026-09-01'),unknown=None)
+
+
+@pytest.mark.parametrize('reverse',[False,True])
+@pytest.mark.parametrize('mapped_ids',[['1'],['2'],['1','2']])
+def test_nfl_context_never_selects_one_of_two_roster_ids_with_the_same_name(reverse,mapped_ids):
+    entries=[('1','Receiver'),('2','Receiver'),('9','Target'),('3','Unique Receiver')]
+    if reverse:entries.reverse()
+    context={'status':'observed','pfr_player_identities':{
+        **{identity:'Part'+identity for identity in mapped_ids},'3':'Unique00'},'teams':[
+        {'abbreviation':'NE','roster_ids':dict(entries),'reports':[
+            {'player':'Receiver','position':'WR','status':'Out'},
+            {'player':'Unique Receiver','position':'TE','status':'Questionable'}]}]}
+    rows=current_contexts(context,'NE','Target','nfl')
+    assert [(row['player'],row['participant_id']) for row in rows]==[('Unique Receiver','Unique00')]
+    # An uncertain history binding must not suppress the current injury warning
+    # or loosen the existing baseline qualification gate.
+    from sportsbet.prop.availability import blocks_unadjusted_teammate_context
+    reports=relevant_availability_reports(context,'NE','Target','nfl')
+    ambiguous=next(row for row in reports if row['player']=='Receiver')
+    assert blocks_unadjusted_teammate_context(ambiguous)
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_nfl_context_is_rejected_before_history_queries():
+    from sportsbet.prop.injury_context import historical_availability_splits
+    context={'status':'observed','pfr_player_identities':{'1':'First00','2':'Second00'},'teams':[
+        {'abbreviation':'NYJ','roster_ids':{'1':'Defender','2':'Defender'},'reports':[
+            {'player':'Defender','position':'CB','status':'Out'}]}]}
+    class Pool:
+        def acquire(self):raise AssertionError('Ambiguous participant must not reach SQL')
+    rows=await historical_availability_splits(Pool(),context=context,subject_team='NE',
+        subject_player='Target',sport='nfl',player_id='00-0000001',season=2024,
+        cutoff=date(2026,9,30),prop_type='pass_yds',line=200.5,direction='over')
+    assert rows==[]
