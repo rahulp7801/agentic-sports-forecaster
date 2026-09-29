@@ -3,6 +3,7 @@ import {useEffect,useRef} from 'react';
 import styles from './ResearchViews.module.css';
 import PlayerPortrait from './PlayerPortrait';
 import PlayerHistory from './PlayerHistory';
+import {trackingSampleSummary} from '@/lib/trackingSample';
 
 export const REASONS:Record<string,string>={
   missing_prediction_cutoff:'The retained history cutoff does not match the target game date.',
@@ -47,6 +48,7 @@ const NGS_LABELS:Record<string,[string,string]>={
 
 export default function PredictionEvidence({signal,onClose}:{signal:EVSignal;onClose:()=>void}) {
   const availability=signal.availability;
+  const tracking=signal.next_gen_stats ? trackingSampleSummary(signal.next_gen_stats) : undefined;
   const panel=useRef<HTMLElement>(null);
   useEffect(()=>{panel.current?.focus();},[signal.id]);
   return <section ref={panel} tabIndex={-1} className={styles.predictionEvidence} aria-label={`Why ${signal.player} was forecast`}>
@@ -61,7 +63,12 @@ export default function PredictionEvidence({signal,onClose}:{signal:EVSignal;onC
       <div><span>Historical sample</span><strong>{signal.sample_size ?? '—'} games</strong><small>Mean {signal.mean_stat?.toFixed(1) ?? 'unavailable'} · before {signal.forecast_cutoff ?? 'recorded target game'}</small></div>
     </div>
     {signal.next_gen_stats && <section className={styles.ngsEvidence} aria-label="NFL Next Gen Stats context">
-      <div><small>NFL tracking context</small><h3>What the player was doing before this game</h3><p>Average of the latest {signal.next_gen_stats.sample_weeks} available weekly records before Week {signal.next_gen_stats.cutoff_week}. These measurements explain style and usage; they do not change the forecast probability.</p></div>
+      <div><small>NFL tracking context</small><h3>What the player was doing before this game</h3><p>Average of the latest {signal.next_gen_stats.sample_weeks} available weekly records before {signal.next_gen_stats.cutoff_season} Week {signal.next_gen_stats.cutoff_week}. These measurements explain style and usage; they do not change the forecast probability.</p></div>
+      {tracking && <div aria-label="Tracking sample coverage">
+        <p>{tracking.range}</p><p>{tracking.composition}</p>
+        {tracking.teams && <p>{tracking.teams}</p>}
+        {tracking.limitation && <p>{tracking.limitation}</p>}
+      </div>}
       <dl>{Object.entries(signal.next_gen_stats.metrics).map(([key,value])=>{const label=NGS_LABELS[key];return label && value!==undefined ? <div key={key}><dt>{label[0]}</dt><dd>{value.toFixed(2)}{label[1]}</dd></div>:null;})}</dl>
       <small><a href={signal.next_gen_stats.source_url} target="_blank" rel="noreferrer">nflverse Next Gen Stats source</a> &middot; captured {time(signal.next_gen_stats.source_observed_at)} &middot; exclusive pregame cutoff</small>
     </section>}

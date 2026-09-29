@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 import math
+import json
 import re
 
 import asyncpg
@@ -41,6 +42,8 @@ _EVIDENCE_QUERY = """
         LIMIT 8
     )
     SELECT COUNT(*) AS sample_weeks,
+           jsonb_agg(jsonb_build_object('season',season,'week',week,'team',team_abbr)
+             ORDER BY season DESC,week DESC) AS sample_periods,
            AVG(avg_time_to_throw) AS avg_time_to_throw,
            AVG(avg_completed_air_yards) AS avg_completed_air_yards,
            AVG(avg_intended_air_yards) AS avg_intended_air_yards,
@@ -63,6 +66,23 @@ _EVIDENCE_QUERY = """
              OR source_sha256 IS NULL OR source_observed_at IS NULL) AS invalid_source_rows
     FROM prior
 """
+
+
+def sample_periods(value, count, season, cutoff_week):
+    rows=json.loads(value) if isinstance(value,str) else value
+    if not isinstance(rows,list) or len(rows)!=count:
+        raise ValueError('Tracking sample periods must cover every retained row')
+    result=[];seen=set()
+    for row in rows:
+        year,week,team=row['season'],row['week'],row['team']
+        if (type(year) is not int or type(week) is not int or not season-1<=year<=season
+                or not 1<=week<=22 or (year==season and week>=cutoff_week)
+                or (year,week) in seen
+                or (team is not None and (not isinstance(team,str) or re.fullmatch('[A-Z]{2,3}',team) is None))):
+            raise ValueError('Invalid tracking sample period')
+        seen.add((year,week))
+        result.append(dict(season=year,week=week,team=TEAM_ALIASES.get(team,team)))
+    return sorted(result,key=lambda r:(r['season'],r['week']),reverse=True)
 
 
 async def load_ngs_evidence(
@@ -134,6 +154,10 @@ async def load_ngs_evidence(
         or (observed_before is not None and row["source_observed_at"] > observed_before)
     ):
         return None
+    try:
+        periods=sample_periods(row['sample_periods'],row['sample_weeks'],season,cutoff_week)
+    except (KeyError,TypeError,ValueError):
+        return None
     values = {
         column: float(row[column])
         for column in metrics
@@ -148,6 +172,8 @@ async def load_ngs_evidence(
         "cutoff_season": season,
         "cutoff_week": cutoff_week,
         "cutoff_exclusive": True,
+        "sample_periods": periods,
+        "roster_team": team,
         "metrics": values,
         "source_provider": row["source_provider"],
         "source_url": row["source_url"],

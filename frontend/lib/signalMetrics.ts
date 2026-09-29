@@ -188,7 +188,7 @@ function publicAvailability(value:unknown,sport:Sport,historyPlayerId?:unknown):
     teammates,...(contextSplits.length ? {context_splits:contextSplits} : {}),probability_adjusted:false};
 }
 
-function publicNextGenStats(value:unknown,sport:Sport,prop:PropType,capturedAt?:string):NextGenStatsEvidence|undefined {
+function publicNextGenStats(value:unknown,sport:Sport,prop:PropType,capturedAt?:string,rosterTeam?:string):NextGenStatsEvidence|undefined {
   if(sport!=='nfl' || !capturedAt || !value || typeof value!=='object' || Array.isArray(value)) return undefined;
   const evidence=value as Record<string,unknown>;
   const expected:Partial<Record<PropType,NextGenStatsEvidence['stat_type']>>={
@@ -215,6 +215,26 @@ function publicNextGenStats(value:unknown,sport:Sport,prop:PropType,capturedAt?:
     || (evidence.observed_before!==undefined && (!timestamp(evidence.observed_before)
       || Date.parse(evidence.observed_before)>Date.parse(capturedAt)
       || Date.parse(evidence.source_observed_at)>Date.parse(evidence.observed_before)))) return undefined;
+  let periods:NextGenStatsEvidence['sample_periods'];
+  if(evidence.sample_periods!==undefined || evidence.roster_team!==undefined) {
+    const normalize=(team:string)=>(team==='LAR' ? 'LA' : team==='WSH' ? 'WAS' : team);
+    if(!Array.isArray(evidence.sample_periods) || evidence.sample_periods.length!==evidence.sample_weeks
+      || !bounded(evidence.roster_team,3) || !/^[A-Z]{2,3}$/.test(evidence.roster_team)
+      || !rosterTeam || normalize(rosterTeam)!==evidence.roster_team) return undefined;
+    const seen=new Set<string>();periods=[];
+    for(const value of evidence.sample_periods) {
+      if(!value || typeof value!=='object' || Array.isArray(value)) return undefined;
+      const r=value as Record<string,unknown>;
+      if(!Number.isSafeInteger(r.season) || Number(r.season)<Number(evidence.cutoff_season)-1
+        || Number(r.season)>Number(evidence.cutoff_season) || !Number.isSafeInteger(r.week)
+        || Number(r.week)<1 || Number(r.week)>22 || (r.season===evidence.cutoff_season && Number(r.week)>=Number(evidence.cutoff_week))
+        || (r.team!==null && (!bounded(r.team,3) || !/^[A-Z]{2,3}$/.test(r.team)))) return undefined;
+      const key=`${r.season}:${r.week}`;
+      if(seen.has(key)) return undefined;seen.add(key);
+      periods.push({season:r.season as number,week:r.week as number,team:r.team===null ? null : normalize(r.team as string)});
+    }
+    periods.sort((a,b)=>b.season-a.season || b.week-a.week);
+  }
   const entries=Object.entries(metrics);
   if(!entries.length || entries.some(([key,item])=>!columns[statType].has(key as NextGenMetric)
     || !finite(item) || Math.abs(item)>10000)) return undefined;
@@ -224,6 +244,7 @@ function publicNextGenStats(value:unknown,sport:Sport,prop:PropType,capturedAt?:
     source_provider:'nflverse_ngs',source_url:evidence.source_url,
     source_sha256:evidence.source_sha256,source_observed_at:evidence.source_observed_at,
     probability_adjusted:false,
+    ...(periods ? {sample_periods:periods,roster_team:evidence.roster_team as string} : {}),
     ...(timestamp(evidence.observed_before) ? {observed_before:evidence.observed_before} : {})};
 }
 
@@ -290,7 +311,7 @@ export function publicSignal(value:unknown, now=Date.now(), retained=false):EVSi
   const capturedAt=timestamp(s.captured_at) && Date.parse(s.captured_at)>=Date.parse(s.snapped_at)
     && Date.parse(s.captured_at)<Date.parse(s.game_start_time) && Date.parse(s.captured_at)<=now+60000
     ? s.captured_at : undefined;
-  const nextGenStats=publicNextGenStats(s.next_gen_stats,sport,prop,capturedAt);
+  const nextGenStats=publicNextGenStats(s.next_gen_stats,sport,prop,capturedAt,availability?.team);
   const playerProfile=publicPlayerProfile(s.player_profile,sport,s.player,now);
   const metrics=signalMetrics({...s,availability},now,retained);
   if (!finite(metrics.implied_prob) || !finite(metrics.ev_pct)

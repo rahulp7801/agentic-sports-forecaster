@@ -52,6 +52,8 @@ export interface NextGenStatsEvidence {
   status: 'observed';
   stat_type: 'passing' | 'receiving' | 'rushing';
   sample_weeks: number;
+  sample_periods?: Array<{season:number;week:number;team:string|null}>;
+  roster_team?: string;
   cutoff_season: number;
   cutoff_week: number;
   cutoff_exclusive: true;
