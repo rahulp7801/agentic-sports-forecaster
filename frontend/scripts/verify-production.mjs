@@ -25,6 +25,7 @@ export const publicPipelinePaths = [
   '/api/games?sport=nba',
   '/api/gamelogs?sport=nfl',
   '/api/gamelogs?sport=nba',
+  '/api/gamelogs?sport=nfl&player_id=00-0000001&exact=1&limit=1',
   '/api/benchmarks?sport=nfl',
   '/api/benchmarks?sport=nba',
 ];
