@@ -255,8 +255,11 @@ def settle_final_props(ledger: Ledger, sport: str, schedule: dict) -> dict:
                     unresolved(prediction,'final_game_not_matched')
                     continue
                 game,day,line=matched
+                # Frozen model versions can select different evidence tables.
+                # Neither a result nor a missing row may cross that boundary.
                 stat_key=(day,game['provider_event_id'],game['home_abbr'],game['away_abbr'],
-                    prediction.get('player_id'),prediction['prop_type'])
+                    prediction.get('player_id'),prediction['prop_type'],
+                    prediction.get('model_version'))
                 if stat_key not in stat_cache:
                     stat_cache[stat_key]=_actual(db,prediction,sport,day,game)
                 observed=stat_cache[stat_key]
