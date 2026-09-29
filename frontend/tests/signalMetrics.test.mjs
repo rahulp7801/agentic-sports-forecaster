@@ -420,3 +420,31 @@ test('tracking source chronology uses forecast capture and survives repeat proje
   const legacy={...evidence};delete legacy.observed_before;
   assert.ok(publicSignals([{...record,next_gen_stats:legacy}],now+2000).signals[0].next_gen_stats);
 });
+
+test('tracking periods bind exact sample weeks to the captured roster team',()=>{
+  const periods=[{season:2025,week:18,team:null,private:'secret'},
+    {season:2026,week:2,team:'KC'},{season:2026,week:1,team:'WSH'}];
+  const evidence={status:'observed',stat_type:'passing',sample_weeks:3,cutoff_season:2026,cutoff_week:3,
+    cutoff_exclusive:true,metrics:{avg_time_to_throw:2.7},source_provider:'nflverse_ngs',
+    source_url:'https://github.com/nflverse/nflverse-data/releases/download/nextgen_stats/ngs_passing.parquet',
+    source_sha256:'a'.repeat(64),source_observed_at:new Date(now).toISOString(),probability_adjusted:false,
+    sample_periods:periods,roster_team:'KC'};
+  const record={...publicQuote,captured_at:new Date(now).toISOString(),next_gen_stats:evidence};
+  const project=(patch={})=>publicSignals([{...record,next_gen_stats:{...evidence,...patch}}],now).signals[0];
+  const result=project();
+  assert.deepEqual(result.next_gen_stats.sample_periods,[{season:2026,week:2,team:'KC'},
+    {season:2026,week:1,team:'WAS'},{season:2025,week:18,team:null}]);
+  assert.equal(result.next_gen_stats.roster_team,'KC');assert.equal(result.true_prob,record.true_prob);
+  assert.deepEqual(publicSignals([result],now).signals[0].next_gen_stats,result.next_gen_stats);
+  assert.equal(periods[0].private,'secret');
+  for(const patch of [{roster_team:'NYJ'},{roster_team:undefined},{sample_periods:undefined},
+    {sample_periods:periods.slice(1)},{sample_periods:[periods[0],periods[1],periods[1]]},
+    ...[{season:2026,week:3,team:'KC'},{season:2027,week:1,team:'KC'},
+      {season:2024,week:18,team:'KC'},{season:2025,week:23,team:'KC'},
+      {season:2026,week:true,team:'KC'},{season:2026,week:1,team:'invalid'}]
+      .map(row=>({sample_periods:[periods[0],periods[1],row]}))]) {
+    const projected=project(patch);assert.equal(projected.next_gen_stats,undefined);
+    assert.equal(projected.true_prob,record.true_prob);
+  }
+  assert.ok(project({sample_periods:undefined,roster_team:undefined}).next_gen_stats);
+});

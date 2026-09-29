@@ -99,6 +99,9 @@ def test_tracking_observation_cutoff_precedes_latest_eight_window():
             def run(stamp):return asyncio.run(load_ngs_evidence(pool,player_gsis_id='00-9999999',season=2026,game_date=date(2026,9,30),team='NE',prop_type='rec_yds',observed_before=stamp))
             earlier=run(NOW);assert earlier['sample_weeks']==8 and earlier['metrics']['avg_separation']==1.875
             later=run(LATE);assert later['sample_weeks']==8 and later['metrics']['avg_separation']==14.25
+            assert earlier['sample_periods']==[dict(season=2026,week=2,team=None)]+[dict(season=2025,week=w,team=None) for w in range(17,10,-1)]
+            assert later['sample_periods']==[dict(season=2026,week=w,team=None) for w in (2,1)]+[dict(season=2025,week=w,team=None) for w in range(17,11,-1)]
+            assert earlier['roster_team']==later['roster_team']=='NE'
             assert run(NOW-timedelta(seconds=1)) is None
             assert 'observed_before' not in run(None)
         finally:conn.rollback()
