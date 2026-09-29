@@ -480,7 +480,7 @@ async def evaluate_event(pool, event: dict, sport: str, ledger: Ledger, scan_id:
             splits=await historical_availability_splits(pool,context=availability,
                 subject_team=availability_evidence['team'],subject_player=availability_evidence.get('roster_player_name',player),
                 sport=sport,player_id=player_id,season=season-2,cutoff=game_date,
-                prop_type=MARKETS[sport][market],line=float(line),direction=side.lower())
+                prop_type=MARKETS[sport][market],line=float(line),direction=side.lower(),observed_before=selection_time)
             if splits:
                 availability_evidence['context_splits']=splits
         ngs_evidence=None

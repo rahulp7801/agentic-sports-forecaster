@@ -52,6 +52,23 @@ def test_reviewed_nfl_archive_is_atomic_replay_safe_and_private():
                 def bind(match):ordered.append(args[int(match[1])-1]);return '%s'
                 return conn.execute(re.sub(r'\$(\d+)',bind,query),ordered).fetchone()
             assert sample(available)==(1,0,0,0)
+            import asyncio
+            from sportsbet.prop.injury_context import _nfl_split
+            snap=bundle()['participation'][0]
+            snap_row=snap['row']|{k:snap[k] for k in ('source_provider','source_sha256','source_record_sha256','source_observed_at')}
+            conn.execute('INSERT INTO public.nfl_snap_counts ('+','.join(snap_row)+') VALUES ('+','.join(['%s']*len(snap_row))+')',tuple(snap_row.values()))
+            class ContextConnection:
+                async def fetchrow(self,query,*args):
+                    ordered=[]
+                    def bind(match):ordered.append(args[int(match[1])-1]);return '%s'
+                    cur=conn.execute(re.sub(r'\$(\d+)',bind,query),ordered)
+                    return dict(zip([c.name for c in cur.description],cur.fetchone(),strict=True))
+            candidate=dict(stat_team='DEN',participant_id=snap_row['pfr_player_id'],unit='offense',
+                relationship='teammate',player='Context fixture',status='Questionable',position='TE',team='DEN')
+            context=asyncio.run(_nfl_split(ContextConnection(),item['player_id'],2024,date(2026,9,30),'rec_yds',.5,'under',candidate,available))
+            assert context['active']['games']==1 and context['active']['mean']==0 and context['active']['hit_rate']==1
+            assert asyncio.run(_nfl_split(ContextConnection(),item['player_id'],2024,date(2026,9,30),'rec_yds',.5,'under',candidate,inserted-timedelta(microseconds=1))) is None
+
             assert sample(inserted-timedelta(microseconds=1))[0]==0
             public=conn.execute("SELECT payload FROM public.dashboard_gamelogs WHERE sport='nfl' AND player_id=%s AND game_key=%s",(item['player_id'],g['game_id'])).fetchone()[0]
             assert public['rec_yds']==public['receptions']==0

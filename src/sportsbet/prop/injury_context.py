@@ -1,7 +1,7 @@
 """Descriptive recorded participation evidence for current availability risks."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
 import asyncpg
 
@@ -76,7 +76,7 @@ def _summary(games: int, mean: object, hits: int) -> dict:
 
 
 async def _nfl_split(conn, player_id: str, season: int, cutoff: date, prop_type: str,
-                     line: float, direction: str, candidate: dict) -> dict | None:
+                     line: float, direction: str, candidate: dict, observed_before: datetime | None = None) -> dict | None:
     column = PROP_COLUMN_MAP[prop_type]
     operator = '>' if direction == 'over' else '<'
     relation = 'team' if candidate['relationship'] == 'teammate' else 'opponent_team'
@@ -84,18 +84,28 @@ async def _nfl_split(conn, player_id: str, season: int, cutoff: date, prop_type:
     # counts establish participation; neither zero nor a missing row proves absence.
     snap_column = 'offense_snaps' if candidate['unit'] == 'offense' else 'defense_snaps'
     stat_team=candidate['stat_team']
+    from sportsbet.model_contract import NFL_HISTORY_FROZEN_AT
+    corrected = (prop_type in ('rec_yds','receptions') and observed_before is not None
+        and observed_before.utcoffset() is not None
+        and observed_before >= datetime.fromisoformat(NFL_HISTORY_FROZEN_AT))
+    table = 'nfl_effective_receiving_gamelogs' if corrected else 'player_stats'
+    providers = "('nflverse','nflverse_espn_supplement')" if corrected else "('nflverse')"
+    stat_cutoff = ('AND ps.source_observed_at <= $7 AND '
+        '(ps.supplement_inserted_at IS NULL OR ps.supplement_inserted_at <= $7)') if corrected else ''
+    snap_cutoff = 'AND source_observed_at <= $7' if corrected else ''
     row = await conn.fetchrow(f'''WITH tenure AS (
         SELECT MIN(season*100+week) AS first_week FROM nfl_snap_counts
-        WHERE pfr_player_id=$6 AND team=$5 AND {snap_column}>0
+        WHERE pfr_player_id=$6 AND team=$5 AND {snap_column}>0 {snap_cutoff}
           AND source_provider='nflverse'
           AND source_sha256 ~ '^[0-9a-f]{{64}}$'
           AND source_record_sha256 ~ '^[0-9a-f]{{64}}$'
     ), target AS (
         SELECT ps.season,ps.week,ps.{column}::float AS value
-        FROM player_stats ps
+        FROM {table} ps
         WHERE ps.player_id=$1 AND ps.season >= $2 AND ps.{column} IS NOT NULL
           AND ps.{relation}=$5
-          AND ps.source_provider='nflverse'
+          AND ps.source_provider IN {providers}
+          {stat_cutoff}
           AND ps.source_sha256 ~ '^[0-9a-f]{{64}}$'
           AND ps.source_record_sha256 ~ '^[0-9a-f]{{64}}$'
           AND ps.season*100+ps.week >= (SELECT first_week FROM tenure)
@@ -110,7 +120,7 @@ async def _nfl_split(conn, player_id: str, season: int, cutoff: date, prop_type:
             AND sc.{snap_column}>0) THEN TRUE END
           FROM nfl_snap_counts sc
           WHERE sc.season=target.season AND sc.week=target.week AND sc.team=$5
-            AND sc.pfr_player_id=$6) AS active FROM target
+            AND sc.pfr_player_id=$6 {snap_cutoff}) AS active FROM target
     ) SELECT COUNT(*) FILTER (WHERE active) active_games,
         AVG(value) FILTER (WHERE active) active_mean,
         COUNT(*) FILTER (WHERE active AND value {operator} $3::double precision) active_hits,
@@ -118,7 +128,7 @@ async def _nfl_split(conn, player_id: str, season: int, cutoff: date, prop_type:
         AVG(value) FILTER (WHERE NOT active) absent_mean,
         COUNT(*) FILTER (WHERE NOT active AND value {operator} $3::double precision) absent_hits,
         COUNT(*) FILTER (WHERE active IS NULL) unknown_games
-      FROM labeled''',player_id,season,line,cutoff,stat_team,candidate['participant_id'])
+      FROM labeled''',player_id,season,line,cutoff,stat_team,candidate['participant_id'],*([observed_before] if corrected else []))
     if not row or sum(int(row[key] or 0) for key in ('active_games','absent_games','unknown_games'))==0:
         return None
     active_games, absent_games = int(row['active_games'] or 0), int(row['absent_games'] or 0)
@@ -187,7 +197,7 @@ async def _nba_split(conn, player_id: str, season: int, cutoff: date, prop_type:
 
 async def historical_availability_splits(pool, *, context: dict | None, subject_team: str,
         subject_player: str, sport: str, player_id: str, season: int, cutoff: date, prop_type: str,
-        line: float, direction: str) -> list[dict]:
+        line: float, direction: str, observed_before: datetime | None = None) -> list[dict]:
     """Describe recorded participation cohorts; never mutate the model probability."""
     candidates = current_contexts(context,subject_team,subject_player,sport)
     if not candidates or direction not in ('over','under'):
@@ -196,7 +206,7 @@ async def historical_availability_splits(pool, *, context: dict | None, subject_
     try:
         async with pool.acquire() as conn:
             for candidate in candidates:
-                result = await (_nfl_split(conn,player_id,season,cutoff,prop_type,line,direction,candidate)
+                result = await (_nfl_split(conn,player_id,season,cutoff,prop_type,line,direction,candidate,observed_before)
                     if sport == 'nfl' else
                     _nba_split(conn,player_id,season,cutoff,prop_type,line,direction,candidate))
                 if result:
