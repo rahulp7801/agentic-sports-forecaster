@@ -24,3 +24,7 @@ Input is read-only. The output includes the input, implementation, selection and
 ## Price-only coverage correction (protocol v2)
 
 The initial diagnostic reused the frozen probability-observation filter for controls. That excludes a first-arriving side with no independent no-vig baseline at its own receipt, even when its source-verified price is available by the later selected decision. Version 2 validates these original price records directly, then requires their combined implied probabilities to reproduce the selected forecast's already-verified baseline. No quote timestamp, source check, selected candidate or frozen probability filter is changed. Original v1 results remain private for traceability.
+
+## Embedded price evidence (protocol v3)
+
+Newer records retain a hash-verified opposite price directly in the original forecast. Version 3 also accepts that existing evidence after reproducing its source hash and no-vig baseline. It labels the leg as embedded price evidence, never a new forecast. The same already-authenticated final statistic settles both sides of a half-line; pending labels stay pending. Conflicts with separate receipts reject the comparison. Version 1 and 2 outputs remain private for traceability. This completes format support without changing the selected cohort or outcomes.

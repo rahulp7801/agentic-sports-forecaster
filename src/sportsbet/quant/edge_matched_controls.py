@@ -12,7 +12,7 @@ from statistics import mean
 from sportsbet.quant import edge_search_stress as search
 
 PROTOCOL = {
-    "version": "edge-matched-controls-v2",
+    "version": "edge-matched-controls-v3",
     "policies": ["raw_model", "market_prior80"],
     "controls": ["always_over", "always_under", "half_each_side"],
     "scope": "Previously inspected historical data; exploratory attribution, never promotion",
@@ -57,6 +57,18 @@ def opposite_at_decision(candidate, index):
                if other["row"]["direction"] != x["row"]["direction"]
                and other["entry"] <= candidate["decision"]
                and search.fresh(other, candidate["decision"])]
+    # Newer forecasts retain the opposite source record inside their own
+    # immutable receipt. This is a price leg, not a fabricated second forecast.
+    if (search.frozen.verified_recorded_market_baseline(x["row"]) is not None
+            and x["entry"] <= candidate["decision"] and search.fresh(x, candidate["decision"])):
+        row = dict(x["row"],
+                   prediction_id="embedded_opposite:"+x["row"]["prediction_id"],
+                   direction="under" if x["row"]["direction"] == "over" else "over",
+                   american_odds=x["row"]["market_opposite_american_odds"],
+                   quote_source_record_sha256=x["row"]["market_opposite_quote_source_record_sha256"])
+        # y is normalized to Over; the same authenticated half-line statistic
+        # settles either side. No missing or unknown outcome is converted.
+        choices.append(dict(x, row=row, evidence_origin="embedded_verified_opposite"))
     if not choices:
         return None, "missing_timely_opposite"
     if len({c["row"]["american_odds"] for c in choices}) != 1:
@@ -121,6 +133,7 @@ def compare(selected, observed):
         records.append({"game_id": x["unit"][0], "player_id": x["unit"][1],
                         "prediction_id": x["row"]["prediction_id"],
                         "opposite_id": other["row"]["prediction_id"],
+                        "opposite_evidence_origin": other.get("evidence_origin", "retained_forecast"),
                         "direction": x["row"]["direction"],
                         "model": a, "always_over": over, "always_under": under,
                         "half_each_side": (a+b)/2, "market_expected_return": market_ev,

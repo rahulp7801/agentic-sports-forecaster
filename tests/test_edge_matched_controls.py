@@ -97,3 +97,44 @@ def test_source_price_observations_keep_first_side_and_reject_bad_proof():
     assert search.frozen.observations([a], "nfl", "empirical-jeffreys-v4")[0] == []
     a["quote_source_record_sha256"] = "0"*64
     assert controls.price_observations([a], "nfl", "empirical-jeffreys-v4") == []
+
+
+def embedded_pair():
+    from tests.test_scan_market_baseline import quotes
+    from sportsbet.quant.market_baseline import paired_market_baseline
+    over, under = quotes()
+    a = item(side="over", odds=-110, p=.8, q=.5, y=1,
+             entry=over.snapped_at+timedelta(seconds=1), quote=over.snapped_at,
+             start=over.game_start_time)
+    a["row"].update(sport=over.sport, game_id=over.game_id, player=over.player_name,
+                    prop_type="receptions", line=float(over.line), sportsbook=over.sportsbook,
+                    quote_time=over.snapped_at.isoformat(),
+                    game_start_time=over.game_start_time.isoformat(),
+                    quote_source_provider=over.source_provider,
+                    quote_source_sha256=over.source_sha256,
+                    **paired_market_baseline(over,[over,under]))
+    c=dict(x=a, probability=.8, profit=100/110, decision=a["entry"], ev=.5)
+    return a,c
+
+
+def test_embedded_verified_opposite_can_supply_price_without_second_forecast():
+    a,c=embedded_pair()
+    r=controls.compare([c],[])
+    assert r["matched_prices"] == 1 and r["model_return"]["decisions"] == 1
+    assert r["records"][0]["opposite_evidence_origin"] == "embedded_verified_opposite"
+    assert r["controls"]["always_under"]["return"]["mean"] == -1
+    a["y"]=None
+    assert controls.compare([c],[])["excluded"] == {"pending_pair":1}
+
+
+def test_embedded_opposite_cannot_use_tampered_price_or_hash():
+    a,c=embedded_pair(); a["row"]["market_opposite_american_odds"]=-105
+    assert controls.compare([c],[])["matched_prices"] == 0
+    a,c=embedded_pair(); a["row"]["market_opposite_quote_source_record_sha256"]="0"*64
+    assert controls.compare([c],[])["matched_prices"] == 0
+
+
+def test_embedded_opposite_conflict_with_separate_receipt_is_rejected():
+    a,c=embedded_pair(); b=deepcopy(a)
+    b["row"]["direction"]="under"; b["row"]["american_odds"]=-105
+    assert controls.compare([c],[b])["excluded"] == {"conflicting_opposite_prices":1}
