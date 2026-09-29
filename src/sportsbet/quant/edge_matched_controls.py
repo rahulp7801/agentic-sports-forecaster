@@ -12,7 +12,7 @@ from statistics import mean
 from sportsbet.quant import edge_search_stress as search
 
 PROTOCOL = {
-    "version": "edge-matched-controls-v1",
+    "version": "edge-matched-controls-v2",
     "policies": ["raw_model", "market_prior80"],
     "controls": ["always_over", "always_under", "half_each_side"],
     "scope": "Previously inspected historical data; exploratory attribution, never promotion",
@@ -21,6 +21,33 @@ PROTOCOL = {
 
 def key(x):
     return x["unit"] + (x["row"]["sportsbook"], x["row"]["quote_source_sha256"])
+
+
+def price_observations(rows, sport, version):
+    """Price controls need no independent forecast-time no-vig pair.
+
+    A first side may arrive before the opposite forecast and therefore have no
+    baseline in frozen.observations. Its verified price is nevertheless available
+    by the later selected decision. Keep chronology and source proof intact.
+    """
+    audit = search.frozen.audit
+    result = []
+    for row in rows:
+        if (audit._eligible(row, sport, version) is None
+                or not audit.quote_evidence_valid(row)
+                or not audit.settlement_identity_valid(row)):
+            continue
+        if float(row["line"]) % 1 != .5 or row.get("push_probability") != 0:
+            continue
+        outcome = audit._verified_outcome(row)
+        over = row["direction"] == "over"
+        result.append({"row": row, "unit": search.frozen._unit(row),
+                       "entry": search.frozen.utc_timestamp(row["captured_at"]),
+                       "quote": search.frozen.utc_timestamp(row["quote_time"]),
+                       "start": search.frozen.utc_timestamp(row["game_start_time"]),
+                       "q": None,
+                       "y": (int(outcome) if over else 1-int(outcome)) if type(outcome) is bool else None})
+    return result
 
 
 def opposite_at_decision(candidate, index):
@@ -35,7 +62,12 @@ def opposite_at_decision(candidate, index):
     if len({c["row"]["american_odds"] for c in choices}) != 1:
         return None, "conflicting_opposite_prices"
     other = min(choices, key=lambda c: (c["entry"], c["row"]["prediction_id"]))
-    if abs(other["q"] - x["q"]) > 1e-10:
+    own_raw = 1/(1+search.profit(x["row"]["american_odds"]))
+    other_raw = 1/(1+search.profit(other["row"]["american_odds"]))
+    q_side = own_raw/(own_raw+other_raw)
+    q_over = q_side if x["row"]["direction"] == "over" else 1-q_side
+    if (abs(q_over-x["q"]) > 1e-10
+            or (other["q"] is not None and abs(other["q"]-x["q"]) > 1e-10)):
         return None, "conflicting_market_baseline"
     return other, None
 
@@ -120,7 +152,7 @@ def run(rows, sport, version):
     policies = {"raw_model": search.select_model(observed),
                 "market_prior80": search.select_model(observed, True)}
     return {"sport": sport, "model_version": version, "source_exclusions": excluded,
-            "policies": {name: compare(selected, observed) for name, selected in policies.items()},
+            "policies": {name: compare(selected, price_observations(rows, sport, version)) for name, selected in policies.items()},
             "limitations": [
                 "Controls inherit the model-selected player, game, market, line and book; they test direction choice, not the whole selection process.",
                 "Half each side is an analytical equal-exposure reference, not an executed strategy.",

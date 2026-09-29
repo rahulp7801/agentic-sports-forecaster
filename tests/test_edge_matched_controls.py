@@ -75,3 +75,25 @@ def test_direction_scores_are_conditioned_on_selected_side():
     assert r["under"]["won"] == 1
     assert r["under"]["predicted_probability"] == .8
     assert r["over"]["decisions"] == 0
+
+
+def test_price_control_does_not_require_earlier_side_to_have_own_baseline():
+    a,b,c = pair(); b["q"] = None; b["entry"] -= timedelta(microseconds=20)
+    assert controls.compare([c],[a,b])["matched_prices"] == 1
+
+
+def test_price_control_reproduces_selected_market_probability():
+    a,b,c = pair(); b["q"] = None; b["row"]["american_odds"] = 150
+    assert controls.compare([c],[a,b])["excluded"] == {"conflicting_market_baseline": 1}
+
+
+def test_source_price_observations_keep_first_side_and_reject_bad_proof():
+    from tests.test_market_challengers import payload
+    a = payload(prediction_id="first")
+    for field in list(a):
+        if field.startswith("market_"): a.pop(field)
+    observed = controls.price_observations([a], "nfl", "empirical-jeffreys-v4")
+    assert len(observed) == 1 and observed[0]["q"] is None
+    assert search.frozen.observations([a], "nfl", "empirical-jeffreys-v4")[0] == []
+    a["quote_source_record_sha256"] = "0"*64
+    assert controls.price_observations([a], "nfl", "empirical-jeffreys-v4") == []

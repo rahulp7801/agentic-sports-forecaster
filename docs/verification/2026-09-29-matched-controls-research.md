@@ -20,3 +20,7 @@ Controls inherit model-selected opportunities: this isolates direction choice co
 `python -m sportsbet.quant.edge_matched_controls --ledger-path PRIVATE_SNAPSHOT.sqlite3 --output PRIVATE_REPORT.json`
 
 Input is read-only. The output includes the input, implementation, selection and source-filter hashes. No network or database writes are required.
+
+## Price-only coverage correction (protocol v2)
+
+The initial diagnostic reused the frozen probability-observation filter for controls. That excludes a first-arriving side with no independent no-vig baseline at its own receipt, even when its source-verified price is available by the later selected decision. Version 2 validates these original price records directly, then requires their combined implied probabilities to reproduce the selected forecast's already-verified baseline. No quote timestamp, source check, selected candidate or frozen probability filter is changed. Original v1 results remain private for traceability.
