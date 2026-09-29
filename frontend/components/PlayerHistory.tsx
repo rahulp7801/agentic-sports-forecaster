@@ -9,6 +9,7 @@ export default function PlayerHistory({signal}:{signal:EVSignal}) {
   const [loading,setLoading]=useState(true);
   const [error,setError]=useState('');
   const [count,setCount]=useState(20);
+  const [refresh,setRefresh]=useState(0);
   const {sport,player,player_id}=signal;
   let cutoff:string|undefined;
   try {cutoff=historyCutoff(signal);} catch { /* Older forecasts may lack timing evidence. */ }
@@ -18,7 +19,7 @@ export default function PlayerHistory({signal}:{signal:EVSignal}) {
       if(!cutoff) {setError('This forecast has no valid historical cutoff and price-capture time.');setLoading(false);return;}
       const params=new URLSearchParams({sport,player,before:cutoff,exact:'1',limit:'20'});
       if(player_id) params.set('player_id',player_id);
-      fetch(`/api/gamelogs?${params}`,{cache:'no-store',signal:controller.signal})
+      fetch(`/api/gamelogs?${params}`,{cache:'no-store',signal:AbortSignal.any([controller.signal,AbortSignal.timeout(15_000)])})
         .then(async response=>{
           if(!response.ok) throw new Error('Recorded player history is temporarily unavailable.');
           return response.json();
@@ -27,7 +28,8 @@ export default function PlayerHistory({signal}:{signal:EVSignal}) {
         .finally(()=>{if(!controller.signal.aborted) setLoading(false);});
     },0);
     return ()=>{window.clearTimeout(timer);controller.abort();};
-  },[sport,player,player_id,cutoff]);
+  },[sport,player,player_id,cutoff,refresh]);
+  const refreshHistory=()=>{setError('');setLoading(true);setRefresh(value=>value+1);};
   let history:ReturnType<typeof forecastHistory>|undefined;
   let form:ReturnType<typeof recentForm>|undefined;
   let invalid='';
@@ -37,7 +39,7 @@ export default function PlayerHistory({signal}:{signal:EVSignal}) {
   const formWindows=form ? [{label:'Latest 5 recorded games',sample:form.recent},{label:'Previous 5 recorded games',sample:form.previous}] : [];
   return <section className={styles.playerHistory} aria-label="Player history before forecast">
     <div className={styles.historyHeader}><div><h3>History behind the line</h3><p>Recorded games before {cutoff ?? 'an unavailable cutoff'}, compared with {signal.direction} {signal.line} {signal.prop_type.replaceAll('_',' ')}. A conservative one-day gap before price capture excludes overnight games.</p></div>
-      <div className={styles.viewSwitch} aria-label="History window">{[10,20].map(n=><button type="button" key={n} aria-pressed={count===n} onClick={()=>setCount(n)}>Last {n}</button>)}</div>
+      <div className={styles.historyActions}><button className={styles.uxButton} type="button" disabled={loading || !cutoff} onClick={refreshHistory}>{loading ? 'Loading history...' : error ? 'Retry history' : 'Refresh history'}</button><div className={styles.viewSwitch} aria-label="History window">{[10,20].map(n=><button type="button" key={n} aria-pressed={count===n} onClick={()=>setCount(n)}>Last {n}</button>)}</div></div>
     </div>
     {loading ? <p role="status">Loading recorded history…</p> : error || invalid ? <p role="status">{error || invalid}</p>
       : !history?.rows.length ? <p>No exact-player games are available before this forecast cutoff.</p> : <>

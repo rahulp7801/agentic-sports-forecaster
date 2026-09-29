@@ -38,3 +38,6 @@
 .scanRail[data-single-league] .scanIdentity { grid-column:1; grid-row:1; flex-wrap:wrap; gap:5px; }
 .scanRail[data-single-league] .scanMetrics { grid-column:1 / -1; grid-row:2; flex-wrap:wrap; }
 .scanRail[data-single-league] .scanCard time { grid-column:2; grid-row:1; }
+
+.sideNav .mobileOnly{display:none}
+@media(max-width:720px){.sideNav .desktopOnly{display:none}.sideNav .mobileOnly{display:flex}.advancedNav:has(.sideNavActive)>summary{color:var(--accent);background:var(--bg-surface);border-radius:11px}}

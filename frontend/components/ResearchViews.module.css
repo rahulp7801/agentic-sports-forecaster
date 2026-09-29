@@ -423,3 +423,5 @@
 .recentForm h4 { margin: 0 0 8px; }
 .recentForm .evidenceMetrics { grid-template-columns: repeat(2,minmax(0,1fr)); }
 @media (max-width: 600px) { .recentForm .evidenceMetrics { grid-template-columns: 1fr; } }
+
+.historyActions{display:flex;flex-wrap:wrap;align-items:center;gap:8px}.historyActions>.uxButton{border:1px solid var(--border-dim);background:var(--bg-surface)}.historyActions button:disabled{opacity:.65;cursor:wait}
