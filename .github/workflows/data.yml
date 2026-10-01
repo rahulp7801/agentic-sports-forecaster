@@ -29,6 +29,7 @@ on:
     - cron: '29 10,22 * * *'
 permissions:
   contents: read
+  actions: read
 concurrency:
   group: market-data
   cancel-in-progress: false
@@ -211,12 +212,18 @@ jobs:
         if: always() && steps.evidence_scan.outcome == 'success'
         id: evidence_pack
         run: uv run --locked python -m sportsbet.ingestion.pack_public_artifacts --input "$RUNNER_TEMP/public-evidence" --output "$RUNNER_TEMP/public-evidence.tar.xz"
-      - name: Retain public market evidence for replay
+      - name: Check repository artifact storage budget
         if: always() && steps.evidence_pack.outcome == 'success' && steps.evidence_pack.outputs.packaged == 'true'
+        id: storage_gate
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python .github/scripts/artifact_storage_gate.py --candidate "$RUNNER_TEMP/public-evidence.tar.xz"
+      - name: Retain public market evidence for replay
+        if: always() && steps.evidence_pack.outcome == 'success' && steps.evidence_pack.outputs.packaged == 'true' && steps.storage_gate.outputs.retain == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: market-evidence-${{ github.run_id }}
           path: ${{ runner.temp }}/public-evidence.tar.xz
           compression-level: 0
-          retention-days: 90
+          retention-days: 7
           if-no-files-found: error
