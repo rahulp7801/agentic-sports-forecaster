@@ -1,59 +1,68 @@
-"""Ingest 2025-26 NBA player season stats into nba_player_stats.
+"""Refresh 2025-26 NBA season totals without deleting the previous snapshot.
 
-Run from the repo root:
-    set OPENBLAS_NUM_THREADS=1
-    python ingest_stats_2025.py
+Run from the repository root: python ingest_stats_2025.py
 """
+from __future__ import annotations
+
 import os
-os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 
 import sys
 sys.path.insert(0, "src")
-sys.path.insert(0, "site-packages")
 
-from dotenv import load_dotenv
-load_dotenv()
-
-import gc
-print("Importing pandas...", flush=True)
 import pandas as pd
-print("Importing nba_api...", flush=True)
+from dotenv import load_dotenv
 from nba_api.stats.endpoints import LeagueDashPlayerStats
-print("Connecting to DB...", flush=True)
-import sqlalchemy as sa
-from sportsbet.db.connection import get_sync_engine
 
-engine = get_sync_engine()
+from sportsbet.db.connection import get_sync_engine
+from sportsbet.ingestion.nba import NBA_COLUMNS, RENAME_MAP
+from sportsbet.ingestion.upsert import upsert_rows
 
 SEASON = 2025
-season_str = "2025-26"
+REQUIRED_COLUMNS = ("PLAYER_ID", "PLAYER_NAME")
 
-print(f"Fetching {season_str} stats from NBA.com...", flush=True)
-stats = LeagueDashPlayerStats(
-    season=season_str,
-    season_type_all_star="Regular Season",
-    per_mode_detailed="Totals",
-    timeout=60,
-)
 
-df = stats.get_data_frames()[0]
-print(f"Got {len(df)} rows from NBA.com", flush=True)
+def ingest_stats_2025(engine=None) -> int:
+    """Validate the provider snapshot, then upsert it in one transaction."""
+    season_str = f"{SEASON}-{str(SEASON + 1)[-2:]}"
+    stats = LeagueDashPlayerStats(
+        season=season_str,
+        season_type_all_star="Regular Season",
+        per_mode_detailed="Totals",
+        timeout=60,
+    )
+    frames = stats.get_data_frames()
+    if not frames or not isinstance(frames[0], pd.DataFrame):
+        raise ValueError("NBA season totals response is missing")
 
-NBA_COLUMNS = ["PLAYER_ID","PLAYER_NAME","TEAM_ID","TEAM_ABBREVIATION","GP","MIN","PTS","REB","AST","FG3M","STL","BLK"]
-RENAME_MAP = {"PLAYER_ID":"player_id","PLAYER_NAME":"player_name","TEAM_ID":"team_id","TEAM_ABBREVIATION":"team_abbreviation","GP":"games_played","MIN":"minutes","PTS":"points","REB":"rebounds","AST":"assists","FG3M":"threes_made","STL":"steals","BLK":"blocks"}
+    source = frames[0]
+    missing = set(REQUIRED_COLUMNS) - set(source.columns)
+    if missing or source.empty:
+        raise ValueError(f"NBA season totals are empty or missing required columns: {sorted(missing)}")
+    if source["PLAYER_ID"].isna().any() or source["PLAYER_ID"].duplicated().any():
+        raise ValueError("NBA season totals contain missing or duplicate player IDs")
+    if source["PLAYER_NAME"].isna().any() or source["PLAYER_NAME"].astype(str).str.strip().eq("").any():
+        raise ValueError("NBA season totals contain missing player names")
 
-df = df[[c for c in NBA_COLUMNS if c in df.columns]].rename(columns=RENAME_MAP)
-df["season"] = SEASON
+    frame = source[[column for column in NBA_COLUMNS if column in source.columns]].rename(
+        columns=RENAME_MAP
+    ).copy()
+    frame["season"] = SEASON
+    if engine is None:
+        engine = get_sync_engine()
+    with engine.begin() as connection:
+        frame.to_sql(
+            "nba_player_stats",
+            connection,
+            if_exists="append",
+            index=False,
+            chunksize=500,
+            method=upsert_rows(["player_id", "season"]),
+        )
+    return len(frame)
 
-# Delete existing 2025 rows first to avoid UniqueViolation on re-run
-with engine.connect() as conn:
-    result = conn.execute(sa.text("DELETE FROM nba_player_stats WHERE season = :s"), {"s": SEASON})
-    conn.commit()
-    print(f"Deleted {result.rowcount} existing season={SEASON} rows", flush=True)
 
-df.to_sql("nba_player_stats", engine, if_exists="append", index=False, chunksize=500, method="multi")
-print(f"Inserted {len(df)} rows for season {SEASON}", flush=True)
-
-del df
-gc.collect()
-print("Done.", flush=True)
+if __name__ == "__main__":
+    load_dotenv()
+    count = ingest_stats_2025()
+    print(f"Upserted {count} NBA player season rows for {SEASON}")
