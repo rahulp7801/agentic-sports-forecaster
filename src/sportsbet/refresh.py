@@ -37,9 +37,12 @@ def refresh(sport: str, today: date, backfill: bool = False):
                 # history/model unavailable and does not alter probabilities.
                 ngs={'status':'failed','error_type':type(exc).__name__}
         elif sport == 'nba':
+            nba_seasons=[]
             for season in years:
                 try:
-                    ingest_nba_gamelogs_season(season, engine)
+                    rows=ingest_nba_gamelogs_season(season, engine)
+                    nba_seasons.append({'season':season,'rows':rows,
+                                        'status':'empty' if rows==0 else 'complete'})
                 except RequestException:
                     if backfill:
                         raise  # Bounded recent updates cannot substitute for a full backfill.
@@ -50,7 +53,7 @@ def refresh(sport: str, today: date, backfill: bool = False):
             return {'provider':'sportsdataverse_espn','seasons':coverage}
         if sport=='nfl':
             return {'provider':'nflverse','next_gen_stats':ngs}
-        return {'provider':'nba'}
+        return {'provider':'nba','seasons':nba_seasons}
     finally:
         engine.dispose()
 

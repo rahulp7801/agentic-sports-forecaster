@@ -160,3 +160,32 @@ def test_ingest_nba_gamelogs_season_mock() -> None:
 
     # Verify mandatory rate limit sleep was called
     mock_time.sleep.assert_called_once_with(1)
+
+
+def test_valid_empty_new_season_is_not_a_failed_ingest() -> None:
+    from sportsbet.ingestion.nba_gamelogs import GAMELOG_COLUMNS, ingest_nba_gamelogs_season
+
+    response = MagicMock()
+    response.get_data_frames.return_value = [pd.DataFrame(columns=GAMELOG_COLUMNS)]
+    with (
+        patch('sportsbet.ingestion.nba_gamelogs.PlayerGameLogs', return_value=response) as endpoint,
+        patch('sportsbet.ingestion.nba_gamelogs.time.sleep') as pause,
+        patch.object(pd.DataFrame, 'to_sql', side_effect=AssertionError('empty season must not write')),
+    ):
+        assert ingest_nba_gamelogs_season(2026, MagicMock()) == 0
+    endpoint.assert_called_once_with(season_nullable='2026-27',
+                                     season_type_nullable='Regular Season', timeout=30)
+    pause.assert_called_once_with(1)
+
+
+def test_empty_response_without_required_schema_still_fails() -> None:
+    from sportsbet.ingestion.nba_gamelogs import ingest_nba_gamelogs_season
+
+    response = MagicMock()
+    response.get_data_frames.return_value = [pd.DataFrame()]
+    with (
+        patch('sportsbet.ingestion.nba_gamelogs.PlayerGameLogs', return_value=response),
+        patch('sportsbet.ingestion.nba_gamelogs.time.sleep'),
+    ):
+        with pytest.raises(KeyError):
+            ingest_nba_gamelogs_season(2026, MagicMock())

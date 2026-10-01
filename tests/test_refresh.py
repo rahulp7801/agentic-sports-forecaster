@@ -49,3 +49,13 @@ def test_opening_season_backfill_and_daily_refresh():
             'provider':'sportsdataverse_espn','seasons':[{'rows':12}]*3}
         assert [call.args[0] for call in cfb.call_args_list]==[2024,2025,2026]
         assert engine.dispose.call_count == 4
+
+
+def test_nba_empty_current_season_retains_honest_coverage():
+    engine=MagicMock()
+    with patch('sportsbet.refresh.get_sync_engine',return_value=engine), \
+         patch('sportsbet.refresh.ingest_nba_gamelogs_season',return_value=0) as ingest:
+        result=refresh('nba',date(2026,10,1))
+    assert result=={'provider':'nba','seasons':[{'season':2026,'rows':0,'status':'empty'}]}
+    ingest.assert_called_once_with(2026,engine)
+    engine.dispose.assert_called_once()
