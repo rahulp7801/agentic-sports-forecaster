@@ -13,13 +13,13 @@ const series={events:[
   {slug:'celebrity-market',title:'Unrelated',startTime:'2026-10-04T17:00:00Z',active:true,closed:false},
 ]};
 const event={slug:SLUG,active:true,closed:false,markets:[
-  {question:'Will a player score first?',active:true,closed:false,acceptingOrders:true,
+  {question:'Will a player score first?',outcomes:'["Yes","No"]',active:true,closed:false,acceptingOrders:true,
     bestBid:0.01,bestAsk:0.97,liquidityNum:5.82,outcomePrices:'["0.49","0.51"]'},
-  {question:'Paused market',active:true,closed:false,acceptingOrders:false,
+  {question:'Paused market',outcomes:'["Yes","No"]',active:true,closed:false,acceptingOrders:false,
     bestBid:0.4,bestAsk:0.5,liquidityNum:20},
-  {question:'Crossed book',active:true,closed:false,acceptingOrders:true,
+  {question:'Crossed book',outcomes:'["Yes","No"]',active:true,closed:false,acceptingOrders:true,
     bestBid:0.99,bestAsk:0.01,liquidityNum:100},
-  {question:'Closed market',active:false,closed:true,acceptingOrders:false,
+  {question:'Closed market',outcomes:'["Yes","No"]',active:false,closed:true,acceptingOrders:false,
     bestBid:0.4,bestAsk:0.5,liquidityNum:20},
 ]};
 function fixtureFetcher(calls) {
@@ -49,12 +49,21 @@ test('event research uses the YES ask, excludes midpoint and crossed quotes',asy
   assert.equal(result.markets[1].accepting_orders,false);
   assert.equal(result.markets[1].best_bid,null);
   assert.equal(result.markets[1].best_ask,null);
+  assert.equal(result.markets[0].outcome,'Yes');
   assert.equal(result.markets[0].best_bid,0.01);
   assert.equal(result.markets[0].best_ask,0.97);
   assert.equal(result.markets[0].liquidity_usd,5.82);
   assert.equal(result.event.url,'https://polymarket.com/event/'+SLUG);
   assert.equal(calls.length,3);
   assert.ok(!JSON.stringify(result).includes('0.49'));
+});
+test('team-named outcomes retain their first outcome label',async()=>{
+  const named=structuredClone(event);
+  named.markets[0].outcomes='["Warriors","Clippers"]';
+  const ordinary=fixtureFetcher([]);
+  const fetcher=url=>url.pathname==='/events/slug/'+SLUG ? Response.json(named) : ordinary(url);
+  const result=await predictionMarketDetail('nfl',SLUG,fetcher,NOW);
+  assert.equal(result.markets[0].outcome,'Warriors');
 });
 test('arbitrary event paths and non-series events cannot trigger provider detail reads',async()=>{
   const calls=[];

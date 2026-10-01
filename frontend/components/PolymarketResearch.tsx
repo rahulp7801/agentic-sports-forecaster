@@ -4,7 +4,7 @@ import type {Sport} from '@/lib/types';
 import styles from './ResearchViews.module.css';
 
 type Event={slug:string;title:string;starts_at:string};
-type Market={question:string;best_bid:number|null;best_ask:number|null;
+type Market={question:string;outcome:string;best_bid:number|null;best_ask:number|null;
   liquidity_usd:number|null;accepting_orders:boolean};
 type Listing={observed_at:string;scope:string;events:Event[]};
 type Detail={observed_at:string;event:{slug:string;title:string;starts_at:string;url:string};markets:Market[]};
@@ -54,7 +54,7 @@ export default function PolymarketResearch({sport}:{sport:Sport}) {
   return <section className={styles.predictionResearch} aria-labelledby="polymarket-title">
     <header className={styles.predictionHeader}>
       <div><small>Public prediction market research</small><h3 id="polymarket-title">Polymarket · {sport.toUpperCase()}</h3></div>
-      <p>Browse league events and open YES contracts. Prices and liquidity are source snapshots. Check the venue for depth, fees, and settlement terms before drawing a conclusion.</p>
+      <p>Browse league events and open outcome contracts. Prices and liquidity are source snapshots. Check the venue for depth, fees, and settlement terms before drawing a conclusion.</p>
     </header>
     {error && <div className={styles.notice} role="status">{error}</div>}
     {!listing && !error && <div className={styles.notice}>Loading Polymarket events…</div>}
@@ -75,12 +75,12 @@ export default function PolymarketResearch({sport}:{sport:Sport}) {
         <div><strong>{detail.event.title}</strong><span>Observed {new Date(detail.observed_at).toLocaleString()}</span></div>
         <a href={detail.event.url} target="_blank" rel="noopener noreferrer">View event and rules at Polymarket ↗</a>
       </div>
-      <div className={styles.predictionTerms}>YES bid and ask are displayed source quotes. The indicative outcome price is excluded because it may differ sharply from the ask. No fill, profit, or model edge is implied.</div>
+      <div className={styles.predictionTerms}>Bid and ask refer to the labeled first outcome of each contract and are Gamma-reported snapshots. The indicative outcome price is excluded because it may differ sharply from the ask. No fill, profit, or model edge is implied.</div>
       {!detail.markets.length && <div className={styles.emptyInline}>No open contracts with valid terms were returned for this event.</div>}
       {!!detail.markets.length && <div className={styles.predictionContracts}>
         {detail.markets.map((market,index)=><article key={index} className={styles.predictionContract}>
           <strong>{market.question}</strong>
-          <div><span>YES bid <b>{cents(market.best_bid)}</b></span><span>YES ask <b>{cents(market.best_ask)}</b></span>
+          <div><span>{market.outcome} bid <b>{cents(market.best_bid)}</b></span><span>{market.outcome} ask <b>{cents(market.best_ask)}</b></span>
             <span>Liquidity <b>{market.liquidity_usd===null ? '—' : '$'+market.liquidity_usd.toFixed(0)}</b></span>
             <span>{market.accepting_orders ? 'Accepting orders at capture' : 'Orders unavailable at capture'}</span></div>
         </article>)}

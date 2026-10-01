@@ -9,7 +9,7 @@ const SLUG=/^(?:nfl|nba|cfb)-[a-z0-9-]{1,120}$/;
 type Fetcher=typeof fetch;
 type Row=Record<string,unknown>;
 export type ResearchEvent={slug:string;title:string;starts_at:string};
-export type ResearchMarket={question:string;best_bid:number|null;best_ask:number|null;
+export type ResearchMarket={question:string;outcome:string;best_bid:number|null;best_ask:number|null;
   liquidity_usd:number|null;accepting_orders:boolean};
 export type ResearchListing={sport:Sport;source:'Polymarket';observed_at:string;
   scope:string;events:ResearchEvent[]};
@@ -41,6 +41,14 @@ function amount(value:unknown):number|null {
   if((typeof value!=='string' && typeof value!=='number') || value==='') return null;
   const number=Number(value);
   return Number.isFinite(number) && number>=0 && number<=1_000_000_000 ? number : null;
+}
+function firstOutcome(value:unknown):string {
+  if(typeof value!=='string' || value.length>256) throw new Error('Invalid outcomes');
+  const labels:unknown=JSON.parse(value);
+  if(!Array.isArray(labels) || labels.length!==2) throw new Error('Invalid outcomes');
+  const first=text(labels[0],80),second=text(labels[1],80);
+  if(first===second) throw new Error('Invalid outcomes');
+  return first;
 }
 async function providerJson(path:string,fetcher:Fetcher,maxBytes:number):Promise<unknown> {
   const url=new URL(path,ORIGIN);
@@ -104,7 +112,7 @@ function detail(value:unknown,selected:ResearchEvent,sport:Sport,observed_at:str
       const best_bid=accepting_orders ? price(market.bestBid) : null;
       const best_ask=accepting_orders ? price(market.bestAsk) : null;
       if(best_bid!==null && best_ask!==null && best_bid>best_ask) continue;
-      markets.push({question:text(market.question,220),best_bid,best_ask,
+      markets.push({question:text(market.question,220),outcome:firstOutcome(market.outcomes),best_bid,best_ask,
         liquidity_usd:amount(market.liquidityNum ?? market.liquidity),
         accepting_orders});
     } catch { /* Omit malformed contracts without inventing prices. */ }
