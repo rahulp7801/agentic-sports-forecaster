@@ -211,7 +211,7 @@ def test_alembic_upgrade_clean() -> None:
             'targets','receptions','percent_attempts_gte_eight_defenders','rush_attempts',
             'source_provider','source_url','source_sha256','source_record_sha256',
             'source_observed_at'} <= ngs_columns
-    # Cleanup ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â leave DB clean for next test run
+    # Cleanup ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â leave DB clean for next test run
     alembic.command.downgrade(cfg, "base")
 
 
@@ -540,8 +540,11 @@ def test_prediction_record_receipts_are_database_owned():
     url=os.environ['SPORTSBET_TEST_DATABASE_URL'];cfg=get_alembic_cfg(url)
     engine=sa.create_engine(url)
     try:
+        alembic.command.downgrade(cfg,'base')
         alembic.command.upgrade(cfg,'0038_private_prospective_reports')
         with engine.begin() as conn:
+            columns={column['name'] for column in sa.inspect(conn).get_columns('predictions',schema='analytics')}
+            assert 'recorded_at' not in columns and 'payload_sha256' not in columns
             conn.execute(sa.text("INSERT INTO analytics.predictions(id,scan_id,payload) VALUES ('legacy','old','{}')"))
         alembic.command.upgrade(cfg,'head')
         with engine.begin() as conn:
