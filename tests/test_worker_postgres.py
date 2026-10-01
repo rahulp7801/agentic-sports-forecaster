@@ -592,7 +592,7 @@ def test_evidence_audit_snapshot_is_read_only_and_stable_across_concurrent_write
         with writer.connect() as db:
             db.execute('DELETE FROM api_usage WHERE risk_day=?',(key,))
 
-@pytest.mark.parametrize('changed',['none','outcome','payload','conflicting_stat'])
+@pytest.mark.parametrize('changed',['none','outcome','conflicting_stat'])
 def test_explicit_final_recovery_is_atomic_and_preserves_original_predictions(changed,monkeypatch):
     import json
     import psycopg
@@ -612,11 +612,8 @@ def test_explicit_final_recovery_is_atomic_and_preserves_original_predictions(ch
         plan=plan_recovery(rows,evidence);assert len(plan['updates'])==2
         before={u['prediction_id']:u['payload'] for u in plan['updates']}
         if changed=='outcome':ledger.settle({keys[0]:False},source='manual')
-        if changed=='payload':
-            with ledger.connect() as db:
-                raw=json.loads(db.execute('SELECT payload FROM predictions WHERE id=?',(keys[0],)).fetchone()[0])
-                raw['line']=2.5
-                db.execute('UPDATE predictions SET payload=? WHERE id=?',(json.dumps(raw),keys[0]))
+        # Source-payload mutation is rejected by the database receipt trigger;
+        # the recovery path still checks outcome and final-stat conflicts.
         if changed=='conflicting_stat':
             monkeypatch.setattr('sportsbet.quant.nfl_final_recovery._actual',lambda *args:(Decimal(9),{}))
         with psycopg.connect(url.replace('postgresql+psycopg://','postgresql://')) as conn:

@@ -20,3 +20,8 @@ prospectively timestamped.
 Disposable PostgreSQL tests verify legacy NULLs, server-owned insert stamps,
 payload digest, source-record immutability, denied worker deletion, and allowed outcome-only updates.
 Production schema must be migrated before any worker using this head starts.
+
+The existing PostgreSQL recovery test no longer fabricates a changed source
+payload through an ordinary UPDATE: the database now rejects that setup.
+The migration test checks this rejection directly; recovery still tests
+outcome and authenticated final-stat conflicts.
