@@ -130,8 +130,8 @@ async def test_scan_records_private_rushing_candidate_without_changing_public_pi
         true_probability=Decimal(str(1-payload['model_probability'])),sample_size=payload['model_sample_size'],
         mean_stat=Decimal(str(payload['model_mean_stat'])),confidence_interval=(Decimal('.1'),Decimal('.5')))})
     monkeypatch.setattr(scan,'create_graph',lambda **kwargs:graph)
-    monkeypatch.setattr(scan,'player_availability',lambda *args,**kwargs:(payload['availability']|{'subject_status':'Active'},None))
-    monkeypatch.setattr(scan,'relevant_availability_reports',lambda *args:[])
+    monkeypatch.setattr(scan,'player_availability',lambda *args,**kwargs:(payload['availability']|{'subject_status':'Active','teammates':[]},None))
+    monkeypatch.setattr(scan,'screened_availability_reports',lambda *args:[])
     monkeypatch.setattr(scan,'historical_availability_splits',AsyncMock(return_value=[]))
     monkeypatch.setattr(scan,'load_ngs_evidence',AsyncMock(return_value=None))
     monkeypatch.setattr(settings,'history_shadow_enabled',False)
@@ -193,8 +193,8 @@ async def test_rushing_only_read_failure_does_not_erase_receiving_history(tmp_pa
     graph=MagicMock();graph.ainvoke=AsyncMock(side_effect=model)
     monkeypatch.setattr(scan,'create_graph',lambda **kwargs:graph)
     by_name={running['player']:running['availability'],receiving['player']:receiving['availability']}
-    monkeypatch.setattr(scan,'player_availability',lambda _,name,*args,**kwargs:(by_name[name]|{'subject_status':'Active'},None))
-    monkeypatch.setattr(scan,'relevant_availability_reports',lambda *args:[])
+    monkeypatch.setattr(scan,'player_availability',lambda _,name,*args,**kwargs:(by_name[name]|{'subject_status':'Active','teammates':[]},None))
+    monkeypatch.setattr(scan,'screened_availability_reports',lambda *args:[])
     monkeypatch.setattr(scan,'historical_availability_splits',AsyncMock(return_value=[]))
     monkeypatch.setattr(scan,'load_ngs_evidence',AsyncMock(return_value=None))
     monkeypatch.setattr(settings,'history_shadow_enabled',False)

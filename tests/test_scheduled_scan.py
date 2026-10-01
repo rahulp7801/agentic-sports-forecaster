@@ -310,3 +310,38 @@ def isolate_shadow_history_lookup(monkeypatch):
     # The primary graph tests mock aggregate SQL, not the separate history rows.
     # Dedicated shadow integration tests exercise that read-only query contract.
     monkeypatch.setattr('sportsbet.scan.load_histories',AsyncMock(return_value={}))
+
+@pytest.mark.parametrize('position,expected_reason',[
+    ('CB', None), ('WR', 'teammate_availability_unmodeled'),
+    ('', 'teammate_availability_unmodeled')])
+async def test_cfb_scanner_reconciles_teammate_unit_without_losing_unknown_risk(
+        tmp_path, position, expected_reason):
+    conn=AsyncMock();conn.fetch.return_value=[{'normalized_name':'player','player_id':'1'}]
+    pool=MagicMock();pool.acquire.return_value.__aenter__=AsyncMock(return_value=conn)
+    pool.acquire.return_value.__aexit__=AsyncMock(return_value=None)
+    now=datetime.now(timezone.utc)
+    report=dict(player='Teammate',status='Out',position=position,reported_at=now.isoformat())
+    roster='https://site.api.espn.com/apis/site/v2/sports/football/college-football/teams/324/roster'
+    injury='https://site.api.espn.com/apis/site/v2/sports/football/college-football/injuries'
+    availability=dict(status='observed',captured_at=now.isoformat(),source_url=injury,source_sha256='a'*64,
+        teams=[dict(abbreviation='HOM',roster_names=['Player','Teammate'],roster_ids={'1':'Player'},
+            roster_statuses={'Player':'Active','Teammate':'Active'},reports=[report],
+            roster_source_url=roster,roster_source_sha256='b'*64,
+            injury_source_url=injury,injury_source_sha256='a'*64)])
+    model=PropResult(true_probability=Decimal('.6'),sample_size=40,mean_stat=Decimal('24'),
+        confidence_interval=(Decimal('.55'),Decimal('.65')))
+    ledger=Ledger(tmp_path/'cfb-context.sqlite')
+    with patch('sportsbet.prop.agents.run_prop_query',AsyncMock(return_value=model)),patch.object(
+            ledger,'reserve',return_value=(True,'accepted')) as reserve:
+        result=await evaluate_event(pool,event('cfb'),'cfb',ledger,'scan',availability)
+    assert len(result['signals'])==2
+    assert all(signal['availability']['status']=='observed' for signal in result['signals'])
+    if expected_reason:
+        reserve.assert_not_called()
+        assert all(signal['gated'] and signal['gate_reason']==expected_reason
+            and signal['availability']['teammates'][0]['player']=='Teammate'
+            for signal in result['signals'])
+    else:
+        assert reserve.call_count==2
+        assert all(not signal['gated'] and signal['availability']['teammates']==[]
+            for signal in result['signals'])

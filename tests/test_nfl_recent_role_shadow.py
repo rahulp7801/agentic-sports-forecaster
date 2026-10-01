@@ -184,8 +184,8 @@ async def test_scanner_candidate_preserves_public_forecasts_and_exposure(tmp_pat
     graph=MagicMock();graph.ainvoke=AsyncMock(return_value={'prop_result':PropResult(true_probability=Decimal(str(p['model_probability'])),
         sample_size=33,mean_stat=Decimal('2.73'),confidence_interval=(Decimal('.80'),Decimal('.95')))})
     monkeypatch.setattr(scan,'create_graph',lambda **kwargs:graph)
-    monkeypatch.setattr(scan,'player_availability',lambda *args,**kwargs:(p['availability']|{'subject_status':'available'},None))
-    monkeypatch.setattr(scan,'relevant_availability_reports',lambda *args:[])
+    monkeypatch.setattr(scan,'player_availability',lambda *args,**kwargs:(p['availability']|{'subject_status':'available','teammates':[]},None))
+    monkeypatch.setattr(scan,'screened_availability_reports',lambda *args:[])
     monkeypatch.setattr(scan,'historical_availability_splits',AsyncMock(return_value=[]))
     monkeypatch.setattr(scan,'load_ngs_evidence',AsyncMock(return_value=None))
     monkeypatch.setattr(settings,'history_shadow_enabled',False)
