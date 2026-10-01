@@ -69,14 +69,19 @@ def test_hosted_schema_is_migrated_after_ci_and_checked_before_collection_and_de
     assert data.index(check) < data.index("name: Collect live market data")
     assert public.index(check) < public.index("name: Update public market data")
     assert ci.count(check) == 1
-    schema_job = ci[ci.index("  production-schema:"):ci.index("  deploy:")]
+    schema_job = ci[ci.index("  production-schema:"):ci.index("  release-plan:")]
     assert "needs: [secrets, backend, frontend, postgres, worker-image]" in schema_job
     assert schema_job.index("uv run --locked alembic upgrade head") < schema_job.index(check)
     migration_step = _step(schema_job, "Apply reviewed migrations to the hosted database")
     verification_step = _step(schema_job, "Verify hosted schema is at the application head")
     assert "secrets.DATABASE_MIGRATION_URL" in migration_step
     assert "secrets.DATABASE_MIGRATION_URL" not in verification_step
-    assert "needs: [secrets, backend, frontend, postgres, worker-image, production-schema]" in ci
+    deploy_job = ci[ci.index("  deploy:"):]
+    dependency_line = re.search(r"^    needs: \[(.*?)\]$", deploy_job, re.MULTILINE)
+    assert dependency_line is not None
+    assert set(dependency_line.group(1).split(", ")) == {
+        "secrets", "backend", "frontend", "postgres", "worker-image", "production-schema", "release-plan",
+    }
 
 
 def test_public_collection_verifies_the_deployed_contract_before_success() -> None:
@@ -143,3 +148,22 @@ def test_paid_schedule_collects_all_three_sports_and_keeps_public_modes_separate
     assert 'if [ "$SPORT" = all ]; then profile_sport=both; fi' in profiles
     assert "if: env.SPORT != 'cfb'" in profiles
     assert "env.SPORT == 'all' || env.SPORT == 'nfl'" in paid
+
+
+def test_release_planning_cannot_skip_live_checks_or_mutate_from_a_review_branch() -> None:
+    ci = CI_WORKFLOW.read_text(encoding="utf-8")
+    schema = ci[ci.index("  production-schema:"):ci.index("  release-plan:")]
+    plan = ci[ci.index("  release-plan:"):ci.index("  deploy:")]
+    deploy = ci[ci.index("  deploy:"):]
+    production_guard = "github.ref == 'refs/heads/master' && (github.event_name == 'push' || inputs.force_frontend_deploy == true)"
+    assert production_guard in schema and production_guard in deploy
+    assert "default: false" in ci[ci.index("  workflow_dispatch:"):ci.index("permissions:")]
+    assert "fetch-depth: 0" in plan and "persist-credentials: false" in plan
+    assert "node .github/scripts/deployment-plan.mjs" in plan
+    assert "vercel deploy" not in plan and "DATABASE_MIGRATION_URL" not in plan
+    assert "needs: [secrets, backend, frontend, postgres, worker-image]" in plan
+    conditional = "      - if: needs.release-plan.outputs.deploy == 'true'"
+    assert deploy.count(conditional) == 2
+    verify = _step(deploy, "Verify deployed access controls and data readiness")
+    assert "if:" not in verify and "node frontend/scripts/verify-production.mjs" in verify
+    assert '--meta sportsbetCommit="$GITHUB_SHA"' in deploy
