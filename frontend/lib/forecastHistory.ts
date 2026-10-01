@@ -19,8 +19,8 @@ export function historyObservedBefore(signal:EVSignal) {
   if(!captured) throw new Error('Forecast capture time unavailable');
   observationCutoff(captured);
   if(Date.parse(captured)<Date.parse(signal.snapped_at)
-      || (signal.game_start_time && (!Number.isFinite(Date.parse(signal.game_start_time))
-        || Date.parse(captured)>=Date.parse(signal.game_start_time)))) {
+      || !signal.game_start_time || !observationCutoff(signal.game_start_time)
+      || Date.parse(captured)>=Date.parse(signal.game_start_time)) {
     throw new Error('Forecast capture time unavailable');
   }
   return captured;

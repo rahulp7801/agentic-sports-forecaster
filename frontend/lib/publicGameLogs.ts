@@ -69,8 +69,8 @@ export function observationCutoff(value:string) {
   }
   const day=value.slice(0,10);
   const parsedDay=new Date(day+'T00:00:00Z');
-  if(!Number.isFinite(parsedDay.valueOf()) || parsedDay.toISOString().slice(0,10)!==day
-      || !Number.isFinite(Date.parse(value))) throw new Error('Invalid game-log observation cutoff');
+  if(Number(day.slice(0,4))<1 || !Number.isFinite(parsedDay.valueOf()) || parsedDay.toISOString().slice(0,10)!==day
+      || /[+-]14:(?!00$)/.test(value) || !Number.isFinite(Date.parse(value))) throw new Error('Invalid game-log observation cutoff');
   return value;
 }
 

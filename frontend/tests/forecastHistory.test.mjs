@@ -29,6 +29,7 @@ test('history observation cutoff requires a valid captured pregame forecast',()=
     {captured_at:'2026-09-18T00:00:00Z'},
     {captured_at:'2026-09-17T01:01:00'},
     {game_start_time:'invalid'},
+    {game_start_time:undefined},
   ]) assert.throws(()=>historyObservedBefore({...signal,...changed}));
 });
 
@@ -49,7 +50,7 @@ test('historical API query bounds exact names, limits and strict calendar cutoff
   assert.equal(parse('limit=200').limit,200);assert.equal(parse('').before,null);
   assert.equal(parse('observed_before=2026-09-17T01%3A01%3A00Z').observedBefore,'2026-09-17T01:01:00Z');
   assert.equal(parse('sport=nba&player=Luka%20Don%C4%8Di%C4%87').player,'Luka Dončić');
-  for(const value of ['observed_before=2026-02-31T01:01:00Z','observed_before=2026-09-17T01:01:00','observed_before=2026-09-17T25:01:00Z','observed_before=','before=2026-02-31','before=0000-01-01','before=2026-09-17T00:00Z','before=','exact=1','exact=2','limit=Infinity','limit=0','limit=201','limit=999999','sport=mlb','player=A%00B','player=%25','player=%20Player','player=%F0%9F%8F%88']) assert.throws(()=>parse(value));
+  for(const value of ['observed_before=2026-02-31T01:01:00Z','observed_before=2026-09-17T01:01:00','observed_before=2026-09-17T25:01:00Z','observed_before=0000-09-17T01:01:00Z','observed_before=2026-09-17T01:01:00%2B14:01','observed_before=','before=2026-02-31','before=0000-01-01','before=2026-09-17T00:00Z','before=','exact=1','exact=2','limit=Infinity','limit=0','limit=201','limit=999999','sport=mlb','player=A%00B','player=%25','player=%20Player','player=%F0%9F%8F%88']) assert.throws(()=>parse(value));
 });
 
 
