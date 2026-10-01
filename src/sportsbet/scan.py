@@ -433,20 +433,33 @@ async def evaluate_event(pool, event: dict, sport: str, ledger: Ledger, scan_id:
     rushing_model=None
     if role_model is not None and role_model.VERSION=='nfl-recent-role-shadow-v2':
         from sportsbet.quant import nfl_rushing_role_shadow as rushing_model
-    # Read once alongside the existing model work, with a bounded research budget.
+    # Keep frozen receiving v2 requests isolated from additional rushing-only
+    # players. A rushing read failure cannot erase an available receiving receipt.
+    receiving_ids={s[5] for s in prepared if role_model is not None
+        and MARKETS[sport][s[1]] in role_model.MARKETS[sport]}
+    rushing_only_ids={s[5] for s in prepared if rushing_model is not None
+        and MARKETS[sport][s[1]]==rushing_model.MARKET}-receiving_ids
     async def capture_role_history():
-        if not settings.role_history_shadow_enabled or sport!='nfl':return {},None
+        if not receiving_ids:return {},None
         try:
             kwargs={'observed_before':selection_time} if role_model.VERSION=='nfl-recent-role-shadow-v2' else {}
-            requests={s[5] for s in prepared if MARKETS[sport][s[1]] in role_model.MARKETS[sport]
-                or (rushing_model is not None and MARKETS[sport][s[1]]==rushing_model.MARKET)}
             async with asyncio.timeout(5):
-                return await role_model.load_inputs(pool,sport,season,game_date,requests,**kwargs),None
+                return await role_model.load_inputs(pool,sport,season,game_date,receiving_ids,**kwargs),None
         except Exception as exc:
             log.warning('role_history_unavailable',error_type=type(exc).__name__)
             return {},'history_read_failed'
-    modeled,(shadow_histories,shadow_unavailable),(role_inputs,role_unavailable)=await asyncio.gather(
-        asyncio.gather(*(model(selection) for selection in prepared)),capture_shadow_history(),capture_role_history())
+    async def capture_rushing_only_history():
+        if not rushing_only_ids:return {},None
+        try:
+            async with asyncio.timeout(5):
+                return await role_model.load_inputs(pool,sport,season,game_date,rushing_only_ids,
+                    observed_before=selection_time),None
+        except Exception as exc:
+            log.warning('rushing_role_history_unavailable',error_type=type(exc).__name__)
+            return {},'history_read_failed'
+    modeled,(shadow_histories,shadow_unavailable),(role_inputs,role_unavailable),(rushing_inputs,rushing_unavailable)=await asyncio.gather(
+        asyncio.gather(*(model(selection) for selection in prepared)),capture_shadow_history(),
+        capture_role_history(),capture_rushing_only_history())
     failures=sum(bool(state.get('error')) for _,state in modeled)
     if failures and failures==len(modeled):
         raise RuntimeError('Model evaluation failed')
@@ -601,8 +614,9 @@ async def evaluate_event(pool, event: dict, sport: str, ledger: Ledger, scan_id:
             role_counts[payload['role_history_shadow'].get('reason','predicted')]+=1
             if rushing_model is not None and payload['prop_type']==rushing_model.MARKET:
                 try:
-                    payload['rushing_role_shadow']=rushing_model.shadow_record(payload,role_inputs.get(player_id,{}),
-                        unavailable=role_unavailable)
+                    payload['rushing_role_shadow']=rushing_model.shadow_record(payload,
+                        role_inputs.get(player_id) or rushing_inputs.get(player_id,{}),
+                        unavailable=role_unavailable if player_id in receiving_ids else rushing_unavailable)
                 except Exception as exc:
                     log.warning('rushing_role_shadow_evaluation_failed',error_type=type(exc).__name__)
                     payload['rushing_role_shadow']=dict(model_version=rushing_model.VERSION,policy_version=rushing_model.POLICY,

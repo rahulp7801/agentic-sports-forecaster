@@ -152,3 +152,65 @@ async def test_scan_records_private_rushing_candidate_without_changing_public_pi
     prepared=paper.prepare(forecasts,'nfl',now+timedelta(seconds=2))
     raw=[item for item in prepared if item['protocol']==paper.PROTOCOL['policies']['raw_model']]
     assert raw and all(any('rushing_role_shadow' in item for item in json.loads(receipt['payload'])['evidence']) for receipt in raw)
+
+
+@pytest.mark.asyncio
+async def test_rushing_only_read_failure_does_not_erase_receiving_history(tmp_path,monkeypatch):
+    from sportsbet import scan
+    from sportsbet.config import settings
+    from sportsbet.graph.models import PropResult
+    from sportsbet.ledger import Ledger
+
+    running,rush_data=fixture()
+    receiving,rec_data=receiving_fixture()
+    now=datetime.fromisoformat(running['captured_at'])
+    rec_data.update(observed_at=now.isoformat(),observed_before=now.isoformat(),cutoff=running['game_date'])
+    receiving['availability']['captured_at']=now.isoformat()
+    class Clock(datetime):
+        @classmethod
+        def now(cls,tz=None): return now
+    monkeypatch.setattr(scan,'datetime',Clock)
+    monkeypatch.setattr('sportsbet.ledger.datetime',Clock)
+    event=dict(id=running['game_id'],home_team=running['home_team'],away_team=running['away_team'],
+        commence_time=running['game_start_time'],bookmakers=[dict(key='book',markets=[
+            dict(key='player_rush_yds',last_update=running['quote_time'],outcomes=[dict(
+                name=side,point=73.5,price=-110,description=running['player']) for side in ('Over','Under')]),
+            dict(key='player_receptions',last_update=running['quote_time'],outcomes=[dict(
+                name=side,point=.5,price=-110,description=receiving['player']) for side in ('Over','Under')])])])
+    identities={running['player'].lower():running['player_id'],receiving['player'].lower():receiving['player_id']}
+    conn=MagicMock();conn.fetch=AsyncMock(return_value=[dict(normalized_name=name,player_id=key)
+        for name,key in identities.items()])
+    pool=MagicMock();pool.acquire.return_value.__aenter__=AsyncMock(return_value=conn)
+    monkeypatch.setattr(scan,'write_player_prop_snapshots',AsyncMock())
+    async def model(state):
+        if state['prop_type']=='rush_yds':
+            return {'prop_result':PropResult(true_probability=Decimal(str(1-running['model_probability'])),
+                sample_size=running['model_sample_size'],mean_stat=Decimal(str(running['model_mean_stat'])),
+                confidence_interval=(Decimal('.1'),Decimal('.5')))}
+        return {'prop_result':PropResult(true_probability=Decimal(str(receiving['model_probability'])),
+            sample_size=receiving['model_sample_size'],mean_stat=Decimal(str(receiving['model_mean_stat'])),
+            confidence_interval=(Decimal('.7'),Decimal('.99')))}
+    graph=MagicMock();graph.ainvoke=AsyncMock(side_effect=model)
+    monkeypatch.setattr(scan,'create_graph',lambda **kwargs:graph)
+    by_name={running['player']:running['availability'],receiving['player']:receiving['availability']}
+    monkeypatch.setattr(scan,'player_availability',lambda _,name,*args,**kwargs:(by_name[name]|{'subject_status':'Active'},None))
+    monkeypatch.setattr(scan,'relevant_availability_reports',lambda *args:[])
+    monkeypatch.setattr(scan,'historical_availability_splits',AsyncMock(return_value=[]))
+    monkeypatch.setattr(scan,'load_ngs_evidence',AsyncMock(return_value=None))
+    monkeypatch.setattr(settings,'history_shadow_enabled',False)
+    monkeypatch.setattr(settings,'role_history_shadow_enabled',True)
+    async def load(pool,sport,season,cutoff,requests,**kwargs):
+        if requests=={running['player_id']}: raise RuntimeError('rushing-only read timed out')
+        assert requests=={receiving['player_id']}
+        return {receiving['player_id']:rec_data}
+    loader=AsyncMock(side_effect=load)
+    monkeypatch.setattr(source,'load_inputs',loader)
+    ledger=Ledger(tmp_path/'isolated.sqlite',database_url='')
+    result=await scan.evaluate_event(pool,event,'nfl',ledger,'isolated')
+    assert loader.await_count==2
+    assert {frozenset(call.args[4]) for call in loader.await_args_list}=={
+        frozenset({running['player_id']}),frozenset({receiving['player_id']})}
+    rows=ledger.predictions()
+    assert len(rows)==4 and len(result['signals'])==4
+    assert all(row['rushing_role_shadow']['reason']=='history_read_failed' for row in rows if row['prop_type']=='rush_yds')
+    assert all(row['role_history_shadow'].get('reason')!='history_read_failed' for row in rows if row['prop_type']=='receptions')
