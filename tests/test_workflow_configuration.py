@@ -76,7 +76,7 @@ def test_hosted_schema_is_migrated_after_ci_and_checked_before_collection_and_de
     verification_step = _step(schema_job, "Verify hosted schema is at the application head")
     assert "secrets.DATABASE_MIGRATION_URL" in migration_step
     assert "secrets.DATABASE_MIGRATION_URL" not in verification_step
-    deploy_job = ci[ci.index("  deploy:"):]
+    deploy_job = ci[ci.index("\n  deploy:\n"):]
     dependency_line = re.search(r"^    needs: \[(.*?)\]$", deploy_job, re.MULTILINE)
     assert dependency_line is not None
     assert set(dependency_line.group(1).split(", ")) == {
@@ -153,8 +153,8 @@ def test_paid_schedule_collects_all_three_sports_and_keeps_public_modes_separate
 def test_release_planning_cannot_skip_live_checks_or_mutate_from_a_review_branch() -> None:
     ci = CI_WORKFLOW.read_text(encoding="utf-8")
     schema = ci[ci.index("  production-schema:"):ci.index("  release-plan:")]
-    plan = ci[ci.index("  release-plan:"):ci.index("  deploy:")]
-    deploy = ci[ci.index("  deploy:"):]
+    plan = ci[ci.index("  release-plan:"):ci.index("\n  deploy:\n")]
+    deploy = ci[ci.index("\n  deploy:\n"):]
     production_guard = "github.ref == 'refs/heads/master' && (github.event_name == 'push' || inputs.force_frontend_deploy == true)"
     assert production_guard in schema and production_guard in deploy
     assert "default: false" in ci[ci.index("  workflow_dispatch:"):ci.index("permissions:")]
