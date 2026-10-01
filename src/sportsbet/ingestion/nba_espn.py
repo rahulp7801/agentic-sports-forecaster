@@ -29,7 +29,9 @@ def index_rows(rows: list[dict], key: str, required: tuple[str, ...], method: st
     for row in rows:
         if row.get('season')!=str(year):
             raise ValueError('Crosswalk season mismatch')
-        if row.get('match_confidence')!='1' or row.get('match_method')!=method:
+        confidence=row.get('match_confidence')
+        if (row.get('match_method')!=method or not isinstance(confidence,str)
+                or re.fullmatch(r'1(?:\.0+)?',confidence) is None):
             continue  # Never promote fuzzy/unmatched identifier suggestions.
         if not all(row.get(field) for field in (key,*required)):
             continue
