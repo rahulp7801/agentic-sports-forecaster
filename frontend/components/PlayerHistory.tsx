@@ -49,15 +49,15 @@ export default function PlayerHistory({signal}:{signal:EVSignal}) {
           <p>Available records from {calendar.from}, before {calendar.before}. The cutoff also preserves the gap before price capture.</p>
           <div className={styles.evidenceMetrics}>{[
             {label:'All recorded teams',sample:calendar.allTeams},
-            {label:calendar.capturedTeam ? `${calendar.capturedTeam} ? roster team at capture` : 'Roster team unavailable',sample:calendar.capturedTeamSample},
+            {label:calendar.capturedTeam ? `${calendar.capturedTeam} | roster team at capture` : 'Roster team unavailable',sample:calendar.capturedTeamSample},
           ].map(({label,sample})=><div key={label}><span>{label}</span><strong>{sample?.mean?.toFixed(1) ?? 'Unavailable'}</strong>
-            <small>{sample ? `${sample.observed} observed stats in ${sample.games} recorded games ? ${sample.missing} missing` : 'The forecast did not retain a confirmed roster team.'}</small>
+            <small>{sample ? `${sample.observed} observed stats in ${sample.games} recorded games | ${sample.missing} missing` : 'The forecast did not retain a confirmed roster team.'}</small>
             {sample && <small>{sample.decided ? `${sample.wins}/${sample.decided} matched this direction, excluding ties` : 'Direction rate unavailable'}</small>}
             {sample?.oldest && <small>{sample.oldest} to {sample.newest}</small>}
           </div>)}</div>
           {!calendar.allTeams.games && <p>No recorded games fall inside this window. Older games below do not establish current form.</p>}
           {calendar.capturedTeamSample && !calendar.capturedTeamSample.games && calendar.allTeams.games>0 && <p>No recorded games in this window match the roster team captured with this forecast.</p>}
-          <p className={styles.historyDisclaimer}>{calendar.limitedToLatest20 ? 'This window reaches the 20-game display limit and may omit additional games. ' : ''}Available records only; missing games are unknown. The captured roster team can differ from today?s team. Later source corrections may be reflected here. These descriptive results do not change the recorded probability.</p>
+          <p className={styles.historyDisclaimer}>{calendar.limitedToLatest20 ? 'This window reaches the 20-game display limit and may omit additional games. ' : ''}Available records only; missing games are unknown. The captured roster team can differ from the team today. Later source corrections may be reflected here. These descriptive results do not change the recorded probability.</p>
         </section>}
         {form && <section className={styles.recentForm} aria-label="Recent form before forecast">
           <h4>Recent form before this forecast</h4>
