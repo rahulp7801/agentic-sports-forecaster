@@ -69,28 +69,38 @@ def test_hosted_schema_is_migrated_after_ci_and_checked_before_collection_and_de
     check = "uv run --locked alembic current --check-heads"
     assert data.index(check) < data.index("name: Collect live market data")
     assert public.index(check) < public.index("name: Update public market data")
-    ci_check = ".venv/bin/alembic current --check-heads"
-    ci_upgrade = ".venv/bin/alembic upgrade head"
-    assert ci.count(ci_check) == 1
+
     schema_job = ci[ci.index("  production-schema:"):ci.index("  release-plan:")]
     assert "needs: [secrets, backend, frontend, postgres, worker-image]" in schema_job
-    assert schema_job.index("uv sync --locked --only-group migrations") < schema_job.index(ci_upgrade)
-    assert schema_job.index(ci_upgrade) < schema_job.index(ci_check)
+    sync = "uv sync --locked --only-group migrations"
+    plan = "production-transaction-preflight.py --plan-schema"
+    upgrade = ".venv/bin/alembic upgrade head"
+    verify = "production-transaction-preflight.py --require-schema"
+    probe = "run: .venv/bin/python .github/scripts/production-transaction-preflight.py\n"
+    assert schema_job.index(sync) < schema_job.index(plan) < schema_job.index(upgrade)
+    assert schema_job.index(upgrade) < schema_job.index(verify) < schema_job.index(probe)
     assert "uv run --locked alembic" not in schema_job
+
     postgres_job = ci[ci.index("  postgres:"):ci.index("  worker-image:")]
-    assert "uv sync --locked --only-group migrations" in postgres_job
+    assert sync in postgres_job
     assert "migrations-venv/bin/alembic\" current --check-heads" in postgres_job
-    migration_step = _step(schema_job, "Apply reviewed migrations to the hosted database")
+    migration_step = _step(schema_job, "Apply reviewed migrations when hosted schema is behind")
+    owner_check = _step(schema_job, "Verify owner migration credential is configured when required")
     verification_step = _step(schema_job, "Verify hosted schema is at the application head")
-    assert "secrets.DATABASE_MIGRATION_URL" in migration_step
+    for step in (owner_check, migration_step):
+        assert "if: steps.schema.outputs.migration_needed == 'true'" in step
+        assert "secrets.DATABASE_MIGRATION_URL" in step
     assert "secrets.DATABASE_MIGRATION_URL" not in verification_step
+    assert "secrets.DATABASE_MIGRATION_URL" not in _step(
+        schema_job, "Plan hosted schema using restricted transaction reader"
+    )
+
     deploy_job = ci[ci.index("\n  deploy:\n"):]
     dependency_line = re.search(r"^    needs: \[(.*?)\]$", deploy_job, re.MULTILINE)
     assert dependency_line is not None
     assert set(dependency_line.group(1).split(", ")) == {
         "secrets", "backend", "frontend", "postgres", "worker-image", "production-schema", "release-plan",
     }
-
 
 def test_public_collection_verifies_the_deployed_contract_before_success() -> None:
     public = PUBLIC_WORKFLOW.read_text(encoding="utf-8")

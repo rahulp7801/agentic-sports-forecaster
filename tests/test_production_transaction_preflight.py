@@ -80,3 +80,81 @@ def test_probe_runs_one_unprepared_read(monkeypatch):
         ),
         "SELECT 1 FROM dashboard_snapshots LIMIT 1",
     ]
+
+def test_schema_plan_skips_owner_only_at_exact_repository_heads(monkeypatch):
+    versions = ["head-a"]
+    statements = []
+
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def execute(self, sql):
+            statements.append(sql)
+
+        def fetchall(self):
+            return [(version,) for version in versions]
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def cursor(self):
+            return Cursor()
+
+    def connect(dsn, **kwargs):
+        assert "pooler.supabase.com:6543" in dsn
+        assert kwargs == {"connect_timeout": 5, "prepare_threshold": None}
+        return Connection()
+
+    monkeypatch.setattr(preflight.psycopg, "connect", connect)
+    value = (
+        "postgresql://reader:synthetic@aws-0-us-west-2.pooler.supabase.com:5432/"
+        "postgres?sslmode=verify-full"
+    )
+    assert preflight.migration_needed(value, {"head-a"}) is False
+    assert preflight.migration_needed(value, {"head-b"}) is True
+    assert statements == ["SELECT version_num FROM alembic_version"] * 2
+
+
+def test_missing_version_table_requires_owner_migration(monkeypatch):
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def execute(self, _sql):
+            raise preflight.psycopg.errors.UndefinedTable("missing version table")
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def cursor(self):
+            return Cursor()
+
+    monkeypatch.setattr(preflight.psycopg, "connect", lambda *_args, **_kwargs: Connection())
+    assert preflight.migration_needed(
+        "postgresql://reader:synthetic@db.example/postgres?sslmode=verify-full",
+        {"head-a"},
+    ) is True
+
+
+def test_schema_plan_requires_a_repository_head():
+    with pytest.raises(ValueError, match="no migration head"):
+        preflight.migration_needed(
+            "postgresql://reader:synthetic@db.example/postgres?sslmode=verify-full",
+            set(),
+        )
+    assert preflight.repository_heads()
