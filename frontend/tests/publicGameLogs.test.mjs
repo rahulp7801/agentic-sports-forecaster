@@ -26,7 +26,7 @@ test('public game logs reject malformed identity, dates, booleans, stats and ove
 
 test('college-football game-log requests retain exact player lookup',()=>{
   const request=gameLogRequest(new URLSearchParams({sport:'cfb',player:'A.J. Player',exact:'1',limit:'20'}));
-  assert.deepEqual(request,{sport:'cfb',player:'A.J. Player',limit:20,exact:true,before:null});
+  assert.deepEqual(request,{sport:'cfb',player:'A.J. Player',limit:20,exact:true,before:null,observedBefore:null});
 });
 
 

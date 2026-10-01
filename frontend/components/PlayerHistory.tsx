@@ -1,7 +1,7 @@
 'use client';
 import {useEffect,useState} from 'react';
 import type {EVSignal} from '@/lib/types';
-import {forecastHistory,historyCutoff,recentForm,calendarForm} from '@/lib/forecastHistory';
+import {forecastHistory,historyCutoff,historyObservedBefore,recentForm,calendarForm} from '@/lib/forecastHistory';
 import styles from './ResearchViews.module.css';
 
 export default function PlayerHistory({signal}:{signal:EVSignal}) {
@@ -11,13 +11,13 @@ export default function PlayerHistory({signal}:{signal:EVSignal}) {
   const [count,setCount]=useState(20);
   const [refresh,setRefresh]=useState(0);
   const {sport,player,player_id}=signal;
-  let cutoff:string|undefined;
-  try {cutoff=historyCutoff(signal);} catch { /* Older forecasts may lack timing evidence. */ }
+  let cutoff:string|undefined,observedBefore:string|undefined;
+  try {cutoff=historyCutoff(signal);observedBefore=historyObservedBefore(signal);} catch { /* Older forecasts may lack timing evidence. */ }
   useEffect(()=>{
     const controller=new AbortController();
     const timer=window.setTimeout(()=>{
-      if(!cutoff) {setError('This forecast has no valid historical cutoff and price-capture time.');setLoading(false);return;}
-      const params=new URLSearchParams({sport,player,before:cutoff,exact:'1',limit:'20'});
+      if(!cutoff || !observedBefore) {setError('This forecast has no valid history cutoff and capture time.');setLoading(false);return;}
+      const params=new URLSearchParams({sport,player,before:cutoff,observed_before:observedBefore,exact:'1',limit:'20'});
       if(player_id) params.set('player_id',player_id);
       fetch(`/api/gamelogs?${params}`,{cache:'no-store',signal:AbortSignal.any([controller.signal,AbortSignal.timeout(15_000)])})
         .then(async response=>{
@@ -28,7 +28,7 @@ export default function PlayerHistory({signal}:{signal:EVSignal}) {
         .finally(()=>{if(!controller.signal.aborted) setLoading(false);});
     },0);
     return ()=>{window.clearTimeout(timer);controller.abort();};
-  },[sport,player,player_id,cutoff,refresh]);
+  },[sport,player,player_id,cutoff,observedBefore,refresh]);
   const refreshHistory=()=>{setError('');setLoading(true);setRefresh(value=>value+1);};
   let history:ReturnType<typeof forecastHistory>|undefined;
   let form:ReturnType<typeof recentForm>|undefined;
@@ -39,11 +39,11 @@ export default function PlayerHistory({signal}:{signal:EVSignal}) {
   }
   const formWindows=form ? [{label:'Latest 5 recorded games',sample:form.recent},{label:'Previous 5 recorded games',sample:form.previous}] : [];
   return <section className={styles.playerHistory} aria-label="Player history before forecast">
-    <div className={styles.historyHeader}><div><h3>History behind the line</h3><p>Recorded games before {cutoff ?? 'an unavailable cutoff'}, compared with {signal.direction} {signal.line} {signal.prop_type.replaceAll('_',' ')}. A conservative one-day gap before price capture excludes overnight games.</p></div>
-      <div className={styles.historyActions}><button className={styles.uxButton} type="button" disabled={loading || !cutoff} onClick={refreshHistory}>{loading ? 'Loading history...' : error ? 'Retry history' : 'Refresh history'}</button><div className={styles.viewSwitch} aria-label="History window">{[10,20].map(n=><button type="button" key={n} aria-pressed={count===n} onClick={()=>setCount(n)}>Last {n}</button>)}</div></div>
+    <div className={styles.historyHeader}><div><h3>History behind the line</h3><p>Recorded games before {cutoff ?? 'an unavailable cutoff'}, compared with {signal.direction} {signal.line} {signal.prop_type.replaceAll('_',' ')}. Only source records available by the forecast capture time are shown. A conservative one-day gap before price capture excludes overnight games.</p></div>
+      <div className={styles.historyActions}><button className={styles.uxButton} type="button" disabled={loading || !cutoff || !observedBefore} onClick={refreshHistory}>{loading ? 'Loading history...' : error ? 'Retry history' : 'Refresh history'}</button><div className={styles.viewSwitch} aria-label="History window">{[10,20].map(n=><button type="button" key={n} aria-pressed={count===n} onClick={()=>setCount(n)}>Last {n}</button>)}</div></div>
     </div>
     {loading ? <p role="status">Loading recorded history…</p> : error || invalid ? <p role="status">{error || invalid}</p>
-      : !history?.rows.length ? <p>No exact-player games are available before this forecast cutoff.</p> : <>
+      : !history?.rows.length ? <p>No exact-player game records were available by this forecast capture time.</p> : <>
         {calendar && <section className={styles.recentForm} aria-label="Last 30 days before forecast">
           <h4>The 30 days before the target game</h4>
           <p>Available records from {calendar.from}, before {calendar.before}. The cutoff also preserves the gap before price capture.</p>
@@ -57,7 +57,7 @@ export default function PlayerHistory({signal}:{signal:EVSignal}) {
           </div>)}</div>
           {!calendar.allTeams.games && <p>No recorded games fall inside this window. Older games below do not establish current form.</p>}
           {calendar.capturedTeamSample && !calendar.capturedTeamSample.games && calendar.allTeams.games>0 && <p>No recorded games in this window match the roster team captured with this forecast.</p>}
-          <p className={styles.historyDisclaimer}>{calendar.limitedToLatest20 ? 'This window reaches the 20-game display limit and may omit additional games. ' : ''}Available records only; missing games are unknown. The captured roster team can differ from the team today. Later source corrections may be reflected here. These descriptive results do not change the recorded probability.</p>
+          <p className={styles.historyDisclaimer}>{calendar.limitedToLatest20 ? 'This window reaches the 20-game display limit and may omit additional games. ' : ''}Available records only; missing games are unknown. The captured roster team can differ from the team today. Later source corrections are excluded; earlier versions of corrected rows may no longer be retained. These descriptive results do not change the recorded probability.</p>
         </section>}
         {form && <section className={styles.recentForm} aria-label="Recent form before forecast">
           <h4>Recent form before this forecast</h4>
@@ -69,7 +69,7 @@ export default function PlayerHistory({signal}:{signal:EVSignal}) {
               <small>{sample.oldest && sample.newest ? `${sample.oldest} to ${sample.newest}` : 'No prior comparison window'}</small>
               <small>{sample.decided ? `${sample.wins}/${sample.decided} matched this direction, excluding ties` : 'Direction rate unavailable'}{sample.teams.length ? ` | ${sample.teams.join(', ')}` : ''}</small></div>;
           })}</div>
-          <p className={styles.historyDisclaimer}>These are available pre-cutoff records, not a complete participation census. Windows may cross seasons or teams; dates and missing stats matter. Later source corrections may be reflected here. This comparison does not adjust the recorded forecast probability.</p>
+          <p className={styles.historyDisclaimer}>These are available pre-cutoff records, not a complete participation census. Windows may cross seasons or teams; dates and missing stats matter. Later source corrections are excluded; earlier versions of corrected rows may no longer be retained. This comparison does not adjust the recorded forecast probability.</p>
         </section>}
         <div className={styles.evidenceMetrics}>
           <div><span>Shown-game direction rate</span><strong>{history.rate===null ? 'Unavailable' : `${(history.rate*100).toFixed(0)}%`}</strong><small>{history.wins} of {history.decided} decided games</small></div>

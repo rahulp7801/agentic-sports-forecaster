@@ -16,7 +16,7 @@ test('API boundary rejects mutation, ambiguous query values, excess input and fo
   assert.equal(publicRequest(request('/api/unknown')),404);
 });
 test('ordinary API queries and a forged prefetch header still use the same boundary',()=>{
-  for(const path of ['/api/signals?sport=nfl&view=qualified','/api/gamelogs?sport=nfl&player=Player&exact=1&before=2026-09-10&limit=40','/api/metrics?cohort=all&sport=nfl','/api/slate?sport=nba','/api/picks?sport=nfl','/api/scan']) assert.equal(publicRequest(request(path)),null);
+  for(const path of ['/api/signals?sport=nfl&view=qualified','/api/gamelogs?sport=nfl&player=Player&exact=1&before=2026-09-10&limit=40&observed_before=2026-09-10T01%3A01%3A00Z','/api/metrics?cohort=all&sport=nfl','/api/slate?sport=nba','/api/picks?sport=nfl','/api/scan']) assert.equal(publicRequest(request(path)),null);
   assert.equal(publicRequest(request('/api/signals?x=1','GET',{'next-router-prefetch':'1'})),400);
   assert.equal(publicRequest(request('/api/scans','GET',{'sec-fetch-site':'same-origin',origin:'https://example.test'})),null);
   assert.equal(publicRequest(request('/terminal?readiness=1')),null);

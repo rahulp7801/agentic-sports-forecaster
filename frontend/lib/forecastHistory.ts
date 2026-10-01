@@ -1,5 +1,5 @@
 import type {EVSignal} from './types';
-import {publicGameLogs,validPlayerId} from './publicGameLogs.ts';
+import {publicGameLogs,validPlayerId,observationCutoff} from './publicGameLogs.ts';
 
 /** Descriptive outcomes at this line, never a betting replay or a new forecast. */
 export function historyCutoff(signal:EVSignal) {
@@ -10,6 +10,20 @@ export function historyCutoff(signal:EVSignal) {
   // Date-only logs cannot establish completion across overnight league games.
   const captureDay=new Date(Date.parse(signal.snapped_at)-86_400_000).toISOString().slice(0,10);
   return captureDay<cutoff ? captureDay : cutoff;
+}
+
+/** Only display rows the source had recorded before this forecast was captured. */
+export function historyObservedBefore(signal:EVSignal) {
+  historyCutoff(signal);
+  const captured=signal.captured_at;
+  if(!captured) throw new Error('Forecast capture time unavailable');
+  observationCutoff(captured);
+  if(Date.parse(captured)<Date.parse(signal.snapped_at)
+      || (signal.game_start_time && (!Number.isFinite(Date.parse(signal.game_start_time))
+        || Date.parse(captured)>=Date.parse(signal.game_start_time)))) {
+    throw new Error('Forecast capture time unavailable');
+  }
+  return captured;
 }
 
 export function forecastHistory(value:unknown,signal:EVSignal,count=20) {
