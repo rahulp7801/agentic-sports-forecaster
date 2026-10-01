@@ -126,6 +126,28 @@ const reservePlan={...completed,status:'degraded',completed_events:0,budget_skip
     {game_id:'a',state:'api_budget',budget_reason:'pregame_credit_reserve',next_reserve_release_at:'2026-09-11T22:00:00Z',game_start_time:'2026-09-12T00:00:00Z'},
     {game_id:'b',state:'api_budget',budget_reason:'pregame_credit_reserve',next_reserve_release_at:'2026-09-11T21:00:00Z',game_start_time:'2026-09-11T23:00:00Z'},
   ]};
+test('mixed CFB reserve and cadence report both timing paths without promising a pick',()=>{
+  const mixed={...reservePlan,eligible_events:3,cadence_deferred_events:1,
+    next_refresh_at:'2026-09-11T13:00:00Z',events:[...reservePlan.events,
+      {game_id:'c',state:'scheduled',next_refresh_at:'2026-09-11T13:00:00Z',
+        game_start_time:'2026-09-12T00:00:00Z'}]};
+  const upcoming=scanStatus(mixed,now);
+  assert.equal(upcoming.state,'partial');
+  assert.equal(upcoming.label,'Credits reserved for pregame checks');
+  assert.equal(upcoming.next_refresh_at,mixed.next_refresh_at);
+  assert.equal(upcoming.reserve_release_at,'2026-09-11T21:00:00Z');
+  const due=scanStatus(mixed,Date.parse(mixed.next_refresh_at));
+  assert.equal(due.state,'overdue');
+  assert.equal(due.overdue_at,mixed.next_refresh_at);
+  assert.equal(due.next_refresh_at,null);
+  assert.equal(due.reserve_release_at,'2026-09-11T21:00:00Z');
+  for(const patch of [
+    {cadence_deferred_events:2},
+    {next_refresh_at:'invalid'},
+    {failures:[{}]},
+    {status:'failed'},
+  ]) assert.equal(scanStatus({...mixed,...patch},now).next_refresh_at,null);
+});
 test('stale scans retain a labeled recorded reserve plan without claiming freshness',()=>{
   const status=scanStatus(reservePlan,now+3600000);
   assert.equal(status.state,'stale');assert.equal(status.label,'Scan is stale');

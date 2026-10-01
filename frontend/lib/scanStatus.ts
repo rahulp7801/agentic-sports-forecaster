@@ -57,7 +57,11 @@ export function scanStatus(value: unknown, now = Date.now()) {
   const planValid=Number.isFinite(age) && age>=-60000 && age<=48*3600000
     && deferred!==null && deferred>0 && data.status==='degraded' && Array.isArray(data.failures) && data.failures.length===0
     && eligible!==null && completed!==null && completed+Number(deferred)<=eligible;
-  const overdue=data.status==='scheduled' && (count(data.cadence_deferred_events) ?? 0)>0 && boundedDue && nextTime<=now;
+  const cadence=count(data.cadence_deferred_events);
+  const mixedCadence=planValid && cadence!==null && cadence>0 && completed!==null && deferred!==null
+    && eligible!==null && completed+deferred+cadence<=eligible;
+  const overdue=(data.status==='scheduled' || mixedCadence) && cadence!==null && cadence>0
+    && boundedDue && nextTime<=now;
   let state='unknown',label='Scan status unavailable';
   if(Number.isFinite(age) && age>=-60000) {
     if(data.status==='running') {
@@ -81,7 +85,8 @@ export function scanStatus(value: unknown, now = Date.now()) {
     else if(data.status==='complete' && completed===eligible) {state='complete';label='Scan complete';}
   }
   return {state,label,updated_at:timestamp(stamp) ? stamp as string : null,
-    next_refresh_at:state==='scheduled' && boundedDue && nextTime>now && nextTime<=now+48*3600000 ? next : null,
+    next_refresh_at:(state==='scheduled' || (state==='partial' && mixedCadence))
+      && boundedDue && nextTime>now && nextTime<=now+48*3600000 ? next : null,
     recorded_budget_label:planValid ? budgetLabel : null,
     reserve_release_at:planValid ? release : null,
     reserve_release_passed:!!(planValid && release && Date.parse(release)<=now),
