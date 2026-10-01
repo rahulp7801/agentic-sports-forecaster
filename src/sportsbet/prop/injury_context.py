@@ -5,6 +5,7 @@ from datetime import date, datetime
 
 import asyncpg
 
+from sportsbet.prop.availability import blocks_unadjusted_teammate_context
 from sportsbet.prop.nba_query_builder import NBA_GAMELOG_COLUMN_MAP
 from sportsbet.prop.nba_context_producer import nba_team_abbreviation
 from sportsbet.prop.query_builder import PROP_COLUMN_MAP
@@ -17,7 +18,7 @@ RISK = frozenset({'out','inactive','injured reserve','doubtful','questionable'})
 
 
 def relevant_availability_reports(context: dict | None, subject_team: str,
-                                  subject_player: str, sport: str) -> list[dict]:
+                                  subject_player: str, sport: str, *, limit: int | None = 8) -> list[dict]:
     """Return reported offensive teammates and opposing defenders that can affect the subject."""
     if not context or context.get('status') not in ('observed','partial'):
         return []
@@ -40,7 +41,12 @@ def relevant_availability_reports(context: dict | None, subject_team: str,
                        source_sha256=team.get('injury_source_sha256'))
             candidates.append(row)
     priority = {'out':0,'inactive':0,'injured reserve':0,'doubtful':1,'questionable':2}
-    return sorted(candidates,key=lambda row:(priority.get(row['status'].lower(),3),row['relationship'],row['player']))[:8]
+    # Show gate-causing teammate absences before trimming the context list.
+    # The scanner still evaluates the full report independently of this cap.
+    ordered = sorted(candidates,key=lambda row:(
+        not blocks_unadjusted_teammate_context(row),
+        priority.get(row['status'].strip().lower(),3),row['relationship'],row['player']))
+    return ordered if limit is None else ordered[:limit]
 
 
 def current_contexts(context: dict | None, subject_team: str, subject_player: str, sport: str) -> list[dict]:
