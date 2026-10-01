@@ -50,7 +50,7 @@ def test_browser_role_migration_closes_owner_view_and_preserves_data():
         with engine.connect() as conn:
             assert conn.execute(sa.text("SELECT count(*) FROM dashboard_snapshots WHERE snapshot_key='acl-proof'")).scalar_one() == 1
             for role in ('anon', 'authenticated'):
-                for table in ('public.dashboard_snapshots', 'public.dashboard_gamelogs',
+                for table in ('public.dashboard_snapshots', 'public.dashboard_gamelogs', 'public.dashboard_gamelogs_asof',
                               'public.provider_response_cache', 'public.ngs_stats',
                               'public.cfb_history_source_bundles', 'public.cfb_receiving_supplements',
                               'public.cfb_effective_gamelogs', 'public.nfl_history_source_bundles',
@@ -62,7 +62,7 @@ def test_browser_role_migration_closes_owner_view_and_preserves_data():
             with pytest.raises(sa.exc.ProgrammingError):
                 with engine.begin() as conn:
                     conn.execute(sa.text(f'SET LOCAL ROLE {role}'))
-                    conn.execute(sa.text('SELECT * FROM public.dashboard_gamelogs LIMIT 1'))
+                    conn.execute(sa.text('SELECT * FROM public.dashboard_gamelogs_asof LIMIT 1'))
         alembic.command.downgrade(cfg, '0023_worker_snapshot_append')
         with engine.connect() as conn:
             assert not conn.execute(sa.text("SELECT has_table_privilege('anon','public.dashboard_gamelogs','SELECT')")).scalar_one()

@@ -73,6 +73,16 @@ def test_reviewed_nfl_archive_is_atomic_replay_safe_and_private():
             public=conn.execute("SELECT payload FROM public.dashboard_gamelogs WHERE sport='nfl' AND player_id=%s AND game_key=%s",(item['player_id'],g['game_id'])).fetchone()[0]
             assert public['rec_yds']==public['receptions']==0
             assert public['pass_yds'] is public['rush_yds'] is None
+            asof=conn.execute("SELECT record_available_at,payload FROM public.dashboard_gamelogs_asof "
+                "WHERE sport='nfl' AND player_id=%s AND game_key=%s",(item['player_id'],g['game_id'])).fetchone()
+            assert asof[0]==max(inserted,datetime.fromisoformat(item['observed_at']))
+            assert asof[1]==public
+            assert conn.execute("SELECT count(*) FROM public.dashboard_gamelogs_asof WHERE sport='nfl' "
+                "AND player_id=%s AND game_key=%s AND record_available_at<=%s",
+                (item['player_id'],g['game_id'],asof[0]-timedelta(microseconds=1))).fetchone()[0]==0
+            assert conn.execute("SELECT count(*) FROM public.dashboard_gamelogs_asof WHERE sport='nfl' "
+                "AND player_id=%s AND game_key=%s AND record_available_at<=%s",
+                (item['player_id'],g['game_id'],asof[0])).fetchone()[0]==1
             final=item['manifest']['game']
             value,proof=_actual(Session(),dict(player_id=item['player_id'],prop_type='rec_yds',model_version='empirical-jeffreys-v4-nfl-history-v1'),'nfl',final['date'],final)
             assert value==0 and proof['provider']=='nflverse_espn_supplement'
