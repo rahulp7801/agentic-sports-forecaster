@@ -59,3 +59,18 @@ def test_nba_empty_current_season_retains_honest_coverage():
     assert result=={'provider':'nba','seasons':[{'season':2026,'rows':0,'status':'empty'}]}
     ingest.assert_called_once_with(2026,engine)
     engine.dispose.assert_called_once()
+
+
+def test_nba_primary_parse_failure_uses_existing_bounded_fallback():
+    from sportsbet.ingestion.nba_gamelogs import ingest_nba_gamelogs_season
+    engine=MagicMock()
+    with patch('sportsbet.refresh.get_sync_engine',return_value=engine), \
+         patch('sportsbet.ingestion.nba_gamelogs.PlayerGameLogs',
+               side_effect=ValueError('invalid provider body')), \
+         patch('sportsbet.refresh.ingest_nba_gamelogs_season',
+               side_effect=ingest_nba_gamelogs_season), \
+         patch('sportsbet.ingestion.nba_espn.refresh_recent',
+               return_value={'provider':'espn','games':0,'rows':0}) as fallback:
+        assert refresh('nba',date(2026,10,1))=={'provider':'espn','games':0,'rows':0}
+    fallback.assert_called_once_with(2026,date(2026,10,1),engine)
+    engine.dispose.assert_called_once()

@@ -189,3 +189,14 @@ def test_empty_response_without_required_schema_still_fails() -> None:
     ):
         with pytest.raises(KeyError):
             ingest_nba_gamelogs_season(2026, MagicMock())
+
+
+def test_invalid_primary_response_is_network_fallback_eligible() -> None:
+    from requests.exceptions import RequestException
+    from sportsbet.ingestion.nba_gamelogs import ingest_nba_gamelogs_season
+
+    with patch('sportsbet.ingestion.nba_gamelogs.PlayerGameLogs',
+               side_effect=ValueError('untrusted provider response')):
+        with pytest.raises(RequestException, match='source response unavailable') as exc:
+            ingest_nba_gamelogs_season(2026, MagicMock())
+    assert 'untrusted provider response' not in str(exc.value)
