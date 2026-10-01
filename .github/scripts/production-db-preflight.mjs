@@ -1,12 +1,12 @@
 /** Require repeatable live database reads before spending a production deployment. */
 import {pathToFileURL} from 'node:url';
-import {randomBytes} from 'node:crypto';
+import {randomInt} from 'node:crypto';
 
 export const HOST='https://agentic-ev-analytics-platform.vercel.app';
 export const PATHS=['/api/scans','/api/picks?sport=nfl'];
 
 function directDatabaseProbe() {
-  const suffix=[...randomBytes(16)].map(byte=>String.fromCharCode(65+byte%26)).join('');
+  const suffix=Array.from({length:16},()=>String.fromCharCode(65+randomInt(26))).join('');
   return '/api/gamelogs?sport=nfl&player=HealthProbe'+suffix+'&limit=1';
 }
 
