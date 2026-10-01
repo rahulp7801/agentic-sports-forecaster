@@ -383,6 +383,31 @@ test('corrected CFB model requires its policy and preserves historical validatio
 });
 
 
+test('CFB public availability distinguishes relevant teammate absence from known defense',()=>{
+  const capture=Date.parse('2026-10-01T12:00:00Z');
+  const source='https://site.api.espn.com/apis/site/v2/sports/football/college-football/injuries';
+  const roster='https://site.api.espn.com/apis/site/v2/sports/football/college-football/teams/12/roster?limit=1000';
+  const base={...publicQuote,sport:'cfb',model_version:'empirical-jeffreys-v4-cfb-history-v1',
+    history_policy_version:'cfb-explicit-receiving-v1',forecast_cutoff:'2026-10-01',
+    snapped_at:new Date(capture).toISOString(),game_start_time:new Date(capture+4*3600000).toISOString(),
+    availability:{...quote.availability,captured_at:new Date(capture).toISOString(),team:'HOM',
+      source_url:source,roster_source_url:roster}};
+  const project=teammates=>publicSignals([{...base,availability:{...base.availability,teammates}}],capture).signals[0];
+  const opponent={player:'Opponent corner',position:'CB',status:'Out',
+    reported_at:new Date(capture).toISOString(),team:'AWY',relationship:'opponent',unit:'defense',
+    source_url:source,source_sha256:'a'.repeat(64)};
+  const harmless=project([opponent]);
+  assert.equal(harmless.availability.teammates[0].relationship,'opponent');
+  assert.equal(harmless.gated,false);
+  const unknown=project([{player:'Utility teammate',position:'Unknown',status:'Doubtful',
+    reported_at:new Date(capture).toISOString()},opponent]);
+  assert.equal(unknown.gate_reason,'teammate_availability_unmodeled');
+  assert.equal(unknown.kelly_fraction,0);
+  assert.equal(unknown.availability.teammates[0].player,'Utility teammate');
+  assert.equal(unknown.true_prob,base.true_prob);
+});
+
+
 test('NFL corrected-history policy gates current signals while retaining old picks',()=>{
   const when=Date.parse('2026-09-30T12:00:00Z');
   const legacy={...quote,sport:'nfl',forecast_cutoff:'2026-09-30',

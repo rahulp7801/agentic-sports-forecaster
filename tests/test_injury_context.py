@@ -2,8 +2,9 @@ from datetime import date
 
 import pytest
 
+from sportsbet.prop.availability import blocks_unadjusted_teammate_context
 from sportsbet.prop.injury_context import (_nba_split, _nfl_split, current_contexts,
-    relevant_availability_reports)
+    relevant_availability_reports, screened_availability_reports)
 
 
 def test_contexts_require_relevant_unit_and_exact_nfl_identity():
@@ -32,6 +33,56 @@ def test_relevant_reports_exclude_same_team_defense_and_opponent_offense_without
     rows=relevant_availability_reports(context,'NE','Target','nfl')
     assert [(row['player'],row['relationship'],row['unit']) for row in rows]==[
         ('Receiver','teammate','offense'),('Defender','opponent','defense')]
+
+
+def test_relevant_reports_keep_complete_gate_input_and_prioritize_blocking_teammate():
+    context={'status':'observed','teams':[
+        {'abbreviation':'NE','reports':[{'player':'Teammate','position':'WR','status':'Doubtful'}]},
+        {'abbreviation':'NYJ','reports':[
+            {'player':f'Defender {i}','position':'CB','status':'Out'} for i in range(9)]}]}
+    all_rows=relevant_availability_reports(context,'NE','Target','nfl',limit=None)
+    display_rows=relevant_availability_reports(context,'NE','Target','nfl')
+    assert len(all_rows)==10 and len(display_rows)==8
+    assert display_rows==all_rows[:8]
+    assert all_rows[0]['player']=='Teammate' and all_rows[0]['relationship']=='teammate'
+
+
+def test_cfb_context_excludes_known_defensive_teammate_and_preserves_unknown_absence():
+    stamp='2026-10-01T09:00:00Z'
+    raw=[{'player':'Receiver','position':'WR','status':'Out','reported_at':stamp},
+         {'player':'Corner','position':'CB','status':'Out','reported_at':stamp},
+         {'player':'Utility','position':'','status':'Doubtful','reported_at':stamp}]
+    context={'status':'observed','teams':[
+        {'abbreviation':'HOM','injury_source_url':'https://site.api.espn.com/apis/site/v2/sports/football/college-football/injuries',
+         'injury_source_sha256':'a'*64,'reports':raw},
+        {'abbreviation':'AWY','injury_source_url':'https://site.api.espn.com/apis/site/v2/sports/football/college-football/injuries',
+         'injury_source_sha256':'b'*64,'reports':[
+             {'player':'Opponent corner','position':'CB','status':'Questionable','reported_at':stamp},
+             {'player':'Opponent QB','position':'QB','status':'Out','reported_at':stamp}]}]}
+    rows=screened_availability_reports(context,'HOM','Target','cfb',raw)
+    assert [(row['player'],row.get('relationship'),row.get('unit')) for row in rows]==[
+        ('Utility',None,None),('Receiver','teammate','offense'),
+        ('Opponent corner','opponent','defense')]
+    assert rows[0]['position']=='Unknown' and rows[1]['source_sha256']=='a'*64
+    assert any(blocks_unadjusted_teammate_context(row) for row in rows)
+    # A known defensive teammate is not evidence that an offensive projection
+    # needs an unvalidated injury adjustment.
+    context['teams'][0]['reports']=[raw[1]]
+    rows=screened_availability_reports(context,'HOM','Target','cfb',[raw[1]])
+    assert not any(blocks_unadjusted_teammate_context(row) for row in rows)
+
+
+def test_cfb_blocking_teammate_survives_public_eight_report_cap():
+    stamp='2026-10-01T09:00:00Z'
+    raw=[{'player':'Receiver','position':'WR','status':'Out','reported_at':stamp}]
+    context={'status':'observed','teams':[
+        {'abbreviation':'HOM','reports':raw},
+        {'abbreviation':'AWY','reports':[
+            {'player':f'Defender {i}','position':'CB','status':'Out','reported_at':stamp}
+            for i in range(9)]}]}
+    all_rows=screened_availability_reports(context,'HOM','Target','cfb',raw)
+    assert len(all_rows)==10 and all_rows[0]['player']=='Receiver'
+    assert all_rows[0] in all_rows[:8]
 
 
 def test_nba_reports_treat_teammates_and_opponents_as_relevant_lineup_context():
