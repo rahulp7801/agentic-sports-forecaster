@@ -12,6 +12,7 @@ import hashlib
 import json
 from pathlib import Path
 
+from sportsbet.ingestion.provenance import stat_row_sha256
 from sportsbet.ledger import utc_timestamp
 from sportsbet.quant import current_history_replay as replay
 from sportsbet.quant import individual_pick_accuracy as accuracy
@@ -46,6 +47,24 @@ def reconstructed_context(row, selection, receipt, snapshot, history):
     bound, reason = accuracy.bound_history(sample, snapshot, 'nfl', row['player_id'], 'rush_yds')
     if reason:
         return {'available': False, 'reason': reason}
+    for source, _ in bound:
+        try:
+            if (source['source_provider'] != 'nflverse' or
+                    stat_row_sha256('nfl', source) != source['source_record_sha256']):
+                return {'available': False, 'reason': 'invalid_source_row_commitment'}
+        except (KeyError, TypeError, ValueError):
+            return {'available': False, 'reason': 'invalid_source_row_commitment'}
+        games = [game for game in snapshot['nfl_games']
+                 if (game['season'], game['week']) == (source['season'], source['week'])
+                 and source['team'] in (game['home_team'], game['away_team'])]
+        if len(games) != 1:
+            return {'available': False, 'reason': 'ambiguous_schedule_binding'}
+        game = games[0]
+        expected = f"{source['season']}_{source['week']:02}_{game['away_team']}_{game['home_team']}"
+        created = replay.stamp(game.get('created_at'))
+        if (game.get('game_id') != expected or created is None or created > before or
+                date.fromisoformat(game['game_date']) >= day):
+            return {'available': False, 'reason': 'invalid_schedule_chronology'}
     estimate = replay.estimate(sample, float(selection['line']))
     if (estimate is None or estimate['n'] < 20 or estimate['push_probability'] != 0 or
             estimate['n'] != row.get('model_sample_size') or
