@@ -13,5 +13,5 @@ def test_daily_edge_evaluation_does_not_publish_private_reports():
     assert 'upload-artifact' not in edge['run']
     uploads = [step for step in steps if 'upload-artifact' in step.get('uses', '')]
     assert uploads
-    assert all(step['with']['path'].endswith('/public-evidence/') for step in uploads)
+    assert all(step['with']['path']=='${{ runner.temp }}/public-evidence.tar.xz' for step in uploads)
     assert 'edge-checkpoint' not in Path('.github/workflows/data.yml').read_text(encoding='utf8')
