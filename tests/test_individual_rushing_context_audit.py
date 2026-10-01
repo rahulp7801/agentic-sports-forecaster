@@ -5,6 +5,7 @@ import hashlib
 import pytest
 from tests.test_model_selection_paper import receipt, rows, NOW
 
+from sportsbet.ingestion.provenance import stat_row_sha256
 from sportsbet.quant import current_history_replay as replay
 from sportsbet.quant import individual_rushing_context_audit as audit
 
@@ -17,13 +18,17 @@ def fixture():
     for i in range(20):
         season = 2025 if i < 17 else 2026
         week = i+1 if season == 2025 else i-16
-        rows.append(dict(player_id='p', season=season, week=week, team='PIT',
-            rushing_yards=80 if i % 4 == 0 else 40, carries=10+i,
+        item = dict(player_id='p', season=season, week=week, team='PIT',
+            passing_yards=0, rushing_yards=80 if i % 4 == 0 else 40,
+            receiving_yards=0, receptions=0, carries=10+i,
             source_provider='nflverse', source_observed_at='2026-09-18T00:00:00+00:00',
-            source_sha256='a'*64, source_record_sha256=hashlib.sha256(str(i).encode()).hexdigest(),
-            supplement_inserted_at=None))
+            source_sha256='a'*64, supplement_inserted_at=None)
+        item['source_record_sha256'] = stat_row_sha256('nfl', item)
+        rows.append(item)
     games = [dict(season=r['season'], week=r['week'], home_team='PIT', away_team='CLE',
-                  game_date='2026-09-17' if r['season'] == 2026 else '2025-09-01') for r in rows]
+                  game_date='2026-09-17' if r['season'] == 2026 else '2025-09-01',
+                  game_id=f"{r['season']}_{r['week']:02}_CLE_PIT",
+                  created_at='2026-09-18T00:00:00+00:00') for r in rows]
     snapshot = dict(observed_at='2026-09-19T00:00:00+00:00', nfl_base=rows,
                     nfl_receiving=[], cfb=[], nfl_games=games, cfb_supplement_receipts=[])
     selection = dict(prop_type='rush_yds', line=73.5, direction='under', probability=None)
@@ -63,6 +68,10 @@ def test_reconstructed_baseline_has_descriptive_recent_and_season_counts_only():
     ('duplicate', 'duplicate_history_key'),
     ('ambiguous_binding', 'ambiguous_history_binding'),
     ('stale_roster', 'stale_or_future_roster'),
+    ('tampered_source', 'invalid_source_row_commitment'),
+    ('late_schedule', 'invalid_schedule_chronology'),
+    ('wrong_game_id', 'invalid_schedule_chronology'),
+    ('duplicate_schedule', 'ambiguous_schedule_binding'),
 ])
 def test_missing_or_changed_as_of_evidence_abstains(fault, reason):
     row, selection, receipt, snapshot = fixture()
@@ -75,6 +84,12 @@ def test_missing_or_changed_as_of_evidence_abstains(fault, reason):
         snapshot['nfl_base'].append(deepcopy(snapshot['nfl_base'][0]))
         snapshot['nfl_base'][-1]['season'] = 2024
     if fault == 'stale_roster': row['availability']['captured_at'] = (CAPTURE-timedelta(hours=2)).isoformat()
+    if fault == 'tampered_source':
+        snapshot['nfl_base'][0]['rushing_yards'] += 40
+        snapshot['nfl_base'][1]['rushing_yards'] -= 40
+    if fault == 'late_schedule': snapshot['nfl_games'][0]['created_at'] = (CAPTURE+timedelta(seconds=1)).isoformat()
+    if fault == 'wrong_game_id': snapshot['nfl_games'][0]['game_id'] = 'wrong'
+    if fault == 'duplicate_schedule': snapshot['nfl_games'].append(deepcopy(snapshot['nfl_games'][0]))
     assert context(row, selection, receipt, snapshot) == {'available': False, 'reason': reason}
 
 
