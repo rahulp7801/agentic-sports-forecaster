@@ -494,7 +494,7 @@ async def evaluate_event(pool, event: dict, sport: str, ledger: Ledger, scan_id:
         if sport in ('nba','nfl') and availability_evidence['status']=='observed':
             all_relevant_reports=relevant_availability_reports(availability,
                 availability_evidence['team'],availability_evidence.get('roster_player_name',player),
-                sport,limit=None)
+                sport,None)
             relevant_reports=all_relevant_reports[:8]
             availability_evidence['teammates']=relevant_reports
             # Reconcile the broad roster gate with every relevant offensive

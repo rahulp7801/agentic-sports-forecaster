@@ -18,7 +18,7 @@ RISK = frozenset({'out','inactive','injured reserve','doubtful','questionable'})
 
 
 def relevant_availability_reports(context: dict | None, subject_team: str,
-                                  subject_player: str, sport: str, *, limit: int | None = 8) -> list[dict]:
+                                  subject_player: str, sport: str, limit: int | None = 8) -> list[dict]:
     """Return reported offensive teammates and opposing defenders that can affect the subject."""
     if not context or context.get('status') not in ('observed','partial'):
         return []
