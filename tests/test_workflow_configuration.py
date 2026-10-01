@@ -161,6 +161,7 @@ def test_release_planning_cannot_skip_live_checks_or_mutate_from_a_review_branch
     assert "fetch-depth: 0" in plan and "persist-credentials: false" in plan
     assert "node .github/scripts/deployment-plan.mjs" in plan
     assert "vercel deploy" not in plan and "DATABASE_MIGRATION_URL" not in plan
+    assert "github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')" in plan
     assert "needs: [secrets, backend, frontend, postgres, worker-image]" in plan
     conditional = "      - if: needs.release-plan.outputs.deploy == 'true'"
     assert deploy.count(conditional) == 2

@@ -21,9 +21,10 @@ change. New deployments include an explicit commit metadata field.
 
 This is source comparison. Changes made directly to Vercel environment/build
 settings require the explicit master-only `force_frontend_deploy` workflow input.
-A default manual run only inspects the release plan and cannot deploy. Review-branch
-manual runs can validate authenticated read-only planning before merge; production
-mutations remain master-only. Project root changes are rejected.
+A default manual master run only inspects the release plan and cannot deploy.
+Production environment protection restricts authenticated planning and production
+mutations to master. Review branches exercise mocked provider data and actual Git
+history tests without production credentials. Project root changes are rejected.
 
 Verification covers source equality, a pending frontend release followed by a
 research commit, upload-boundary changes, explicit redeploy, invalid/conflicting

@@ -173,7 +173,7 @@ jobs:
       - name: Verify hosted schema is at the application head
         run: uv run --locked alembic current --check-heads
   release-plan:
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/master') || github.event_name == 'workflow_dispatch'
+    if: github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs: [secrets, backend, frontend, postgres, worker-image]
     runs-on: ubuntu-latest
     timeout-minutes: 5
