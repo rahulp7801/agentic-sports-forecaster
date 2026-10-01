@@ -106,3 +106,58 @@ def test_summaries_keep_pending_picks_and_use_matching_prices():
     assert result['decided'] == 2 and result['wins'] == 1 and result['win_rate'] == .5
     assert result['flat_stake_roi'] == -.25
     assert result['mean_recorded_probability'] == .775 and result['mean_market_probability'] == .6
+
+
+def complete_paper_fixture():
+    from sportsbet.scan import quotes_from_event
+    from sportsbet.quant.market_baseline import paired_market_baseline
+    payload, inputs = fixture()
+    observed = (NOW-timedelta(seconds=2)).isoformat()
+    inputs.update(observed_at=(NOW-timedelta(seconds=1)).isoformat(), observed_before=observed)
+    event = dict(id=payload['game_id'], home_team=payload['home_team'], away_team=payload['away_team'],
+        commence_time=payload['game_start_time'], bookmakers=[dict(key='book', markets=[dict(
+            key='player_receptions', last_update=observed, outcomes=[dict(name=side, point=.5,
+                price=-110, description=payload['player']) for side in ('Over', 'Under')])])])
+    quotes = quotes_from_event(event, 'nfl'); predictions = []
+    for i, quote in enumerate(quotes):
+        row = payload | dict(prediction_id=f'fixture-{i}', captured_at=NOW.isoformat(),
+            model_generated_at=NOW.isoformat(), quote_time=observed, history_observed_before=observed,
+            direction=quote.side.lower(), quote_source_sha256=quote.source_sha256,
+            quote_source_record_sha256=quote.source_record_sha256,
+            model_probability=payload['model_probability'] if quote.side == 'Over' else 1-payload['model_probability'],
+            recommendation_policy_version='confidence-floor-v2', **paired_market_baseline(quote, quotes))
+        row['availability'] = payload['availability'] | dict(captured_at=NOW.isoformat())
+        row['role_history_shadow'] = role.shadow_record(row, inputs)
+        row['role_history_shadow_recorded_at'] = (NOW+timedelta(seconds=1)).isoformat()
+        assert row['role_history_shadow']['status'] == 'predicted'
+        predictions.append(row)
+    source = next(value for value in report.paper.prepare(predictions, 'nfl', NOW+timedelta(seconds=2))
+        if value['protocol'] == report.paper.PROTOCOL['policies']['raw_model'])
+    source['recorded_at'] = NOW+timedelta(seconds=3)
+    return source, predictions
+
+
+def test_full_original_selection_and_current_receipt_integration(monkeypatch):
+    monkeypatch.setattr(report, 'require_matching_runtime', lambda: None)
+    source, predictions = complete_paper_fixture()
+    before = deepcopy((source, predictions))
+    result = report.audit([source], predictions, NOW+timedelta(minutes=1))
+    assert result['source_audit']['valid_receipts'] == 1
+    assert result['context_comparison_status'] == 'evaluable_exploratory'
+    assert result['high_confidence_coverage']['current_context_available'] == 1
+    assert result['groups']['original_75']['pending'] == 1
+    assert result['groups']['recent_agreement_75']['selected'] == 0
+    assert result['selections'][0]['context']['recent_probability'] == pytest.approx(7.5/11)
+    assert (source, predictions) == before
+
+
+def test_missing_high_confidence_context_is_not_reported_as_negative_filter_evidence(monkeypatch):
+    monkeypatch.setattr(report, 'require_matching_runtime', lambda: None)
+    source, predictions = complete_paper_fixture()
+    for row in predictions: row.pop('role_history_shadow')
+    result = report.audit([source], predictions, NOW+timedelta(minutes=1))
+    assert result['source_audit']['valid_receipts'] == 1
+    assert result['context_comparison_status'] == 'not_evaluable_missing_context'
+    assert result['high_confidence_coverage'] == dict(selected=1, current_context_available=0,
+        unavailable_reasons={'missing_current_role_receipt': 1})
+    assert not result['target_verified']

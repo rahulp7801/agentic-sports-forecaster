@@ -126,7 +126,15 @@ def audit(receipts, predictions, now):
         for name, enabled in chosen.items():
             if enabled:
                 selected_groups[name].append(detail)
-    result.update(selections=details, coverage=dict(original_selections=len(details),
+    high = selected_groups['original_75']
+    available_high = sum(d['context']['available'] for d in high)
+    high_missing = Counter(d['context']['reason'] for d in high if not d['context']['available'])
+    comparison = ('no_high_confidence_selections' if not high else
+        'not_evaluable_missing_context' if not available_high else
+        'partially_evaluable_missing_context' if available_high < len(high) else 'evaluable_exploratory')
+    result.update(selections=details, context_comparison_status=comparison,
+        high_confidence_coverage=dict(selected=len(high), current_context_available=available_high,
+            unavailable_reasons=dict(high_missing)), coverage=dict(original_selections=len(details),
         current_context_available=sum(d['context']['available'] for d in details),
         unavailable_reasons=dict(missing)),
         groups={name: summarize(entries, now) for name, entries in selected_groups.items()},
@@ -163,4 +171,8 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except Exception as exc:
+        print(f'Private context audit unavailable: {type(exc).__name__}')
+        raise SystemExit(1) from None

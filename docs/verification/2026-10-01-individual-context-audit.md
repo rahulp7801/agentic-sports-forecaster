@@ -18,6 +18,8 @@ The current recent-role-v2 verifier independently authenticates the exact foreca
 retained input bundle. Its server receipt must exist by the paper selection's
 recording time. Recent form is derived from those validated rows, not today's
 mutable game logs. Context coverage includes unavailable inputs and reasons.
+The high-confidence subset has its own coverage and evaluability status; an empty
+context subgroup with no source coverage is not negative performance evidence.
 Legacy individual-pick-v1 and all frozen model/evaluation implementations remain
 unchanged.
 
