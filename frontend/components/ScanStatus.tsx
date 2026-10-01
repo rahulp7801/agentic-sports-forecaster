@@ -67,6 +67,10 @@ export default function ScanStatus({sport}:{sport?:Sport}) {
             )}
           </div>
           {status.overdue_at ? <time dateTime={status.overdue_at} title="This quote check was due, but a newer completed scan has not been recorded">Due {new Date(status.overdue_at).toLocaleString([], { month:"short", day:"numeric", hour:"2-digit", minute:"2-digit" })}</time> : status.next_refresh_at ? <time dateTime={status.next_refresh_at} title="Earliest quote check; actual collection depends on the scheduled worker and remaining credits">Due {new Date(status.next_refresh_at).toLocaleString([], { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' })}</time> : status.updated_at && <time dateTime={status.updated_at} title="Last scan check">{new Date(status.updated_at).toLocaleString([], { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' })}</time>}
+          {status.recorded_budget_label && <div className={styles.scanPlan}>
+            <span>Last recorded plan: {status.recorded_budget_label.toLowerCase()}.</span>
+            {status.reserve_release_at && <span>{status.reserve_release_passed ? 'Recorded reserve release passed' : 'Earliest recorded reserve release'}: <time dateTime={status.reserve_release_at}>{new Date(status.reserve_release_at).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',timeZoneName:'short'})}</time>. {status.reserve_release_passed ? 'Awaiting a new scan.' : 'Collection still depends on the next worker run and available allowance.'}</span>}
+          </div>}
         </article>
       ))}
     </div>

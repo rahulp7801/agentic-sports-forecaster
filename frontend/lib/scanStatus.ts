@@ -2,9 +2,23 @@ const object=(value:unknown):value is Record<string,unknown>=>!!value && typeof 
 const count=(value:unknown):number|null=>typeof value==='number' && Number.isSafeInteger(value) && value>=0 ? value : null;
 const timestamp=(value:unknown)=>typeof value==='string' && value.length<=64 && /(?:Z|[+-]\d{2}:\d{2})$/i.test(value) && Number.isFinite(Date.parse(value));
 
+function reserveRelease(data:Record<string,unknown>,stamp:unknown,deferred:number|null):string|null {
+  if(!timestamp(stamp) || !deferred || !Array.isArray(data.events) || data.events.length>1000)return null;
+  const reserved=data.events.filter(event=>object(event) && event.state==='api_budget');
+  if(reserved.length!==deferred || new Set(reserved.map(event=>event.game_id)).size!==reserved.length)return null;
+  const seenAt=Date.parse(stamp as string);
+  if(!reserved.every(event=>typeof event.game_id==='string' && event.game_id.length>0 && event.game_id.length<=100
+    && event.budget_reason==='pregame_credit_reserve' && timestamp(event.next_reserve_release_at)
+    && timestamp(event.game_start_time) && Date.parse(event.next_reserve_release_at)>=seenAt-20*60_000
+    && Date.parse(event.next_reserve_release_at)<=seenAt+48*3600_000
+    && Date.parse(event.next_reserve_release_at)<Date.parse(event.game_start_time)))return null;
+  return reserved.map(event=>event.next_reserve_release_at as string).sort((a,b)=>Date.parse(a)-Date.parse(b))[0];
+}
+
 export function scanStatus(value: unknown, now = Date.now()) {
   const empty={state:value==null ? 'not_run' : 'unknown',label:value==null ? 'No scan recorded' : 'Scan status unavailable',
     updated_at:null as string|null,next_refresh_at:null as string|null,overdue_at:null as string|null,
+    recorded_budget_label:null as string|null,reserve_release_at:null as string|null,reserve_release_passed:false,
     eligible:null as number|null,completed:null as number|null,deferred:null as number|null,
     quotes:null as number|null,selections:null as number|null,model_requests:null as number|null,
     model_estimates:null as number|null,unresolved_selections:null as number|null,missing_estimates:null as number|null};
@@ -39,6 +53,10 @@ export function scanStatus(value: unknown, now = Date.now()) {
   // Only complete, bounded reason counts can refine the existing budget label.
   const budgetLabel=reasons.length===1 && Object.hasOwn(labels,reasons[0][0])
     && deferred!==null && count(reasons[0][1])===deferred ? labels[reasons[0][0]] : null;
+  const release=budgetLabel===labels.pregame_credit_reserve ? reserveRelease(data,stamp,deferred) : null;
+  const planValid=Number.isFinite(age) && age>=-60000 && age<=48*3600000
+    && deferred!==null && deferred>0 && data.status==='degraded' && Array.isArray(data.failures) && data.failures.length===0
+    && eligible!==null && completed!==null && completed+Number(deferred)<=eligible;
   const overdue=data.status==='scheduled' && (count(data.cadence_deferred_events) ?? 0)>0 && boundedDue && nextTime<=now;
   let state='unknown',label='Scan status unavailable';
   if(Number.isFinite(age) && age>=-60000) {
@@ -64,6 +82,9 @@ export function scanStatus(value: unknown, now = Date.now()) {
   }
   return {state,label,updated_at:timestamp(stamp) ? stamp as string : null,
     next_refresh_at:state==='scheduled' && boundedDue && nextTime>now && nextTime<=now+48*3600000 ? next : null,
+    recorded_budget_label:planValid ? budgetLabel : null,
+    reserve_release_at:planValid ? release : null,
+    reserve_release_passed:!!(planValid && release && Date.parse(release)<=now),
     overdue_at:state==='overdue' ? next : null,eligible,completed,deferred,quotes,selections,model_requests,
     model_estimates,unresolved_selections,missing_estimates};
 }

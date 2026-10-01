@@ -41,3 +41,6 @@
 
 .sideNav .mobileOnly{display:none}
 @media(max-width:720px){.sideNav .desktopOnly{display:none}.sideNav .mobileOnly{display:flex}.advancedNav:has(.sideNavActive)>summary{color:var(--accent);background:var(--bg-surface);border-radius:11px}}
+
+.scanPlan { grid-column:1 / -1; min-width:0; display:grid; gap:4px; white-space:normal; overflow-wrap:anywhere; color:var(--text-secondary); font-size:11px; line-height:1.6; }
+.scanRail[data-single-league] .scanPlan { grid-row:3; }

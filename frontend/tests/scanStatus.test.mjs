@@ -120,3 +120,35 @@ test('budget reasons distinguish protected credits from hard allowance limits',(
     assert.equal(scanStatus({...limited,budget_reasons:reasons},now).label,'Scan paused: API budget');
   }
 });
+
+const reservePlan={...completed,status:'degraded',completed_events:0,budget_skipped_events:2,
+  budget_reasons:{pregame_credit_reserve:2},coverage:{},events:[
+    {game_id:'a',state:'api_budget',budget_reason:'pregame_credit_reserve',next_reserve_release_at:'2026-09-11T22:00:00Z',game_start_time:'2026-09-12T00:00:00Z'},
+    {game_id:'b',state:'api_budget',budget_reason:'pregame_credit_reserve',next_reserve_release_at:'2026-09-11T21:00:00Z',game_start_time:'2026-09-11T23:00:00Z'},
+  ]};
+test('stale scans retain a labeled recorded reserve plan without claiming freshness',()=>{
+  const status=scanStatus(reservePlan,now+3600000);
+  assert.equal(status.state,'stale');assert.equal(status.label,'Scan is stale');
+  assert.equal(status.recorded_budget_label,'Credits reserved for pregame checks');
+  assert.equal(status.reserve_release_at,'2026-09-11T21:00:00Z');
+  assert.equal(status.reserve_release_passed,false);assert.equal(status.next_refresh_at,null);
+});
+test('elapsed reserve plans request a new scan and never imply available picks',()=>{
+  const status=scanStatus(reservePlan,Date.parse('2026-09-11T21:00:00Z'));
+  assert.equal(status.state,'stale');assert.equal(status.reserve_release_passed,true);
+  assert.equal(scanStatus(reservePlan,now+49*3600000).reserve_release_at,null);
+});
+test('reserve release rejects incomplete, ambiguous, and unbounded event evidence',()=>{
+  const bad=[[],[reservePlan.events[0]],[reservePlan.events[0],reservePlan.events[0]],
+    reservePlan.events.map(e=>({...e,next_reserve_release_at:'2026-09-11T20:00:00'})),
+    reservePlan.events.map(e=>({...e,next_reserve_release_at:e.game_start_time})),
+    reservePlan.events.map(e=>({...e,next_reserve_release_at:'2026-09-14T00:00:00Z'})),
+    reservePlan.events.map(e=>({...e,budget_reason:'rolling_credit_limit'})),
+    reservePlan.events.map(e=>({...e,next_reserve_release_at:'2026-09-10T00:00:00Z'}))];
+  for(const events of bad)assert.equal(scanStatus({...reservePlan,events},now).reserve_release_at,null);
+});
+test('failed or contradictory reports cannot promise a reserve release',()=>{
+  for(const patch of [{status:'failed'},{status:'running'},{failures:[{}]},{eligible_events:1},
+    {finished_at:'2026-09-11T14:00:00Z'},{budget_reasons:{pregame_credit_reserve:1}},
+    {budget_reasons:{rolling_credit_limit:2}}])assert.equal(scanStatus({...reservePlan,...patch},now).reserve_release_at,null);
+});
