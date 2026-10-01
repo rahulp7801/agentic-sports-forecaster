@@ -50,7 +50,7 @@ export default function PlayerHistory({signal}:{signal:EVSignal}) {
           <div className={styles.evidenceMetrics}>{[
             {label:'All recorded teams',sample:calendar.allTeams},
             {label:calendar.capturedTeam ? `${calendar.capturedTeam} | roster team at capture` : 'Roster team unavailable',sample:calendar.capturedTeamSample},
-          ].map(({label,sample})=><div key={label}><span>{label}</span><strong>{sample?.mean?.toFixed(1) ?? 'Unavailable'}</strong>
+          ].map(({label,sample})=><div key={label}><span>{label}</span><small>Average recorded stat</small><strong>{sample?.mean?.toFixed(1) ?? 'Unavailable'}</strong>
             <small>{sample ? `${sample.observed} observed stats in ${sample.games} recorded games | ${sample.missing} missing` : 'The forecast did not retain a confirmed roster team.'}</small>
             {sample && <small>{sample.decided ? `${sample.wins}/${sample.decided} matched this direction, excluding ties` : 'Direction rate unavailable'}</small>}
             {sample?.oldest && <small>{sample.oldest} to {sample.newest}</small>}
