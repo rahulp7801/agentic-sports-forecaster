@@ -35,6 +35,10 @@ def upgrade():
         BEFORE INSERT OR UPDATE OR DELETE ON analytics.predictions
         FOR EACH ROW EXECUTE FUNCTION analytics.stamp_prediction_record()""")
     op.execute('REVOKE ALL ON FUNCTION analytics.stamp_prediction_record() FROM PUBLIC')
+    for role in ('anon', 'authenticated', 'sportsbet_dashboard'):
+        op.execute("DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname='"+role+"') THEN "
+            'REVOKE ALL ON FUNCTION analytics.stamp_prediction_record() FROM '+role+'; '
+            'END IF; END $$')
 
 
 def downgrade():

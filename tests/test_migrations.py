@@ -52,6 +52,8 @@ def test_browser_role_migration_closes_owner_view_and_preserves_data():
         with engine.connect() as conn:
             assert conn.execute(sa.text("SELECT count(*) FROM dashboard_snapshots WHERE snapshot_key='acl-proof'")).scalar_one() == 1
             for role in ('anon', 'authenticated'):
+                assert not conn.execute(sa.text("SELECT has_function_privilege(:role,"
+                    "'analytics.stamp_prediction_record()','EXECUTE')"), {'role':role}).scalar_one()
                 for table in ('public.dashboard_snapshots', 'public.dashboard_gamelogs', 'public.dashboard_gamelogs_asof',
                               'public.provider_response_cache', 'public.ngs_stats',
                               'public.cfb_history_source_bundles', 'public.cfb_receiving_supplements',
@@ -211,7 +213,7 @@ def test_alembic_upgrade_clean() -> None:
             'targets','receptions','percent_attempts_gte_eight_defenders','rush_attempts',
             'source_provider','source_url','source_sha256','source_record_sha256',
             'source_observed_at'} <= ngs_columns
-    # Cleanup ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â leave DB clean for next test run
+    # Cleanup ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â leave DB clean for next test run
     alembic.command.downgrade(cfg, "base")
 
 
@@ -558,7 +560,7 @@ def test_prediction_record_receipts_are_database_owned():
             assert digest == hashlib.sha256(b'{}').hexdigest()
             assert conn.execute(sa.text("UPDATE analytics.predictions SET outcome_evidence='{}' WHERE id='new'")).rowcount == 1
         for statement in (
-            "UPDATE analytics.predictions SET payload='{\"altered\":true}' WHERE id='new'",
+            "UPDATE analytics.predictions SET payload='changed' WHERE id='new'",
             "UPDATE analytics.predictions SET recorded_at='2000-01-01T00:00:00Z' WHERE id='new'",
             "DELETE FROM analytics.predictions WHERE id='new'",
         ):
