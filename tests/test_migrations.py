@@ -153,6 +153,8 @@ def test_ngs_migration_replaces_preexisting_worker_policy():
         payload=json.dumps(report,sort_keys=True,separators=(',',':'))
         digest=hashlib.sha256(payload.encode()).hexdigest()
         with engine.begin() as conn:
+            assert conn.execute(sa.text("SELECT has_schema_privilege('sportsbet_worker',"
+                "'analytics','USAGE')" )).scalar_one()
             assert conn.execute(sa.text("SELECT has_table_privilege('sportsbet_worker',"
                 "'analytics.prospective_audit_reports','SELECT,INSERT')")).scalar_one()
             assert not conn.execute(sa.text("SELECT has_table_privilege('sportsbet_worker',"
@@ -209,7 +211,7 @@ def test_alembic_upgrade_clean() -> None:
             'targets','receptions','percent_attempts_gte_eight_defenders','rush_attempts',
             'source_provider','source_url','source_sha256','source_record_sha256',
             'source_observed_at'} <= ngs_columns
-    # Cleanup â€” leave DB clean for next test run
+    # Cleanup ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â leave DB clean for next test run
     alembic.command.downgrade(cfg, "base")
 
 

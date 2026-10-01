@@ -40,6 +40,7 @@ def upgrade():
             'REVOKE ALL ON SEQUENCE analytics.prospective_audit_reports_report_id_seq FROM '+role+'; '
             'END IF; END $$')
     op.execute("""DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname='sportsbet_worker') THEN
+        GRANT USAGE ON SCHEMA analytics TO sportsbet_worker;
         GRANT SELECT,INSERT ON analytics.prospective_audit_reports TO sportsbet_worker;
         GRANT USAGE,SELECT ON SEQUENCE analytics.prospective_audit_reports_report_id_seq TO sportsbet_worker;
         CREATE POLICY worker_read_prospective_reports ON analytics.prospective_audit_reports
