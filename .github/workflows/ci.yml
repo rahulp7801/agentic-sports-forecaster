@@ -107,6 +107,10 @@ jobs:
       - run: uv run --locked pytest tests/test_migrations.py -q
       - run: uv run --locked alembic upgrade head
       - run: uv run --locked pytest tests/test_schema.py tests/test_hosted_storage.py tests/test_worker_postgres.py tests/test_cfb_supplement_postgres.py tests/test_nfl_supplement_postgres.py tests/test_injury_context_postgres.py tests/test_db_access.py tests/test_forecast_pages_postgres.py -q
+      - name: Verify locked migration-only environment against local schema
+        run: |
+          UV_PROJECT_ENVIRONMENT="$RUNNER_TEMP/migrations-venv" uv sync --locked --only-group migrations
+          "$RUNNER_TEMP/migrations-venv/bin/alembic" current --check-heads
   worker-image:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -161,7 +165,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install uv==0.11.32
-      - run: uv sync --locked
+      - run: uv sync --locked --only-group migrations
       - name: Verify owner migration credential is configured
         env:
           DATABASE_MIGRATION_URL: ${{ secrets.DATABASE_MIGRATION_URL }}
@@ -169,9 +173,9 @@ jobs:
       - name: Apply reviewed migrations to the hosted database
         env:
           DATABASE_URL: ${{ secrets.DATABASE_MIGRATION_URL }}
-        run: uv run --locked alembic upgrade head
+        run: .venv/bin/alembic upgrade head
       - name: Verify hosted schema is at the application head
-        run: uv run --locked alembic current --check-heads
+        run: .venv/bin/alembic current --check-heads
   release-plan:
     if: github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs: [secrets, backend, frontend, postgres, worker-image]
