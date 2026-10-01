@@ -176,6 +176,8 @@ jobs:
         run: .venv/bin/alembic upgrade head
       - name: Verify hosted schema is at the application head
         run: .venv/bin/alembic current --check-heads
+      - name: Verify pending hosted transaction-pool read path
+        run: .venv/bin/python .github/scripts/production-transaction-preflight.py
   release-plan:
     if: github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs: [secrets, backend, frontend, postgres, worker-image]
