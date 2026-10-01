@@ -2,8 +2,8 @@
 
 A live recorded NFL pick on 2026-10-01 exposed two imprecise phrases in its
 stored trade plan: a model-minus-implied probability difference was printed
-as a percent ?edge,? and a model-derived paper bankroll fraction was called
-an ?approved research stake.? The former is a difference in percentage
+as a percent "edge", and a model-derived paper bankroll fraction was called
+an "approved research stake." The former is a difference in percentage
 points; the latter has no prospective profitability validation.
 
 Future scan text now calls the value a model probability minus market implied
