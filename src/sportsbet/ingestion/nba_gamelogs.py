@@ -78,7 +78,7 @@ GAMELOG_RENAME_MAP: dict[str, str] = {
 def ingest_nba_gamelogs_season(
     season: int,
     engine: Optional[sa.Engine] = None,
-) -> None:
+) -> int:
     """Load NBA per-game logs for a single season into nba_player_gamelogs.
 
     Args:
@@ -115,6 +115,11 @@ def ingest_nba_gamelogs_season(
 
     # Apply column whitelist — keep only the columns we need.
     df = df[GAMELOG_COLUMNS].copy()
+    if df.empty:
+        # A valid new-season response has the expected columns but no regular
+        # season games. It has no row hash or batch commitment to write.
+        log.info("nba_gamelogs_ingestion.season_empty", season=season_str, rows=0)
+        return 0
 
     # Derive is_home: MATCHUP contains "@" for away games; "vs." for home games.
     df["is_home"] = ~df["MATCHUP"].str.contains("@")
@@ -157,8 +162,10 @@ def ingest_nba_gamelogs_season(
     )
 
     # Explicit free before potential next call — prevents OOM accumulation.
+    rows=len(df)
     del df
     gc.collect()
+    return rows
 
 
 def main() -> None:
