@@ -1,4 +1,4 @@
-﻿"""Fail-closed GitHub Actions artifact upload budget for this repository.
+"""Fail-closed GitHub Actions artifact upload budget for this repository.
 
 Only protects this repository's observed Actions storage. Keep a wide margin for
 other repositories, concurrent runs, ZIP wrapping, and delayed API accounting.

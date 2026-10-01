@@ -212,7 +212,7 @@ jobs:
         if: always() && steps.evidence_scan.outcome == 'success'
         id: evidence_pack
         run: uv run --locked python -m sportsbet.ingestion.pack_public_artifacts --input "$RUNNER_TEMP/public-evidence" --output "$RUNNER_TEMP/public-evidence.tar.xz"
-      - name: Check shared artifact storage budget
+      - name: Check repository artifact storage budget
         if: always() && steps.evidence_pack.outcome == 'success' && steps.evidence_pack.outputs.packaged == 'true'
         id: storage_gate
         env:
