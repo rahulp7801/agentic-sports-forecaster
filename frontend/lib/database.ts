@@ -1,5 +1,5 @@
 import { Client, type QueryResultRow } from 'pg';
-import { unstable_cache } from 'next/cache';
+import { createSnapshotCache } from './snapshotCache';
 import { databaseConfig } from './databaseConfig';
 import { queryWithClient } from './queryWithClient';
 import {databaseFailure,reportDatabaseFailure,type DatabaseOperation} from './databaseFailure';
@@ -31,15 +31,14 @@ async function readSnapshots<T = Record<string, unknown>>(keys: string[]): Promi
   return Object.fromEntries(keys.map(key => [key, found.get(key) ?? null]));
 }
 
-// Next's server data cache is shared across requests. The short lifetime keeps
-// state transitions bounded while coalescing cache misses from multiple CDN regions.
-const cachedSnapshot = unstable_cache(readSnapshot, ['dashboard-snapshot-v1'], {revalidate: 60});
-const cachedSnapshots = unstable_cache(readSnapshots, ['dashboard-snapshots-v1'], {revalidate: 60});
+// Hard expiry: a failed refresh must reach the route's unavailable response.
+// This cache is bounded per process; CDN caching remains defined by each route.
+const cached = createSnapshotCache(readSnapshot, readSnapshots);
 
 export function snapshot<T = Record<string, unknown>>(key: string): Promise<T | null> {
-  return hosted ? cachedSnapshot<T>(key) : readSnapshot<T>(key);
+  return hosted ? cached.snapshot<T>(key) : readSnapshot<T>(key);
 }
 
 export function snapshots<T = Record<string, unknown>>(keys: string[]): Promise<Record<string, T | null>> {
-  return hosted ? cachedSnapshots<T>(keys) : readSnapshots<T>(keys);
+  return hosted ? cached.snapshots<T>(keys) : readSnapshots<T>(keys);
 }
