@@ -10,6 +10,7 @@ import {
   type MarketCoverage,
   type PropQuoteCoverage,
 } from '@/lib/marketCoverage';
+import PolymarketResearch from './PolymarketResearch';
 import styles from './ResearchViews.module.css';
 
 const SOURCE_LABELS:Record<string,string>={observed:'Observed',degraded:'Limited coverage',unavailable:'Unavailable',not_requested:'Not requested',budget_exhausted:'API budget reached'};
@@ -231,6 +232,7 @@ export default function MarketWatch({ sport }: { sport: Sport }) {
           )}
         </>
       )}
+      <PolymarketResearch sport={sport} />
     </section>
   );
 }
