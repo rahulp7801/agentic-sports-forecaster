@@ -53,6 +53,7 @@ def test_browser_role_migration_closes_owner_view_and_preserves_data():
                 for table in ('public.dashboard_snapshots', 'public.dashboard_gamelogs', 'public.dashboard_gamelogs_asof',
                               'public.provider_response_cache', 'public.ngs_stats',
                               'public.cfb_history_source_bundles', 'public.cfb_receiving_supplements',
+                              'public.cfb_primary_revisions',
                               'public.cfb_effective_gamelogs', 'public.nfl_history_source_bundles',
                               'public.nfl_receiving_supplements', 'public.nfl_effective_receiving_gamelogs',
                               'analytics.paper_selections'):
@@ -100,7 +101,6 @@ def test_browser_role_migration_closes_owner_view_and_preserves_data():
 def test_ngs_migration_replaces_preexisting_worker_policy():
     url = os.environ['SPORTSBET_TEST_DATABASE_URL']
     cfg = get_alembic_cfg(url)
-    alembic.command.upgrade(cfg, '0028_cfb_player_gamelogs')
     engine = sa.create_engine(url)
     created_role = False
     try:
@@ -110,6 +110,9 @@ def test_ngs_migration_replaces_preexisting_worker_policy():
             )).first():
                 conn.execute(sa.text('CREATE ROLE sportsbet_worker NOLOGIN'))
                 created_role = True
+        # Grant the restricted role access as each historical table is created.
+        alembic.command.upgrade(cfg, '0028_cfb_player_gamelogs')
+        with engine.begin() as conn:
             conn.execute(sa.text('ALTER TABLE ngs_stats ENABLE ROW LEVEL SECURITY'))
             conn.execute(sa.text("""CREATE POLICY sportsbet_worker_read ON ngs_stats
                 FOR SELECT TO sportsbet_worker USING (true)"""))
@@ -122,6 +125,25 @@ def test_ngs_migration_replaces_preexisting_worker_policy():
             'sportsbet_worker_read', 'sportsbet_worker_insert',
             'sportsbet_worker_update', 'sportsbet_worker_delete',
         }
+        from tests.test_cfb_history_completeness import primary
+        row=primary();row['game_id']=str(row['game_id'])
+        with engine.begin() as conn:
+            assert conn.execute(sa.text("SELECT has_table_privilege('sportsbet_worker',"
+                "'public.cfb_primary_revisions','SELECT,INSERT')")).scalar_one()
+            assert conn.execute(sa.text("SELECT has_sequence_privilege('sportsbet_worker',"
+                "'public.cfb_primary_revisions_revision_id_seq','USAGE,SELECT')")).scalar_one()
+            conn.execute(sa.text('INSERT INTO public.cfb_player_gamelogs ('+','.join(row)+') VALUES ('
+                +','.join(':'+name for name in row)+')'),row)
+        with engine.begin() as conn:
+            conn.execute(sa.text('SET LOCAL ROLE sportsbet_worker'))
+            result=conn.execute(sa.text('UPDATE public.cfb_player_gamelogs SET rushing_yards=69 '
+                'WHERE athlete_id=:athlete AND game_id=:game'),
+                {'athlete':row['athlete_id'],'game':row['game_id']})
+            assert result.rowcount==1
+        with engine.connect() as conn:
+            assert conn.execute(sa.text('SELECT count(*) FROM public.cfb_primary_revisions '
+                'WHERE athlete_id=:athlete AND game_id=:game'),
+                {'athlete':row['athlete_id'],'game':row['game_id']}).scalar_one()==1
     finally:
         alembic.command.downgrade(cfg, 'base')
         if created_role:
