@@ -167,3 +167,15 @@ def test_release_planning_cannot_skip_live_checks_or_mutate_from_a_review_branch
     verify = _step(deploy, "Verify deployed access controls and data readiness")
     assert "if:" not in verify and "node frontend/scripts/verify-production.mjs" in verify
     assert '--meta sportsbetCommit="$GITHUB_SHA"' in deploy
+
+
+def test_vercel_token_is_unavailable_to_checkout_install_and_public_verification() -> None:
+    ci = CI_WORKFLOW.read_text(encoding="utf-8")
+    plan = ci[ci.index("  release-plan:"):ci.index("\n  deploy:\n")]
+    deploy = ci[ci.index("\n  deploy:\n"):]
+    for job in (plan, deploy):
+        assert "secrets.VERCEL_TOKEN" not in job[:job.index("    steps:")]
+    assert "secrets.VERCEL_TOKEN" in _step(plan, "Compare current source with the live production deployment")
+    assert "secrets.VERCEL_TOKEN" not in _step(deploy, "Verify deployed access controls and data readiness")
+    installer = deploy[deploy.index("      - if:"):deploy.index("      # Only create")]
+    assert "npm install" in installer and "secrets.VERCEL_TOKEN" not in installer

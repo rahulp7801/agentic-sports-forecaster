@@ -183,7 +183,6 @@ jobs:
     env:
       VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
-      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
       FORCE_FRONTEND_DEPLOY: ${{ inputs.force_frontend_deploy || false }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -195,6 +194,8 @@ jobs:
           node-version: '24'
       - name: Compare current source with the live production deployment
         id: plan
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: node .github/scripts/deployment-plan.mjs
   deploy:
     if: github.ref == 'refs/heads/master' && (github.event_name == 'push' || inputs.force_frontend_deploy == true)
@@ -205,7 +206,6 @@ jobs:
     env:
       VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
-      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -218,6 +218,8 @@ jobs:
       # Only create a deployment when the live release differs or an operator
       # deliberately requests a rebuild for external environment/settings changes.
       - if: needs.release-plan.outputs.deploy == 'true'
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: vercel deploy --yes --prod --force --meta sportsbetCommit="$GITHUB_SHA" --token="$VERCEL_TOKEN"
       - name: Verify deployed access controls and data readiness
         env:
