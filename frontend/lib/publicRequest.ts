@@ -1,10 +1,11 @@
 const PARAMETERS:Record<string,string[]>={
   '/api/signals':['sport','view','offset','limit','revision','player'],
-  '/api/gamelogs':['sport','player','player_id','limit','before','exact'],
+  '/api/gamelogs':['sport','player','player_id','limit','before','exact','observed_before'],
   '/api/metrics':['sport','cohort'],
   '/api/markets':['sport'], '/api/prop-screens':['sport'],
   '/api/games':['sport'], '/api/slate':['sport'], '/api/benchmarks':['sport'],
-  '/api/picks':['sport'],
+  '/api/picks':['sport'], '/api/polymarket':['sport','event'],
+  '/api/kalshi-research':['sport'],
   '/api/scans':[], '/api/scan':[],
 };
 

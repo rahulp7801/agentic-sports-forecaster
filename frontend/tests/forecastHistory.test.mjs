@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {forecastHistory,historyCutoff,recentForm,calendarForm} from '../lib/forecastHistory.ts';
+import {forecastHistory,historyCutoff,historyObservedBefore,recentForm,calendarForm} from '../lib/forecastHistory.ts';
 import {gameLogRequest} from '../lib/publicGameLogs.ts';
 
-const signal={player:'Player',sport:'nfl',forecast_cutoff:'2026-09-17',snapped_at:'2026-09-17T01:00:00Z',prop_type:'receptions',line:4,direction:'under'};
+const signal={player:'Player',sport:'nfl',forecast_cutoff:'2026-09-17',snapped_at:'2026-09-17T01:00:00Z',captured_at:'2026-09-17T01:01:00Z',game_start_time:'2026-09-18T00:00:00Z',prop_type:'receptions',line:4,direction:'under'};
 const row=(date,receptions,player='Player')=>({date,player,team:'BUF',opponent:'DET',receptions});
 test('history excludes target/future games and similar names, and keeps ties/missing out of rates',()=>{
   const result=forecastHistory([row('2026-09-18',9),row('2026-09-17',9),row('2026-09-16',8),row('2026-09-15',8,'Player Junior'),
@@ -21,6 +21,18 @@ test('history cutoff uses an overnight gap before UTC capture or earlier target 
   assert.equal(historyCutoff({...signal,snapped_at:'2026-09-16T00:00:00Z'}),'2026-09-15');
   assert.throws(()=>historyCutoff({...signal,snapped_at:'2026-09-16T20:00:00'}));
 });
+test('history observation cutoff requires a valid captured pregame forecast',()=>{
+  assert.equal(historyObservedBefore(signal),'2026-09-17T01:01:00Z');
+  for(const changed of [
+    {captured_at:undefined},
+    {captured_at:'2026-09-17T00:59:59Z'},
+    {captured_at:'2026-09-18T00:00:00Z'},
+    {captured_at:'2026-09-17T01:01:00'},
+    {game_start_time:'invalid'},
+    {game_start_time:undefined},
+  ]) assert.throws(()=>historyObservedBefore({...signal,...changed}));
+});
+
 test('history windows sort before limiting, PRA requires all components, duplicate games fail closed',()=>{
   const result=forecastHistory([row('2026-09-13',3),row('2026-09-15',6)],signal,1);
   assert.equal(result.rows[0].date,'2026-09-15');assert.equal(result.rate,0);
@@ -34,10 +46,11 @@ test('history windows sort before limiting, PRA requires all components, duplica
 test('historical API query bounds exact names, limits and strict calendar cutoffs',()=>{
   const parse=value=>gameLogRequest(new URLSearchParams(value));
   assert.deepEqual(parse('sport=nfl&player=Player&exact=1&before=2026-09-17&limit=20'),
-    {sport:'nfl',player:'Player',exact:true,before:'2026-09-17',limit:20});
+    {sport:'nfl',player:'Player',exact:true,before:'2026-09-17',observedBefore:null,limit:20});
   assert.equal(parse('limit=200').limit,200);assert.equal(parse('').before,null);
+  assert.equal(parse('observed_before=2026-09-17T01%3A01%3A00Z').observedBefore,'2026-09-17T01:01:00Z');
   assert.equal(parse('sport=nba&player=Luka%20Don%C4%8Di%C4%87').player,'Luka Dončić');
-  for(const value of ['before=2026-02-31','before=0000-01-01','before=2026-09-17T00:00Z','before=','exact=1','exact=2','limit=Infinity','limit=0','limit=201','limit=999999','sport=mlb','player=A%00B','player=%25','player=%20Player','player=%F0%9F%8F%88']) assert.throws(()=>parse(value));
+  for(const value of ['observed_before=2026-02-31T01:01:00Z','observed_before=2026-09-17T01:01:00','observed_before=2026-09-17T25:01:00Z','observed_before=0000-09-17T01:01:00Z','observed_before=2026-09-17T01:01:00%2B14:01','observed_before=','before=2026-02-31','before=0000-01-01','before=2026-09-17T00:00Z','before=','exact=1','exact=2','limit=Infinity','limit=0','limit=201','limit=999999','sport=mlb','player=A%00B','player=%25','player=%20Player','player=%F0%9F%8F%88']) assert.throws(()=>parse(value));
 });
 
 

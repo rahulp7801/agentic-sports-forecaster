@@ -1,5 +1,6 @@
 'use client';
 import Performance from "@/components/Performance";
+import {REASONS} from '@/components/PredictionEvidence';
 import { useState, useEffect, useCallback } from 'react';
 import type { EVSignal, Sport } from '@/lib/types';
 import {fetchForecasts} from '@/lib/fetchForecasts';
@@ -42,6 +43,7 @@ type RichSignal = EVSignal;
 
 function fmt_pct(n: number) { return (n * 100).toFixed(1) + '%'; }
 function fmt_odds(n: number) { return n > 0 ? '+' + n : String(n); }
+function fmt_pp(n: number) { const value=n*100; return `${value>0?'+':''}${value.toFixed(1)}pp`; }
 function time_ago(iso: string) {
   const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
   if (diff < 60) return `${diff}s ago`;
@@ -113,7 +115,7 @@ function EVSignalRow({ signal, onSelect }: { signal: RichSignal; onSelect: (s: E
         </div>
       </td>
       <td>
-        <span style={{ color: evColor, fontWeight: 700, fontSize: 13 }}>+{evPct.toFixed(1)}pp</span>
+        <span style={{ color: evColor, fontWeight: 700, fontSize: 13 }}>{fmt_pp(signal.ev_pct)}</span>
       </td>
       <td><KellyBar fraction={signal.kelly_fraction} /></td>
       <td>
@@ -173,9 +175,9 @@ function SignalDetailPanel({ signal, onClose, onAddToParlay, inParlay }: {
         <div style={{ padding: '14px 16px', borderBottom: '1px solid var(--border-dim)' }}>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             {[
-              ['EDGE (pp)', '+' + evPct.toFixed(1) + 'pp', 'var(--accent-mint)'],
+              ['MODEL - IMPLIED', fmt_pp(signal.ev_pct), evPct>0 ? 'var(--accent-mint)' : 'var(--text-secondary)'],
               ['KELLY STAKE', signal.gated ? 'GATED' : kellyPct.toFixed(1) + '%', signal.gated ? 'var(--accent-amber)' : 'var(--accent-cyan)'],
-              ['EXPECTED RETURN', signal.expected_return == null ? 'Unavailable' : (signal.expected_return * 100).toFixed(1) + '%', 'var(--accent-mint)'],
+              ['MODEL RETURN EST.', signal.expected_return == null ? 'Unavailable' : (signal.expected_return * 100).toFixed(1) + '%', 'var(--accent-mint)'],
               ['MODEL PROB', (signal.true_prob * 100).toFixed(1) + '%', 'var(--text-primary)'],
               ['BOOK IMPLIED', (signal.implied_prob * 100).toFixed(1) + '%', 'var(--text-secondary)'],
             ].map(([label, value, color]) => (
@@ -205,7 +207,7 @@ function SignalDetailPanel({ signal, onClose, onAddToParlay, inParlay }: {
           </div>
           {signal.gated && (
             <div style={{ marginTop: 8, padding: '6px 10px', background: 'rgba(245,166,35,0.06)', border: '1px solid rgba(245,166,35,0.2)', borderRadius: 3, fontSize: 10, color: 'var(--accent-amber)' }}>
-              ⚠ Gated by daily drawdown cap. Signal is valid — exposure budget exhausted for today.
+              Not recommended. {REASONS[signal.gate_reason ?? ''] ?? 'A model, source, freshness, or portfolio gate blocked this estimate.'}
             </div>
           )}
         </div>
@@ -464,7 +466,7 @@ export default function EVDashboard({ sport, onAddToParlay, parlayIds = new Set(
       <div className={styles.summaryRail}>
         <SummaryCard label="Cached estimates" value={String(signals.length)} sub="observed quotes" accent="mint" />
         <SummaryCard label="With uncertainty" value={String(highConf)} sub="reported intervals" accent="cyan" />
-        <SummaryCard label="Avg probability edge" value={signals.length ? '+' + (avgEV * 100).toFixed(1) + 'pp' : '—'} sub="percentage points" accent="cyan" />
+        <SummaryCard label="Avg model - implied" value={signals.length ? fmt_pp(avgEV) : '—'} sub="percentage points, not measured wins" accent="cyan" />
         <SummaryCard
           label="Game"
           value={_selGame ? `${_selGame.away} @ ${_selGame.home}` : (data?.game ? `${data.game.away_team} @ ${data.game.home_team}` : '—')}
@@ -481,7 +483,7 @@ export default function EVDashboard({ sport, onAddToParlay, parlayIds = new Set(
         </div>
       </div>
 
-      <Performance />
+      <Performance key={sport} sport={sport} />
 
       {/* Toolbar */}
       <div className={styles.toolbar}>
@@ -498,7 +500,7 @@ export default function EVDashboard({ sport, onAddToParlay, parlayIds = new Set(
         </div>
         <div className={styles.toolbarGroup}>
           <span className={styles.toolbarLabel}>Sort</span>
-          {([['ev', 'Edge (pp)'], ['kelly', 'Kelly'], ['prob', 'Prob']] as const).map(([key, label]) => (
+          {([['ev', 'Model vs price'], ['kelly', 'Kelly'], ['prob', 'Prob']] as const).map(([key, label]) => (
             <button key={key} className="btn-ghost" onClick={() => setSortBy(key)}
               style={{ fontSize: 10, padding: '3px 10px', color: sortBy === key ? 'var(--accent-mint)' : undefined, borderColor: sortBy === key ? 'var(--accent-mint)' : undefined }}>
               {label}
@@ -535,7 +537,7 @@ export default function EVDashboard({ sport, onAddToParlay, parlayIds = new Set(
                 <th>Sport</th>
                 <th>Prop / Line</th>
                 <th>Probability</th>
-                <th>Edge (pp)</th>
+                <th>Model - implied (pp)</th>
                 <th style={{ minWidth: 160 }}>Kelly Stake</th>
                 <th>Source</th>
               </tr>

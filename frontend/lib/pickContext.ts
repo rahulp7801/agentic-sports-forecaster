@@ -26,3 +26,14 @@ export function pickContext(signal:EVSignal) {
     detail:`${parts.join(' · ')}. Injury and tracking context do not add a probability boost.`,
   };
 }
+
+/** A captured injury report cannot be presented as current after its one-hour window. */
+export function pickContextCapture(signal:EVSignal,now:number) {
+  const raw=signal.availability?.captured_at;
+  const captured=Date.parse(raw ?? '');
+  if(signal.availability?.status!=='observed' || !signal.availability.roster_confirmed
+    || !Number.isFinite(now) || !Number.isFinite(captured) || captured>now+60000) {
+    return {capturedAt:null,stale:true};
+  }
+  return {capturedAt:raw ?? null,stale:now-captured>3600000};
+}

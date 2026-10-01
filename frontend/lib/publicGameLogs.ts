@@ -63,6 +63,17 @@ export function publicGameLogs(value: unknown, sport: ModelSport) {
   return value.map(item=>gameLog(item,sport));
 }
 
+export function observationCutoff(value:string) {
+  if(value.length>64 || !/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,6})?(?:Z|[+-](?:0\d|1[0-4]):[0-5]\d)$/.test(value)) {
+    throw new Error('Invalid game-log observation cutoff');
+  }
+  const day=value.slice(0,10);
+  const parsedDay=new Date(day+'T00:00:00Z');
+  if(Number(day.slice(0,4))<1 || !Number.isFinite(parsedDay.valueOf()) || parsedDay.toISOString().slice(0,10)!==day
+      || /[+-]14:(?!00$)/.test(value) || !Number.isFinite(Date.parse(value))) throw new Error('Invalid game-log observation cutoff');
+  return value;
+}
+
 /** Bound historical queries before constructing parameterized SQL. */
 export function gameLogRequest(params:URLSearchParams) {
   const sport=params.get('sport') ?? 'nba';
@@ -72,11 +83,14 @@ export function gameLogRequest(params:URLSearchParams) {
   const exact=params.get('exact') ?? '0';
   const before=params.get('before');
   const playerId=params.get('player_id');
+  const observedBefore=params.get('observed_before');
   if(!['nba','nfl','cfb'].includes(sport) || rawPlayer!==player || player.normalize('NFC')!==player
     || (player!=='' && !/^[\p{L}\p{M}.'’ -]{1,80}$/u.test(player))
     || !/^[0-9]{1,3}$/.test(limit) || Number(limit)<1 || Number(limit)>200 || !['0','1'].includes(exact)
     || (exact==='1' && !player && !playerId)
     || (playerId!==null && !validPlayerId(playerId,sport as ModelSport))) throw new Error('Invalid game-log request');
   return {sport:sport as ModelSport,player,limit:Number(limit),exact:exact==='1',
-    before:before===null ? null : date(before),...(playerId!==null ? {playerId} : {})};
+    before:before===null ? null : date(before),
+    observedBefore:observedBefore===null ? null : observationCutoff(observedBefore),
+    ...(playerId!==null ? {playerId} : {})};
 }

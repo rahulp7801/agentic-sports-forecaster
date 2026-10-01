@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {pickContext} from '../lib/pickContext.ts';
+import {pickContext,pickContextCapture} from '../lib/pickContext.ts';
 import {base} from './fixtures/qualifiedSignal.mjs';
 
 test('a qualified suggestion shows verified roster and report context without a probability boost',()=>{
@@ -23,4 +23,12 @@ test('reported absences and available historical comparisons are descriptive',()
 
 test('missing availability is not presented as a cleared context check',()=>{
   assert.match(pickContext({...base,availability:undefined}).player,/unavailable/);
+});
+
+test('injury context becomes stale one hour after its captured source',()=>{
+  const signal={...base,availability:{...base.availability,captured_at:'2026-10-01T01:00:00Z'}};
+  assert.equal(pickContextCapture(signal,Date.parse('2026-10-01T02:00:00Z')).stale,false);
+  assert.equal(pickContextCapture(signal,Date.parse('2026-10-01T02:00:01Z')).stale,true);
+  assert.equal(pickContextCapture({...signal,availability:undefined},Date.parse('2026-10-01T01:01:00Z')).capturedAt,null);
+  assert.equal(pickContextCapture({...signal,availability:{...signal.availability,captured_at:'2026-10-01T01:02:01Z'}},Date.parse('2026-10-01T01:01:00Z')).stale,true);
 });
