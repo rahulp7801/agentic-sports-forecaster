@@ -36,6 +36,7 @@ from typing import Optional
 import pandas as pd
 import sqlalchemy as sa
 import structlog
+from requests.exceptions import RequestException
 from nba_api.stats.endpoints import PlayerGameLogs
 
 log = structlog.get_logger(__name__)
@@ -100,18 +101,24 @@ def ingest_nba_gamelogs_season(
     season_str = f"{season}-{str(season + 1)[-2:]}"
     log.info("nba_gamelogs_ingestion.season_start", season=season_str)
 
-    # One bulk HTTP call for all players in this season.
-    logs = PlayerGameLogs(
-        season_nullable=season_str,
-        season_type_nullable="Regular Season",
-        timeout=30,
-    )
+    # NBA.com can return an invalid/empty transport body after its request
+    # timeout, which nba_api surfaces as ValueError rather than a network error.
+    # Only source transport/parsing failures use the bounded ESPN fallback;
+    # malformed stat rows and missing required columns must still fail closed.
+    try:
+        logs = PlayerGameLogs(
+            season_nullable=season_str,
+            season_type_nullable="Regular Season",
+            timeout=30,
+        )
+        df: pd.DataFrame = logs.get_data_frames()[0]
+    except (ValueError, IndexError):
+        raise RequestException('NBA game-log source response unavailable') from None
 
     # Mandatory rate limit delay — NBA.com enforces per-request throttling.
     time.sleep(1)
 
     # nba_api returns pandas DataFrame directly — no .to_pandas() needed.
-    df: pd.DataFrame = logs.get_data_frames()[0]
 
     # Apply column whitelist — keep only the columns we need.
     df = df[GAMELOG_COLUMNS].copy()
