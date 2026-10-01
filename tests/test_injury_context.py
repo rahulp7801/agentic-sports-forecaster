@@ -34,6 +34,18 @@ def test_relevant_reports_exclude_same_team_defense_and_opponent_offense_without
         ('Receiver','teammate','offense'),('Defender','opponent','defense')]
 
 
+def test_relevant_reports_keep_complete_gate_input_and_prioritize_blocking_teammate():
+    context={'status':'observed','teams':[
+        {'abbreviation':'NE','reports':[{'player':'Teammate','position':'WR','status':'Doubtful'}]},
+        {'abbreviation':'NYJ','reports':[
+            {'player':f'Defender {i}','position':'CB','status':'Out'} for i in range(9)]}]}
+    all_rows=relevant_availability_reports(context,'NE','Target','nfl',limit=None)
+    display_rows=relevant_availability_reports(context,'NE','Target','nfl')
+    assert len(all_rows)==10 and len(display_rows)==8
+    assert display_rows==all_rows[:8]
+    assert all_rows[0]['player']=='Teammate' and all_rows[0]['relationship']=='teammate'
+
+
 def test_nba_reports_treat_teammates_and_opponents_as_relevant_lineup_context():
     context={'status':'observed','teams':[
         {'abbreviation':'BOS','reports':[{'player':'Guard','position':'PG','status':'Out'}]},

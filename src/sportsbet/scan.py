@@ -492,13 +492,17 @@ async def evaluate_event(pool, event: dict, sport: str, ledger: Ledger, scan_id:
             player_id=player_id if sport in ('nfl','cfb') else None,sport=sport)
         relevant_reports=[]
         if sport in ('nba','nfl') and availability_evidence['status']=='observed':
-            relevant_reports=relevant_availability_reports(availability,
-                availability_evidence['team'],availability_evidence.get('roster_player_name',player),sport)
+            all_relevant_reports=relevant_availability_reports(availability,
+                availability_evidence['team'],availability_evidence.get('roster_player_name',player),
+                sport,None)
+            relevant_reports=all_relevant_reports[:8]
             availability_evidence['teammates']=relevant_reports
+            # Reconcile the broad roster gate with every relevant offensive
+            # teammate, before trimming the public and historical context.
             if availability_reason in (None,'teammate_availability_unmodeled'):
                 availability_reason=('teammate_availability_unmodeled'
-                    if any(blocks_unadjusted_teammate_context(report) for report in relevant_reports)
-                    else None)
+                    if any(blocks_unadjusted_teammate_context(report)
+                        for report in all_relevant_reports) else None)
         # The sorted first selection is the same strongest per-player exposure
         # the public desk can surface. Avoid multiplying up to eight split
         # queries across every alternate threshold for that player.
