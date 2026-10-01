@@ -68,10 +68,17 @@ def test_hosted_schema_is_migrated_after_ci_and_checked_before_collection_and_de
     check = "uv run --locked alembic current --check-heads"
     assert data.index(check) < data.index("name: Collect live market data")
     assert public.index(check) < public.index("name: Update public market data")
-    assert ci.count(check) == 1
+    ci_check = ".venv/bin/alembic current --check-heads"
+    ci_upgrade = ".venv/bin/alembic upgrade head"
+    assert ci.count(ci_check) == 1
     schema_job = ci[ci.index("  production-schema:"):ci.index("  release-plan:")]
     assert "needs: [secrets, backend, frontend, postgres, worker-image]" in schema_job
-    assert schema_job.index("uv run --locked alembic upgrade head") < schema_job.index(check)
+    assert schema_job.index("uv sync --locked --only-group migrations") < schema_job.index(ci_upgrade)
+    assert schema_job.index(ci_upgrade) < schema_job.index(ci_check)
+    assert "uv run --locked alembic" not in schema_job
+    postgres_job = ci[ci.index("  postgres:"):ci.index("  worker-image:")]
+    assert "uv sync --locked --only-group migrations" in postgres_job
+    assert "migrations-venv/bin/alembic\" current --check-heads" in postgres_job
     migration_step = _step(schema_job, "Apply reviewed migrations to the hosted database")
     verification_step = _step(schema_job, "Verify hosted schema is at the application head")
     assert "secrets.DATABASE_MIGRATION_URL" in migration_step
