@@ -28,6 +28,33 @@ test('preflight requires two rounds and fresh supported database reads',async()=
   }
 });
 
+test('old iad1 database outage can pass only for pending pdx1 recovery',async()=>{
+  const calls=[];
+  const fetcher=async url=>{
+    calls.push(url.pathname);
+    if(url.pathname==='/') return {status:200};
+    return {status:503,headers:new Headers({'x-vercel-id':'sfo1::iad1::synthetic'})};
+  };
+  assert.deepEqual(await preflight({fetcher,sleep:async()=>{},rounds:2,delayMs:0,recoveryRegion:'pdx1'}),
+    {rounds:2,reads:6,recoveringReads:6});
+  assert.equal(calls.filter(path=>path==='/').length,1);
+});
+
+test('recovery blocks other regions, failures, or unavailable homepage',async()=>{
+  const failed=async (status,region,home=200)=>{
+    const fetcher=async url=>url.pathname==='/' ? {status:home} :
+      {status,headers:new Headers({'x-vercel-id':'sfo1::'+region+'::synthetic'})};
+    await assert.rejects(preflight({fetcher,sleep:async()=>{},rounds:1,recoveryRegion:'pdx1'}));
+  };
+  await failed(503,'pdx1');
+  await failed(503,'sfo1');
+  await failed(502,'iad1');
+  await failed(503,'iad1',503);
+  await assert.rejects(preflight({fetcher:async()=>({
+    status:503,headers:new Headers({'x-vercel-id':'sfo1::iad1::synthetic'})}),
+    sleep:async()=>{},rounds:1,recoveryRegion:null}));
+});
+
 test('database failure or timeout blocks deployment without exposing response bodies',async()=>{
   for(const fetcher of [async()=>({status:503}),async()=>{throw new Error('private host and credential');}]) {
     await assert.rejects(preflight({fetcher,sleep:async()=>{},rounds:1}),error=>
