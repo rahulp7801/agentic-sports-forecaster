@@ -10,18 +10,14 @@ os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 import sys
 sys.path.insert(0, "src")
 
-import pandas as pd
 from dotenv import load_dotenv
 from nba_api.stats.endpoints import LeagueDashPlayerStats
 
 from sportsbet.db.connection import get_sync_engine
-from sportsbet.ingestion.nba import NBA_COLUMNS, RENAME_MAP
+from sportsbet.ingestion.nba import validated_totals
 from sportsbet.ingestion.upsert import upsert_rows
 
 SEASON = 2025
-REQUIRED_COLUMNS = ("PLAYER_ID", "PLAYER_NAME")
-
-
 def ingest_stats_2025(engine=None) -> int:
     """Validate the provider snapshot, then upsert it in one transaction."""
     season_str = f"{SEASON}-{str(SEASON + 1)[-2:]}"
@@ -32,21 +28,7 @@ def ingest_stats_2025(engine=None) -> int:
         timeout=60,
     )
     frames = stats.get_data_frames()
-    if not frames or not isinstance(frames[0], pd.DataFrame):
-        raise ValueError("NBA season totals response is missing")
-
-    source = frames[0]
-    missing = set(REQUIRED_COLUMNS) - set(source.columns)
-    if missing or source.empty:
-        raise ValueError(f"NBA season totals are empty or missing required columns: {sorted(missing)}")
-    if source["PLAYER_ID"].isna().any() or source["PLAYER_ID"].duplicated().any():
-        raise ValueError("NBA season totals contain missing or duplicate player IDs")
-    if source["PLAYER_NAME"].isna().any() or source["PLAYER_NAME"].astype(str).str.strip().eq("").any():
-        raise ValueError("NBA season totals contain missing player names")
-
-    frame = source[[column for column in NBA_COLUMNS if column in source.columns]].rename(
-        columns=RENAME_MAP
-    ).copy()
+    frame = validated_totals(frames[0] if frames else None)
     frame["season"] = SEASON
     if engine is None:
         engine = get_sync_engine()
