@@ -1,7 +1,7 @@
 'use client';
 import {useEffect,useState} from 'react';
 import type {EVSignal} from '@/lib/types';
-import {forecastHistory,historyCutoff,recentForm} from '@/lib/forecastHistory';
+import {forecastHistory,historyCutoff,recentForm,calendarForm} from '@/lib/forecastHistory';
 import styles from './ResearchViews.module.css';
 
 export default function PlayerHistory({signal}:{signal:EVSignal}) {
@@ -32,9 +32,10 @@ export default function PlayerHistory({signal}:{signal:EVSignal}) {
   const refreshHistory=()=>{setError('');setLoading(true);setRefresh(value=>value+1);};
   let history:ReturnType<typeof forecastHistory>|undefined;
   let form:ReturnType<typeof recentForm>|undefined;
+  let calendar:ReturnType<typeof calendarForm>|undefined;
   let invalid='';
   if(!loading && !error) {
-    try {history=forecastHistory(logs,signal,count);form=recentForm(logs,signal);} catch {invalid='Recorded history could not be validated for this forecast.';}
+    try {history=forecastHistory(logs,signal,count);form=recentForm(logs,signal);calendar=calendarForm(logs,signal);} catch {invalid='Recorded history could not be validated for this forecast.';}
   }
   const formWindows=form ? [{label:'Latest 5 recorded games',sample:form.recent},{label:'Previous 5 recorded games',sample:form.previous}] : [];
   return <section className={styles.playerHistory} aria-label="Player history before forecast">
@@ -43,6 +44,21 @@ export default function PlayerHistory({signal}:{signal:EVSignal}) {
     </div>
     {loading ? <p role="status">Loading recorded history…</p> : error || invalid ? <p role="status">{error || invalid}</p>
       : !history?.rows.length ? <p>No exact-player games are available before this forecast cutoff.</p> : <>
+        {calendar && <section className={styles.recentForm} aria-label="Last 30 days before forecast">
+          <h4>The 30 days before the target game</h4>
+          <p>Available records from {calendar.from}, before {calendar.before}. The cutoff also preserves the gap before price capture.</p>
+          <div className={styles.evidenceMetrics}>{[
+            {label:'All recorded teams',sample:calendar.allTeams},
+            {label:calendar.capturedTeam ? `${calendar.capturedTeam} ? roster team at capture` : 'Roster team unavailable',sample:calendar.capturedTeamSample},
+          ].map(({label,sample})=><div key={label}><span>{label}</span><strong>{sample?.mean?.toFixed(1) ?? 'Unavailable'}</strong>
+            <small>{sample ? `${sample.observed} observed stats in ${sample.games} recorded games ? ${sample.missing} missing` : 'The forecast did not retain a confirmed roster team.'}</small>
+            {sample && <small>{sample.decided ? `${sample.wins}/${sample.decided} matched this direction, excluding ties` : 'Direction rate unavailable'}</small>}
+            {sample?.oldest && <small>{sample.oldest} to {sample.newest}</small>}
+          </div>)}</div>
+          {!calendar.allTeams.games && <p>No recorded games fall inside this window. Older games below do not establish current form.</p>}
+          {calendar.capturedTeamSample && !calendar.capturedTeamSample.games && calendar.allTeams.games>0 && <p>No recorded games in this window match the roster team captured with this forecast.</p>}
+          <p className={styles.historyDisclaimer}>{calendar.limitedToLatest20 ? 'This window reaches the 20-game display limit and may omit additional games. ' : ''}Available records only; missing games are unknown. The captured roster team can differ from today?s team. Later source corrections may be reflected here. These descriptive results do not change the recorded probability.</p>
+        </section>}
         {form && <section className={styles.recentForm} aria-label="Recent form before forecast">
           <h4>Recent form before this forecast</h4>
           <p>Latest recorded game: <strong>{form.recent.newest}</strong> &middot; {form.daysBeforeForecast} days before the target game.

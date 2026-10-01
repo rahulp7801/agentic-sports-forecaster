@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {forecastHistory,historyCutoff,recentForm} from '../lib/forecastHistory.ts';
+import {forecastHistory,historyCutoff,recentForm,calendarForm} from '../lib/forecastHistory.ts';
 import {gameLogRequest} from '../lib/publicGameLogs.ts';
 
 const signal={player:'Player',sport:'nfl',forecast_cutoff:'2026-09-17',snapped_at:'2026-09-17T01:00:00Z',prop_type:'receptions',line:4,direction:'under'};
@@ -68,4 +68,36 @@ test('small and offseason history do not imply a full or current sample',()=>{
   assert.equal(form.previous.games,0);assert.equal(form.meanChange,null);
   assert.ok(form.daysBeforeForecast>30);
   assert.equal(recentForm([],signal).daysBeforeForecast,null);
+});
+
+
+test('calendar form excludes offseason games and separates captured team from later profile',()=>{
+  const s={...signal,availability:{status:'observed',roster_confirmed:true,team:'BUF'},player_profile:{team:'ATL'}};
+  const logs=[row('2026-09-15',0),{...row('2026-09-14',8),team:'ATL'},row('2026-08-18',4),row('2026-08-17',20),row('2026-05-01',40)];
+  const before=structuredClone(logs);const form=calendarForm(logs,s);
+  assert.equal(form.from,'2026-08-18');assert.equal(form.before,'2026-09-16');
+  assert.equal(form.allTeams.games,3);assert.equal(form.allTeams.mean,4);
+  assert.equal(form.capturedTeam,'BUF');assert.equal(form.capturedTeamSample.games,2);
+  assert.equal(form.capturedTeamSample.mean,2);assert.equal(form.capturedTeamSample.decided,1);
+  assert.equal(form.capturedTeamSample.wins,1);assert.deepEqual(logs,before);
+});
+
+test('unknown roster and empty current team history stay distinct from zero stats',()=>{
+  const logs=[row('2026-09-15',undefined)];
+  assert.equal(calendarForm(logs,signal).capturedTeamSample,null);
+  const s={...signal,availability:{status:'observed',roster_confirmed:true,team:'ATL'}};
+  assert.equal(calendarForm(logs,s).capturedTeamSample.games,0);
+  assert.equal(calendarForm(logs,s).allTeams.missing,1);
+  assert.equal(calendarForm(logs,s).allTeams.mean,null);
+  assert.equal(calendarForm([row('2026-05-01',8)],s).allTeams.games,0);
+  assert.equal(calendarForm(logs,{...s,availability:{...s.availability,roster_confirmed:false}}).capturedTeamSample,null);
+});
+
+test('calendar windows preserve identity and overnight cutoff and expose the display bound',()=>{
+  const logs=Array.from({length:22},(_,i)=>row(new Date(Date.parse('2026-09-15')-i*86400000).toISOString().slice(0,10),i));
+  assert.equal(calendarForm(logs,signal).limitedToLatest20,true);
+  assert.equal(calendarForm(logs,signal).allTeams.games,20);
+  assert.equal(calendarForm([row('2026-09-16',99),row('2026-09-15',1)],signal).allTeams.mean,1);
+  assert.equal(calendarForm([{...row('2026-09-15',10),player_id:'00-0000002'}],{...signal,player_id:'00-0000001'}).allTeams.games,0);
+  assert.throws(()=>calendarForm([],{...signal,snapped_at:'invalid'}));
 });
