@@ -450,6 +450,7 @@
 .predictionContract > strong { color:var(--text-primary);font:600 12px/1.4 var(--font-sans),sans-serif; }
 .predictionContract > div { display:flex;flex-wrap:wrap;gap:7px 14px;margin-top:12px;color:var(--text-muted);font-size:11px; }
 .predictionContract b { color:var(--accent-cyan);font-weight:600; }
+.predictionContract > a { display:inline-block;margin-top:12px;color:var(--accent-cyan);font-size:11px;text-decoration:underline;text-underline-offset:3px; }
 @media (max-width:720px) {
   .predictionHeader { grid-template-columns:1fr;gap:8px; }
   .predictionDetailHead { align-items:flex-start;flex-direction:column; }
