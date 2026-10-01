@@ -430,12 +430,16 @@ async def evaluate_event(pool, event: dict, sport: str, ledger: Ledger, scan_id:
         if (model_version_for(sport,selection_time)==BASELINE_VERSION
                 and selection_time>=datetime.fromisoformat(RECENT_ROLE_FROZEN_AT)):
             from sportsbet.quant import nfl_recent_role_shadow as role_model
+    rushing_model=None
+    if role_model is not None and role_model.VERSION=='nfl-recent-role-shadow-v2':
+        from sportsbet.quant import nfl_rushing_role_shadow as rushing_model
     # Read once alongside the existing model work, with a bounded research budget.
     async def capture_role_history():
         if not settings.role_history_shadow_enabled or sport!='nfl':return {},None
         try:
             kwargs={'observed_before':selection_time} if role_model.VERSION=='nfl-recent-role-shadow-v2' else {}
-            requests={s[5] for s in prepared if MARKETS[sport][s[1]] in role_model.MARKETS[sport]}
+            requests={s[5] for s in prepared if MARKETS[sport][s[1]] in role_model.MARKETS[sport]
+                or (rushing_model is not None and MARKETS[sport][s[1]]==rushing_model.MARKET)}
             async with asyncio.timeout(5):
                 return await role_model.load_inputs(pool,sport,season,game_date,requests,**kwargs),None
         except Exception as exc:
@@ -454,7 +458,7 @@ async def evaluate_event(pool, event: dict, sport: str, ledger: Ledger, scan_id:
     # Alphabetical/line order must not consume a player's risk slot ahead of a
     # stronger qualified estimate. Keep all forecasts; retain every existing gate.
     modeled.sort(key=lambda candidate:recommendation_quality(candidate[1].get('ev_signal')),reverse=True)
-    shadow_counts=Counter();role_counts=Counter()
+    shadow_counts=Counter();role_counts=Counter();rushing_counts=Counter()
     explained_contexts=set()
     ngs_contexts={}
     for selection,state in modeled:
@@ -595,6 +599,15 @@ async def evaluate_event(pool, event: dict, sport: str, ledger: Ledger, scan_id:
                 payload['role_history_shadow']=dict(model_version=role_model.VERSION,policy_version=role_model.POLICY,
                     status='unavailable',reason='shadow_evaluation_failed')
             role_counts[payload['role_history_shadow'].get('reason','predicted')]+=1
+            if rushing_model is not None and payload['prop_type']==rushing_model.MARKET:
+                try:
+                    payload['rushing_role_shadow']=rushing_model.shadow_record(payload,role_inputs.get(player_id,{}),
+                        unavailable=role_unavailable)
+                except Exception as exc:
+                    log.warning('rushing_role_shadow_evaluation_failed',error_type=type(exc).__name__)
+                    payload['rushing_role_shadow']=dict(model_version=rushing_model.VERSION,policy_version=rushing_model.POLICY,
+                        status='unavailable',reason='shadow_evaluation_failed')
+                rushing_counts[payload['rushing_role_shadow'].get('reason','predicted')]+=1
         audited.append((payload,public_signal))
     prediction_ids=ledger.record_many(scan_id,[payload for payload,_ in audited])
     for prediction_id,(_,public_signal) in zip(prediction_ids,audited,strict=True):
@@ -614,7 +627,8 @@ async def evaluate_event(pool, event: dict, sport: str, ledger: Ledger, scan_id:
             model_estimates=estimates,model_status=model_status,
             model_concurrency_limit=MAX_MODEL_CONCURRENCY,counts=dict(counts),
             history_shadow=dict(enabled=settings.history_shadow_enabled,inference_counts=dict(shadow_counts)),
-            role_history_shadow=dict(enabled=settings.role_history_shadow_enabled and sport=='nfl',inference_counts=dict(role_counts))),games=[dict(game_id=event['id'],
+            role_history_shadow=dict(enabled=settings.role_history_shadow_enabled and sport=='nfl',inference_counts=dict(role_counts)),
+            rushing_role_shadow=dict(enabled=rushing_model is not None,inference_counts=dict(rushing_counts))),games=[dict(game_id=event['id'],
         home_team=event['home_team'],away_team=event['away_team'],date=game_date.strftime('%Y%m%d'),sport=sport)])
 
 async def run(sports: list[str], daily_credit_limit: int, event_ids: frozenset[str] | None = None):
