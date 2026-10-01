@@ -574,7 +574,7 @@ async def evaluate_event(pool, event: dict, sport: str, ledger: Ledger, scan_id:
                     if model_interval else 'unavailable')
                 # A thesis must not suggest staking a pick that eligibility blocks.
                 trade_plan[1]=(f'Historical sample: {prop.sample_size} games, mean {mean}; '
-                    f'95% probability interval {uncertainty}. Approved research stake at capture: '
+                    f'95% probability interval {uncertainty}. Paper sizing at capture (unverified): '
                     f'{float(signal.kelly_fraction) if accepted else 0:.1%} of bankroll.')
             if availability_evidence['status']=='observed':
                 split_count=len(availability_evidence.get('context_splits',[]))

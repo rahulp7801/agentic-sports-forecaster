@@ -116,7 +116,7 @@ def _build_prop_trade_plan(
     if nba_context is not None and _settings.experimental_probability_adjustments:
         # Bullet 1: historical base + EV edge
         bullet_1 = (
-            f"+{float(ev_pct):.1%} probability edge on {market_type} | "
+            f"Model probability minus market implied probability: +{float(ev_pct) * 100:.1f} percentage points on {market_type} | "
             f"n={sample} games, mean={mean} historical"
         )
 
@@ -159,7 +159,7 @@ def _build_prop_trade_plan(
 
     else:
         # NFL path (no nba_context)
-        bullet_1 = f"+{float(ev_pct):.1%} probability edge on {market_type} prop market"
+        bullet_1 = f"Model probability minus market implied probability: +{float(ev_pct) * 100:.1f} percentage points on {market_type} prop market"
         bullet_2 = (
             f"Kelly sizing: {float(kelly_frac):.1%} fractional stake "
             f"(n={sample}, historical mean={mean}, bankroll-relative)"
