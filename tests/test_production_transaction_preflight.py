@@ -2,6 +2,7 @@
 
 import importlib.util
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -19,8 +20,14 @@ def test_supabase_session_url_uses_transaction_port():
         "?sslmode=verify-full&sslrootcert=certs/supabase-prod-ca-2021.crt"
     )
     output = preflight.hosted_read_dsn(value)
-    assert "pooler.supabase.com:6543/postgres" in output
-    assert "sslmode=verify-full&sslrootcert=" in output
+    parsed = urlsplit(output)
+    assert parsed.hostname == "aws-0-us-west-2.pooler.supabase.com"
+    assert parsed.port == 6543
+    assert parsed.path == "/postgres"
+    assert parse_qs(parsed.query) == {
+        "sslmode": ["verify-full"],
+        "sslrootcert": ["certs/supabase-prod-ca-2021.crt"],
+    }
 
 
 def test_other_hosts_and_ports_are_unchanged():
@@ -109,7 +116,9 @@ def test_schema_plan_skips_owner_only_at_exact_repository_heads(monkeypatch):
             return Cursor()
 
     def connect(dsn, **kwargs):
-        assert "pooler.supabase.com:6543" in dsn
+        parsed = urlsplit(dsn)
+        assert parsed.hostname == "aws-0-us-west-2.pooler.supabase.com"
+        assert parsed.port == 6543
         assert kwargs == {"connect_timeout": 5, "prepare_threshold": None}
         return Connection()
 
