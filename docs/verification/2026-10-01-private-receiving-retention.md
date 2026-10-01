@@ -32,3 +32,10 @@ Disposable PostgreSQL tests create the restricted worker role before upgrading,
 verify browser denial and worker insert/select, reject worker mutation, and
 check the database timestamp trigger. Local unit tests cover payload binding,
 nonpromotion, hashing and damaged receipt references.
+
+A separate, manually dispatched private-receiving-audit.yml workflow can append
+the same frozen report after 13:00 UTC if the scheduled daily collection is
+dropped. It uses only the restricted database secret, requires master and the
+production environment, checks the hosted schema, and has no provider key or
+public artifact. This recovers evaluation visibility only; it does not collect
+new quotes, create picks, or fix the underlying scheduler gap in issue #297.
