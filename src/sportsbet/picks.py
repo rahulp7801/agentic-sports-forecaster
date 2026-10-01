@@ -60,6 +60,17 @@ def _accepted(row: dict, sport: str) -> bool:
         return False
 
 
+def _public_plan(plan: list[str]) -> list[str]:
+    """Clarify legacy copy at publication without changing the recorded receipt."""
+    return [
+        re.sub(r'^\+(\d+(?:\.\d+)?)% probability edge on ',
+               r'Model probability minus market implied probability: +\1 percentage points on ',
+               item).replace('Approved research stake at capture:',
+                             'Paper sizing at capture (unverified):')
+        for item in plan
+    ]
+
+
 def _signal(row: dict, state: str, lock_at: datetime) -> dict:
     implied, payout = quote_terms(row['american_odds'], Decimal(0))
     probability = Decimal(str(row['model_probability']))
@@ -84,7 +95,7 @@ def _signal(row: dict, state: str, lock_at: datetime) -> dict:
         game_start_time=utc_timestamp(row['game_start_time']).isoformat(),
         lock_at=lock_at.isoformat(), board_state=state,
         selection_policy_version=BOARD_POLICY_VERSION, strength='unrated',
-        trade_plan=row.get('trade_plan', []), injury_flags={},
+        trade_plan=_public_plan(row.get('trade_plan', [])), injury_flags={},
         market_type=row['prop_type'], availability=row.get('availability'),
         forecast_cutoff=row.get('forecast_cutoff'),
         **({'next_gen_stats':row['next_gen_stats']} if row.get('next_gen_stats') else {}),

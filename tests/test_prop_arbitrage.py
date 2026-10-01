@@ -247,6 +247,9 @@ class TestProp06EVSignalProduced:
         assert len(ev_signal.trade_plan) == 3, (
             f"trade_plan must have 3 bullets, got {len(ev_signal.trade_plan)}"
         )
+        assert ev_signal.trade_plan[0].startswith(
+            f"Model probability minus market implied probability: +{float(ev_signal.ev_percentage) * 100:.1f} percentage points "
+        )
         for i, bullet in enumerate(ev_signal.trade_plan):
             assert isinstance(bullet, str) and bullet.strip(), (
                 f"trade_plan[{i}] is empty or not a string: {bullet!r}"

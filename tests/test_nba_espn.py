@@ -145,3 +145,15 @@ def test_empty_scoreboards_require_existing_schedule_coverage(tmp_path,monkeypat
     else:
         with pytest.raises(ValueError,match='Recent scheduled games'): refresh_recent(2025,today,engine)
     engine.begin.assert_not_called()
+
+
+def test_crosswalk_accepts_exact_unit_confidence_formats_only():
+    row=dict(season='2027',source='one',target='100',
+             match_method='exact_name',match_confidence='1')
+    for confidence in ('1','1.0','1.00'):
+        assert index_rows([row | {'match_confidence':confidence}],
+                          'source',('target',),'exact_name',2027)['one']['target']=='100'
+    for confidence in ('0.999999999','1.00001','1e0','',None):
+        with pytest.raises(ValueError,match='No verified crosswalk identities'):
+            index_rows([row | {'match_confidence':confidence}],
+                       'source',('target',),'exact_name',2027)

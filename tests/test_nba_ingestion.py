@@ -23,6 +23,8 @@ from sportsbet.ingestion.nba import ingest_nba_seasons, NBA_COLUMNS
 def _make_fake_df() -> pd.DataFrame:
     """Return a small DataFrame with all NBA_COLUMNS + extra columns (to test filtering)."""
     data = {col: [1, 2] for col in NBA_COLUMNS}
+    data["PLAYER_NAME"] = ["Alpha", "Beta"]
+    data["TEAM_ABBREVIATION"] = ["ATL", "BOS"]
     # Add extra columns that should be filtered out
     data["EXTRA_COL"] = ["x", "y"]
     data["ANOTHER_EXTRA"] = [True, False]
@@ -201,3 +203,44 @@ def test_nba_timeout_skip() -> None:
     assert call_count[0] == 2, (
         f"Expected 2 LeagueDashPlayerStats calls (both seasons attempted), got {call_count[0]}"
     )
+
+
+def test_partial_source_skips_season_before_write_and_continues() -> None:
+    """A missing prop stat must not silently overwrite one season's totals."""
+    bad = _make_fake_df().drop(columns=["REB"])
+    good = _make_fake_df()
+    responses = []
+    for frame in (bad, good):
+        response = MagicMock()
+        response.get_data_frames.return_value = [frame]
+        responses.append(response)
+    engine = MagicMock()
+    written = []
+
+    def capture(self, table, connection, **kwargs):
+        written.append((self["season"].tolist(), connection))
+
+    with patch("sportsbet.ingestion.nba.LeagueDashPlayerStats", side_effect=responses):
+        with patch("time.sleep"):
+            with patch.object(pd.DataFrame, "to_sql", capture):
+                ingest_nba_seasons([2022, 2023], engine=engine)
+
+    assert written == [([2023, 2023], engine.begin.return_value.__enter__.return_value)]
+    engine.begin.assert_called_once()
+
+
+def test_failed_chunk_rolls_back_the_season_transaction() -> None:
+    """A failed insert must not leave earlier chunks of that season committed."""
+    engine = MagicMock()
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("chunk failed")
+
+    with patch("sportsbet.ingestion.nba.LeagueDashPlayerStats", _mock_stats_cls(_make_fake_df())):
+        with patch("time.sleep"):
+            with patch.object(pd.DataFrame, "to_sql", fail):
+                ingest_nba_seasons([2022], engine=engine)
+
+    engine.begin.assert_called_once()
+    engine.begin.return_value.__exit__.assert_called_once()
+    assert engine.begin.return_value.__exit__.call_args.args[0] is RuntimeError
