@@ -25,7 +25,7 @@ def test_paid_and_public_schedules_are_isolated() -> None:
     public = PUBLIC_WORKFLOW.read_text(encoding="utf-8")
 
     assert _schedules(paid) == {
-        "17 13 * * *", "7,37 * * * *", NFL_HISTORY_RECOVERY_SCHEDULE,
+        "17 13 * * *", "7,37 * * * *", "19,49 * * * *", NFL_HISTORY_RECOVERY_SCHEDULE,
     }
     assert _schedules(public) == {
         "17 13 * * *",
@@ -38,6 +38,7 @@ def test_paid_and_public_schedules_are_isolated() -> None:
     assert "vars.PAID_MONITOR_ENABLED == 'true'" in paid
     assert "github.event.schedule == '17 13 * * *'" in paid
     assert "github.event.schedule == '7,37 * * * *'" in paid
+    assert "(github.event.schedule == '19,49 * * * *' && vars.DATA_PIPELINE_ENABLED == 'true')" in paid
     assert f"github.event.schedule == '{NFL_HISTORY_RECOVERY_SCHEDULE}'" in paid
     assert "vars.DATA_PIPELINE_ENABLED == 'true' && 'scan' || 'monitor'" in paid
     assert "PUBLIC_DATA_PIPELINE_ENABLED" not in paid

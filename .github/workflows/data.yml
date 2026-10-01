@@ -22,6 +22,9 @@ on:
   schedule:
     - cron: '17 13 * * *'
     - cron: '7,37 * * * *'
+    # Staggered catch-up: scheduled Actions runs can be dropped; the scanner
+    # checks quote cadence and both credit caps before any paid event request.
+    - cron: '19,49 * * * *'
     # Free NFL history/NGS recovery after nflverse's documented 07:00 UTC poll.
     - cron: '29 10,22 * * *'
 permissions:
@@ -39,7 +42,8 @@ jobs:
         github.event.schedule == '29 10,22 * * *' ||
         (github.event.schedule == '7,37 * * * *' && (
           vars.DATA_PIPELINE_ENABLED == 'true' || vars.PAID_MONITOR_ENABLED == 'true'
-        ))
+        )) ||
+        (github.event.schedule == '19,49 * * * *' && vars.DATA_PIPELINE_ENABLED == 'true')
       )
     runs-on: ubuntu-latest
     timeout-minutes: 20
