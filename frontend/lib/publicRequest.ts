@@ -5,6 +5,7 @@ const PARAMETERS:Record<string,string[]>={
   '/api/markets':['sport'], '/api/prop-screens':['sport'],
   '/api/games':['sport'], '/api/slate':['sport'], '/api/benchmarks':['sport'],
   '/api/picks':['sport'], '/api/polymarket':['sport','event'],
+  '/api/kalshi-research':['sport'],
   '/api/scans':[], '/api/scan':[],
 };
 

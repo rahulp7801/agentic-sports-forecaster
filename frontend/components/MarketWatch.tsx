@@ -11,6 +11,7 @@ import {
   type PropQuoteCoverage,
 } from '@/lib/marketCoverage';
 import PolymarketResearch from './PolymarketResearch';
+import KalshiResearch from './KalshiResearch';
 import styles from './ResearchViews.module.css';
 
 const SOURCE_LABELS:Record<string,string>={observed:'Observed',degraded:'Limited coverage',unavailable:'Unavailable',not_requested:'Not requested',budget_exhausted:'API budget reached'};
@@ -232,6 +233,7 @@ export default function MarketWatch({ sport }: { sport: Sport }) {
           )}
         </>
       )}
+      <KalshiResearch sport={sport} />
       <PolymarketResearch sport={sport} />
     </section>
   );
