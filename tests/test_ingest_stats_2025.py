@@ -12,8 +12,15 @@ def _source(ids=(101, 102)):
         "PLAYER_ID": list(ids),
         "PLAYER_NAME": ["Alpha", "Beta"],
         "TEAM_ID": [1, 2],
+        "TEAM_ABBREVIATION": ["ATL", "BOS"],
         "GP": [3, 4],
+        "MIN": [72.5, 93.0],
         "PTS": [40, 50],
+        "REB": [10, 12],
+        "AST": [8, 9],
+        "FG3M": [2, 3],
+        "STL": [1, 2],
+        "BLK": [0, 1],
     })
 
 
@@ -52,11 +59,18 @@ def test_valid_refresh_upserts_inside_one_transaction(monkeypatch):
     "frame",
     [
         pd.DataFrame(columns=["PLAYER_ID", "PLAYER_NAME"]),
-        pd.DataFrame({"PLAYER_ID": [101], "GP": [3]}),
+        _source().drop(columns=["PLAYER_NAME"]),
         _source((101, 101)),
         _source((None, 102)),
+        _source().drop(columns=["REB"]),
+        _source().assign(GP=[None, 4]),
+        _source().assign(PTS=[-1, 50]),
+        _source().assign(MIN=[float("inf"), 93.0]),
+        _source().assign(TEAM_ABBREVIATION=["", "BOS"]),
     ],
-    ids=["empty", "missing-name", "duplicate-id", "null-id"],
+    ids=["empty", "missing-name", "duplicate-id", "null-id",
+         "missing-stat", "null-games", "negative-points", "infinite-minutes",
+         "missing-team"],
 )
 def test_invalid_source_never_opens_a_write_transaction(monkeypatch, frame):
     _provider(monkeypatch, frame)

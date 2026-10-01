@@ -9,6 +9,7 @@ Pattern: year-by-year loop mirroring pbp.py with gc.collect() after each season.
 from __future__ import annotations
 
 import gc
+import math
 from sportsbet.ingestion.upsert import upsert_rows
 import time
 import argparse
@@ -58,6 +59,35 @@ RENAME_MAP: dict[str, str] = {
 }
 
 
+COUNT_COLUMNS = ("PLAYER_ID", "TEAM_ID", "GP", "PTS", "REB", "AST", "FG3M", "STL", "BLK")
+NUMERIC_COLUMNS = (*COUNT_COLUMNS, "MIN")
+
+
+def validated_totals(source: object) -> pd.DataFrame:
+    """Reject incomplete NBA.com season totals before any database write."""
+    if not isinstance(source, pd.DataFrame) or source.empty:
+        raise ValueError("NBA season totals response is missing or empty")
+    missing = sorted(set(NBA_COLUMNS) - set(source.columns))
+    if missing:
+        raise ValueError(f"NBA season totals are missing columns: {missing}")
+    for column, maximum in (("PLAYER_NAME", 100), ("TEAM_ABBREVIATION", 5)):
+        values = source[column]
+        if (values.isna().any() or values.astype(str).str.strip().eq("").any()
+                or values.astype(str).str.len().gt(maximum).any()):
+            raise ValueError(f"NBA season totals contain invalid {column}")
+    frame = source[NBA_COLUMNS].copy()
+    for column in NUMERIC_COLUMNS:
+        values = pd.to_numeric(frame[column], errors="coerce")
+        if (values.isna().any() or not values.map(math.isfinite).all()
+                or values.lt(0).any()
+                or (column in COUNT_COLUMNS and values.mod(1).ne(0).any())):
+            raise ValueError(f"NBA season totals contain invalid {column}")
+        frame[column] = values.astype("int64") if column in COUNT_COLUMNS else values
+    if frame["PLAYER_ID"].le(0).any() or frame["PLAYER_ID"].duplicated().any():
+        raise ValueError("NBA season totals contain invalid or duplicate player IDs")
+    return frame.rename(columns=RENAME_MAP)
+
+
 def ingest_nba_seasons(
     seasons: list[int],
     engine: Optional[sa.Engine] = None,
@@ -94,27 +124,23 @@ def ingest_nba_seasons(
             time.sleep(1)
 
             # nba_api returns pandas DataFrame directly — no .to_pandas() needed.
-            df: pd.DataFrame = stats.get_data_frames()[0]
-
-            # Apply column whitelist — filter to only columns that exist in this season's data.
-            df = df[[c for c in NBA_COLUMNS if c in df.columns]]
-
-            # Rename to ORM column names (lowercase snake_case).
-            df = df.rename(columns=RENAME_MAP)
+            frames = stats.get_data_frames()
+            df = validated_totals(frames[0] if frames else None)
 
             # Add season year as integer column for partitioning and queries.
             df["season"] = season
 
             # Chunked append — UniqueConstraint on (player_id, season) handles duplicates.
             # NEVER use if_exists='replace' — drops and recreates the table.
-            df.to_sql(
-                "nba_player_stats",
-                engine,
-                if_exists="append",
-                index=False,
-                chunksize=500,
-                method=upsert_rows(['player_id', 'season']),
-            )
+            with engine.begin() as connection:
+                df.to_sql(
+                    "nba_player_stats",
+                    connection,
+                    if_exists="append",
+                    index=False,
+                    chunksize=500,
+                    method=upsert_rows(['player_id', 'season']),
+                )
             log.info(
                 "nba_ingestion.season_complete",
                 season=season_str,
