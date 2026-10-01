@@ -216,3 +216,23 @@ def test_cfb_activation_retains_history_and_requires_new_policy(monkeypatch):
     assert board['history'][0]['model_version']=='empirical-jeffreys-v4'
     assert build_pick_board([new|{'history_policy_version':None}],'cfb',now)['current']==[]
     assert len(build_pick_board([new|{'model_version':'empirical-jeffreys-v4'}],'cfb',now)['current'])==1
+
+
+def test_board_clarifies_legacy_plan_without_changing_receipt(monkeypatch):
+    start = datetime(2026, 9, 20, 20, tzinfo=timezone.utc)
+    retained = row('a', start-timedelta(hours=2), start)
+    original = [
+        '+17.3% probability edge on player_receptions prop market',
+        'Approved research stake at capture: 0.7% of bankroll.',
+        'Availability: Active.',
+    ]
+    retained['trade_plan'] = original.copy()
+    monkeypatch.setattr('sportsbet.picks.quote_evidence_valid', lambda value: True)
+    monkeypatch.setattr('sportsbet.picks.settlement_identity_valid', lambda value: True)
+    board = build_pick_board([retained], 'nfl', start-timedelta(hours=1, minutes=30))
+    assert board['current'][0]['trade_plan'] == [
+        'Model probability minus market implied probability: +17.3 percentage points on player_receptions prop market',
+        'Paper sizing at capture (unverified): 0.7% of bankroll.',
+        'Availability: Active.',
+    ]
+    assert retained['trade_plan'] == original
