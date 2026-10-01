@@ -10,6 +10,8 @@ Skipped automatically when SPORTSBET_TEST_DATABASE_URL is not set.
 from __future__ import annotations
 
 import os
+import hashlib
+import json
 
 import pytest
 import sqlalchemy as sa
@@ -56,7 +58,7 @@ def test_browser_role_migration_closes_owner_view_and_preserves_data():
                               'public.cfb_primary_revisions',
                               'public.cfb_effective_gamelogs', 'public.nfl_history_source_bundles',
                               'public.nfl_receiving_supplements', 'public.nfl_effective_receiving_gamelogs',
-                              'analytics.paper_selections'):
+                              'analytics.paper_selections', 'analytics.prospective_audit_reports'):
                     assert not conn.execute(sa.text("SELECT has_table_privilege(:role,:table,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE')"),
                                             {'role': role, 'table': table}).scalar_one()
         for role in ('anon', 'authenticated'):
@@ -144,6 +146,29 @@ def test_ngs_migration_replaces_preexisting_worker_policy():
             assert conn.execute(sa.text('SELECT count(*) FROM public.cfb_primary_revisions '
                 'WHERE athlete_id=:athlete AND game_id=:game'),
                 {'athlete':row['athlete_id'],'game':row['game_id']}).scalar_one()==1
+        # Private prospective reports must be insertable by the restricted worker,
+        # but neither browsable nor mutable by dashboard roles.
+        report={'protocol':{'version':'nfl-receiving-individual-pick-audit-v1'},
+                'observed_at':'2026-10-01T13:00:00+00:00','promote':False,'target_verified':False}
+        payload=json.dumps(report,sort_keys=True,separators=(',',':'))
+        digest=hashlib.sha256(payload.encode()).hexdigest()
+        with engine.begin() as conn:
+            assert conn.execute(sa.text("SELECT has_table_privilege('sportsbet_worker',"
+                "'analytics.prospective_audit_reports','SELECT,INSERT')")).scalar_one()
+            assert not conn.execute(sa.text("SELECT has_table_privilege('sportsbet_worker',"
+                "'analytics.prospective_audit_reports','UPDATE,DELETE,TRUNCATE')")).scalar_one()
+            assert conn.execute(sa.text("SELECT has_sequence_privilege('sportsbet_worker',"
+                "'analytics.prospective_audit_reports_report_id_seq','USAGE,SELECT')")).scalar_one()
+            conn.execute(sa.text('SET LOCAL ROLE sportsbet_worker'))
+            inserted=conn.execute(sa.text('''INSERT INTO analytics.prospective_audit_reports
+                (protocol,observed_at,recorded_at,payload,payload_sha256)
+                VALUES (:protocol,:observed,:forged,:payload,:digest)
+                RETURNING report_id,recorded_at'''),
+                {'protocol':'nfl-receiving-individual-pick-audit-v1',
+                 'observed':report['observed_at'],'forged':'2000-01-01T00:00:00Z',
+                 'payload':payload,'digest':digest}).one()
+            assert inserted.recorded_at.year >= 2026
+            assert conn.execute(sa.text('SELECT count(*) FROM analytics.prospective_audit_reports')).scalar_one()==1
     finally:
         alembic.command.downgrade(cfg, 'base')
         if created_role:

@@ -148,6 +148,13 @@ jobs:
           profile_sport="$SPORT"
           if [ "$SPORT" = all ]; then profile_sport=both; fi
           uv run --locked python -m sportsbet.player_profiles --sport "$profile_sport"
+      - name: Retain private prospective NFL receiving audit
+        if: env.OPERATION == 'daily' && (env.SPORT == 'both' || env.SPORT == 'all' || env.SPORT == 'nfl')
+        timeout-minutes: 5
+        continue-on-error: true
+        env:
+          ANALYTICS_DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run --locked python -m sportsbet.quant.nfl_receiving_checkpoint
       - name: Score prospective NFL market edge
         if: env.OPERATION == 'daily' && (env.SPORT == 'both' || env.SPORT == 'all' || env.SPORT == 'nfl')
         timeout-minutes: 10
