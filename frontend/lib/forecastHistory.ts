@@ -45,10 +45,7 @@ export function forecastHistory(value:unknown,signal:EVSignal,count=20) {
     mean:logs.length-missing ? sum/(logs.length-missing) : null};
 }
 
-/** Disjoint recent windows preserve missing observations instead of replacing them. */
-export function recentForm(value:unknown,signal:EVSignal) {
-  const history=forecastHistory(value,signal,20);
-  const summarize=(rows:typeof history.rows)=>{
+function summarize(rows:ReturnType<typeof forecastHistory>['rows']) {
     const known=rows.filter(row=>row.stat!==null);
     const decided=known.filter(row=>row.outcome!=='Tie');
     const wins=decided.filter(row=>row.outcome==='Matched direction').length;
@@ -57,11 +54,29 @@ export function recentForm(value:unknown,signal:EVSignal) {
       wins,decided:decided.length,rate:decided.length ? wins/decided.length : null,
       newest:rows[0]?.date ?? null,oldest:rows.at(-1)?.date ?? null,
       teams:[...new Set(rows.map(row=>row.team))]};
-  };
+}
+
+/** Disjoint recent windows preserve missing observations instead of replacing them. */
+export function recentForm(value:unknown,signal:EVSignal) {
+  const history=forecastHistory(value,signal,20);
   const recent=summarize(history.rows.slice(0,5));
   const previous=summarize(history.rows.slice(5,10));
   const daysBeforeForecast=recent.newest
     ? Math.floor((Date.parse(signal.forecast_cutoff!)-Date.parse(recent.newest))/86400000) : null;
   return {recent,previous,daysBeforeForecast,
     meanChange:recent.mean!==null && previous.mean!==null ? recent.mean-previous.mean : null};
+}
+
+/** Calendar recency is separate from a last-N window that may span old teams. */
+export function calendarForm(value:unknown,signal:EVSignal) {
+  const history=forecastHistory(value,signal,20);
+  const before=historyCutoff(signal);
+  const from=new Date(Date.parse(signal.forecast_cutoff!)-30*86400000).toISOString().slice(0,10);
+  const rows=history.rows.filter(row=>row.date>=from);
+  const availability=signal.availability;
+  const team=availability?.status==='observed' && availability.roster_confirmed
+    && typeof availability.team==='string' && availability.team.trim() ? availability.team : null;
+  return {from,before,allTeams:summarize(rows),capturedTeam:team,
+    capturedTeamSample:team ? summarize(rows.filter(row=>row.team===team)) : null,
+    limitedToLatest20:history.rows.length===20 && history.rows.at(-1)!.date>=from};
 }
