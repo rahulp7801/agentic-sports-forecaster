@@ -10,12 +10,15 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from sportsbet.quant import current_history_replay as replay
 from sportsbet.quant import priced_recent_form as recent
 from sportsbet.quant import edge_search_stress as search
+from sportsbet.quant import history_shadow as workload_shadow
+from sportsbet.quant import nfl_role_shadow as role_shadow
 
 PROTOCOL = {'version':'individual-pick-accuracy-v1', 'target_probability':.75,
     'recent_games':10, 'current_role_prior_strength':20, 'minimum_current_games':2,
@@ -88,6 +91,7 @@ def decide(c, sample, role, recent_gap_days):
     return {'original_75':original,'recent_agreement_75':agrees,
         'recent_and_current_role_75':agrees and cp is not None and cp>=.75,
         'recent_probability':rp,'current_role_probability':cp,
+        'recent_context_available':rp is not None,'current_role_context_available':cp is not None,
         'consensus_score':min(p,rp,cp) if rp is not None and cp is not None else None}
 
 
@@ -100,6 +104,32 @@ def teammate_group(a,entry):
         return 'unknown'
     return 'reported_teammate_absence' if any(r['relationship']=='teammate' and
         r.get('status','').lower() in ('out','inactive','doubtful','injured reserve','suspension') for r in reports) else 'no_reported_teammate_absence'
+
+
+def recorded_context_audit(observed):
+    """Separate original forecast receipts from counterfactual history replay."""
+    selected=[c for c in search.select_model(observed) if c['probability']>=.75]
+    receipt_counts=Counter();details=[]
+    for c in selected:
+        row=c['x']['row'];wp=workload_shadow.verified_recorded_shadow_probability(row)
+        rp=role_shadow.verified_recorded_shadow_probability(row)
+        receipt_counts['original_selected']+=1
+        detail={'prediction_id':row['prediction_id'],'recorded_probability':c['probability']}
+        if wp is not None:
+            f=row['history_shadow']['features']
+            over=1/(1+math.exp(-(f[0]+f[2])))
+            detail.update(recent10_probability=over if row['direction']=='over' else 1-over,
+                days_since_last_game=round(math.expm1(f[5])),workload_candidate_probability=wp)
+            receipt_counts['verified_recent_feature_receipts']+=1
+        else:receipt_counts['missing_verified_recent_feature_receipts']+=1
+        if rp is not None:
+            detail['recorded_role_probability']=rp
+            detail['current_role_games']=row['role_history_shadow']['counts']['current_role_games']
+            receipt_counts['verified_role_receipts']+=1
+        else:receipt_counts['missing_verified_role_receipts']+=1
+        details.append(detail)
+    return {'counts':dict(receipt_counts),'original_forecast_accuracy':recent.accuracy(selected),
+        'details':details,'scope':'Original frozen receipt diagnostics only; no new selector or reconstructed receipt'}
 
 
 def run(rows,snapshot,sport):
@@ -132,11 +162,16 @@ def run(rows,snapshot,sport):
                 prop_type=row['prop_type'],direction=row['direction'],line=row['line'],american_odds=row['american_odds'],
                 decision_at=c['decision'].isoformat(),model_probability=c['probability'],
                 market_probability=x['q'] if row['direction']=='over' else 1-x['q'],
-                outcome=search.result(c),recent_gap_days=gap,current_role_reason=reason,
+                outcome=search.result(c),reconstructed_history_gap_days=gap,current_role_reason=reason,
                 current_role_games=len(role['current']) if role else None,teammate_group=group,**decision))
     def summary(cs):return dict(accuracy=recent.accuracy(cs),performance=search.metrics(cs))
     return dict(sport=sport,eligible_quotes=len(original),replayed_quotes=len(observed),
         archive_exclusions=excluded,history_exclusions=dict(missing),original_selected=len(selected),
+        context_coverage=dict(high_confidence=len(details),
+            recent_available=sum(d['recent_context_available'] for d in details),
+            current_role_available=sum(d['current_role_context_available'] for d in details)),
+        context_test_status='evaluable_exploratory' if any(d['recent_context_available'] for d in details) else 'not_evaluable_missing_asof_current_context',
+        recorded_forecast_receipts=recorded_context_audit(original),
         rules={k:summary(v) for k,v in rules.items()},
         rejected_by_context=summary([c for c in rules['original_75'] if c not in rules['recent_and_current_role_75']]),
         teammate_slices={k:summary(v) for k,v in groups.items()},individual_picks=details,promote=False)
@@ -150,9 +185,10 @@ def main():
     report=dict(protocol=PROTOCOL,observed_at=datetime.now(timezone.utc).isoformat(),
         inputs={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in (args.ledger_path,args.history_path)},
         implementation_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-        dependencies={Path(m.__file__).name:hashlib.sha256(Path(m.__file__).read_bytes()).hexdigest() for m in (replay,recent,search,search.frozen)},
+        dependencies={Path(m.__file__).name:hashlib.sha256(Path(m.__file__).read_bytes()).hexdigest() for m in (replay,recent,search,search.frozen,workload_shadow,role_shadow)},
         limitations=['Previously inspected archive; no untouched holdout or prospective accuracy claim.',
             'Rules filter identical original selections; no replacement quotes, parlays, or production picks.',
+            'Reconstructed stale history does not prove the live forecast used stale data; overwritten source versions may be missing.',
             'Current-role calculation uses retained stat rows, not verified complete participation; distinct from frozen role shadow.',
             'Roster summaries are archived commitments, not a replay of original raw roster feeds.',
             'Teammate groups are descriptive; untyped legacy reports remain unknown and do not change probabilities.',

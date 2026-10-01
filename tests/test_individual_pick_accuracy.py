@@ -77,3 +77,18 @@ def test_legacy_untyped_or_future_teammate_report_stays_unknown():
     assert teammate_group({'teammates':[r|{'relationship':'opponent'}]},NOW)=='no_reported_teammate_absence'
     assert teammate_group({'teammates':[r|{'relationship':'teammate'}]},NOW)=='reported_teammate_absence'
     assert teammate_group({'teammates':[r|{'relationship':'teammate','reported_at':(NOW+timedelta(days=1)).isoformat()}]},NOW)=='unknown'
+
+
+def test_receipt_audit_does_not_replace_earliest_pick_with_later_evidence():
+    from sportsbet.quant.individual_pick_accuracy import recorded_context_audit
+    def observation(pid,entry,p):
+        return dict(row=dict(prediction_id=pid,quote_source_sha256=pid,sportsbook='book',
+            direction='under',american_odds=-110),unit=('game','player','rec_yds',10.5),
+            entry=entry,quote=entry,start=NOW+timedelta(days=1),p=p,n=40,y=None)
+    a=observation('first',NOW,.2);b=observation('later',NOW+timedelta(minutes=1),.01)
+    result=recorded_context_audit([b,a])
+    assert result['counts']['original_selected']==1
+    assert result['details']==[{'prediction_id':'first','recorded_probability':.8}]
+    assert result['counts']['missing_verified_recent_feature_receipts']==1
+    assert result['original_forecast_accuracy']['pending']==1
+    assert result['original_forecast_accuracy']['win_rate'] is None
