@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { metricInterval, rateInterval } from '@/lib/performanceMetrics';
+import type {Sport} from '@/lib/types';
 import styles from './ResearchViews.module.css';
 
 type MetricReport = Record<string, unknown>;
@@ -49,7 +50,7 @@ function MetricBlock({ title, metrics }: { title: string; metrics: MetricReport 
   );
 }
 
-export default function Performance() {
+export default function Performance({sport}:{sport:Sport}) {
   const [metrics, setMetrics] = useState<{ all: MetricReport | null; recommendations: MetricReport | null }>({
     all: null,
     recommendations: null,
@@ -58,7 +59,7 @@ export default function Performance() {
   useEffect(() => {
     let active = true;
     Promise.all(['all', 'recommendations'].map(async cohort => {
-      const response = await fetch(`/api/metrics?cohort=${cohort}`);
+      const response = await fetch(`/api/metrics?cohort=${cohort}&sport=${sport}`);
       return response.json() as Promise<MetricReport>;
     })).then(([all, recommendations]) => {
       if (active) setMetrics({ all, recommendations });
@@ -69,7 +70,7 @@ export default function Performance() {
       }
     });
     return () => { active = false; };
-  }, []);
+  }, [sport]);
 
   const version = metrics.all && typeof metrics.all.model_version === 'string'
     ? metrics.all.model_version
@@ -78,7 +79,7 @@ export default function Performance() {
   return (
     <section className={styles.performance} aria-labelledby="evaluation-title">
       <header className={styles.performanceHeader}>
-        <h2 id="evaluation-title">Historical evaluation</h2>
+        <h2 id="evaluation-title">{sport.toUpperCase()} model evaluation</h2>
         <span>{version} · game-cluster intervals where available</span>
       </header>
       <div className={styles.metricGrid}>

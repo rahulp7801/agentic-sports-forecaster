@@ -481,7 +481,7 @@ export default function EVDashboard({ sport, onAddToParlay, parlayIds = new Set(
         </div>
       </div>
 
-      <Performance />
+      <Performance key={sport} sport={sport} />
 
       {/* Toolbar */}
       <div className={styles.toolbar}>
