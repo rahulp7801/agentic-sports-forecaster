@@ -120,8 +120,12 @@ def test_ngs_migration_replaces_preexisting_worker_policy():
             conn.execute(sa.text('ALTER TABLE ngs_stats ENABLE ROW LEVEL SECURITY'))
             conn.execute(sa.text("""CREATE POLICY sportsbet_worker_read ON ngs_stats
                 FOR SELECT TO sportsbet_worker USING (true)"""))
+        with engine.begin() as conn:
+            conn.execute(sa.text('GRANT DELETE ON analytics.predictions TO sportsbet_worker'))
         alembic.command.upgrade(cfg, 'head')
         with engine.connect() as conn:
+            assert not conn.execute(sa.text("SELECT has_table_privilege('sportsbet_worker',"
+                "'analytics.predictions','DELETE')")).scalar_one()
             policies = conn.execute(sa.text("""SELECT policyname FROM pg_policies
                 WHERE schemaname='public' AND tablename='ngs_stats'
                   AND policyname LIKE 'sportsbet_worker_%'""")).scalars().all()
@@ -562,7 +566,6 @@ def test_prediction_record_receipts_are_database_owned():
         for statement in (
             "UPDATE analytics.predictions SET payload='changed' WHERE id='new'",
             "UPDATE analytics.predictions SET recorded_at='2000-01-01T00:00:00Z' WHERE id='new'",
-            "DELETE FROM analytics.predictions WHERE id='new'",
         ):
             with pytest.raises(sa.exc.DBAPIError):
                 with engine.begin() as conn:

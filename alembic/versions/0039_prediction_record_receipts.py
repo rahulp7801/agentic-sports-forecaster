@@ -20,8 +20,6 @@ def upgrade():
             IF TG_OP = 'INSERT' THEN
                 NEW.recorded_at = clock_timestamp();
                 NEW.payload_sha256 = encode(sha256(convert_to(NEW.payload,'UTF8')),'hex');
-            ELSIF TG_OP = 'DELETE' THEN
-                RAISE EXCEPTION 'Prediction source record is immutable';
             ELSIF NEW.id IS DISTINCT FROM OLD.id
                 OR NEW.scan_id IS DISTINCT FROM OLD.scan_id
                 OR NEW.payload IS DISTINCT FROM OLD.payload
@@ -32,8 +30,11 @@ def upgrade():
             RETURN NEW;
         END $$""")
     op.execute("""CREATE TRIGGER stamp_prediction_record
-        BEFORE INSERT OR UPDATE OR DELETE ON analytics.predictions
+        BEFORE INSERT OR UPDATE ON analytics.predictions
         FOR EACH ROW EXECUTE FUNCTION analytics.stamp_prediction_record()""")
+    op.execute("""DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname='sportsbet_worker') THEN
+        REVOKE DELETE ON analytics.predictions FROM sportsbet_worker;
+    END IF; END $$""")
     op.execute('REVOKE ALL ON FUNCTION analytics.stamp_prediction_record() FROM PUBLIC')
     for role in ('anon', 'authenticated', 'sportsbet_dashboard'):
         op.execute("DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname='"+role+"') THEN "
