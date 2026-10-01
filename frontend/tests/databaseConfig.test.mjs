@@ -54,3 +54,16 @@ test('valid hosted settings retain effective certificate verification in the rea
   const local=new Client(databaseConfig('postgresql://localhost/sportsbet?sslmode=disable'));
   assert.equal(local.connectionParameters.ssl,false);
 });
+test('hosted Supabase reads use transaction pooling without changing migration or other URLs',()=>{
+  const value='postgresql://reader.project:synthetic@aws-0-us-west-2.pooler.supabase.com:5432/postgres?sslmode=verify-full';
+  const hosted=databaseConfig(value,'CA contents',true);
+  const client=new Client(hosted);
+  assert.equal(new URL(hosted.connectionString).port,'6543');
+  assert.equal(client.connectionParameters.port,6543);
+  assert.equal(client.connectionParameters.ssl.rejectUnauthorized,true);
+  assert.equal(client.connectionParameters.ssl.ca,'CA contents');
+  assert.equal(new URL(databaseConfig(value,'CA contents').connectionString).port,'5432');
+  assert.equal(new URL(databaseConfig(value,undefined,true).connectionString).port,'6543');
+  const other='postgresql://reader:synthetic@pooler.example:5432/postgres?sslmode=verify-full';
+  assert.equal(new URL(databaseConfig(other,undefined,true).connectionString).port,'5432');
+});
