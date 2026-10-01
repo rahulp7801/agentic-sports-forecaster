@@ -6,6 +6,7 @@ from sportsbet.config import DEFAULT_DAILY_CREDIT_LIMIT
 import argparse
 import asyncio
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TypedDict
@@ -38,6 +39,40 @@ PUBLIC_SCOPES={
         'arbitrage monitoring.'
     ),
 }
+
+
+PUBLIC_MARKET_REUSE = timedelta(minutes=10)
+
+
+def reusable_public_market(snapshot: object, sport: str, mode: str,
+                           now: datetime) -> bool:
+    """Reuse only a recent complete capture for the same public source scope."""
+    if not isinstance(snapshot,dict) or mode not in ('public_monitor','public_daily'):
+        return False
+    if (snapshot.get('schema_version')!=2 or snapshot.get('sport')!=sport
+            or snapshot.get('execution_ready') is not False
+            or not isinstance(snapshot.get('comparisons'),list)
+            or not isinstance(snapshot.get('evidence_sha256'),str)
+            or re.fullmatch('[0-9a-f]{64}',snapshot['evidence_sha256']) is None):
+        return False
+    if not isinstance(snapshot.get('captured_at'),str):
+        return False
+    try:
+        captured=datetime.fromisoformat(snapshot['captured_at'].replace('Z','+00:00'))
+        age=now-captured
+    except (KeyError,TypeError,ValueError):
+        return False
+    if not timedelta(0)<=age<=PUBLIC_MARKET_REUSE:
+        return False
+    sources=snapshot.get('sources')
+    if not isinstance(sources,dict) or set(sources)!= {'sportsbook','kalshi','prizepicks'}:
+        return False
+    expected={'sportsbook':'not_requested','kalshi':'observed',
+              'prizepicks':'observed' if mode=='public_daily' else 'not_requested'}
+    return all(isinstance(sources[name],dict)
+               and sources[name].get('status')==status
+               and sources[name].get('partial_coverage') is (status=='not_requested')
+               for name,status in expected.items())
 
 
 class DailyState(TypedDict, total=False):
@@ -121,8 +156,17 @@ def create_daily_graph():
         for sport in state['sports']:
             try:
                 public_provider='public' if state['mode']=='public_daily' else 'kalshi'
-                summary,_=await watch(sport,state['daily_credit_limit'],DEFAULT_GAME_LIMIT,True,
-                    **({'provider':public_provider} if public else {'credit_holdback':market_holdback,'sportsbook_cadence_hours':6}))
+                cached=None
+                if public:
+                    try:
+                        cached=load_snapshot('markets:'+sport)
+                    except Exception:
+                        pass  # A failed cache read must not hide source availability.
+                if reusable_public_market(cached,sport,state['mode'],datetime.now(timezone.utc)):
+                    summary=cached
+                else:
+                    summary,_=await watch(sport,state['daily_credit_limit'],DEFAULT_GAME_LIMIT,True,
+                        **({'provider':public_provider} if public else {'credit_holdback':market_holdback,'sportsbook_cadence_hours':6}))
                 requested=[source for source in summary['sources'].values() if source['status']!='not_requested']
                 complete = bool(requested) and all(
                     source['status']=='observed' and not source.get('partial_coverage',True)

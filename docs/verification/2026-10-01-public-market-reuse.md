@@ -1,0 +1,5 @@
+# Short-window public market reuse
+
+On 2026-10-01 a manual no-key public monitor finished at 14:44 UTC after delayed scheduled runs had been absent. GitHub then delivered a natural public monitor at 14:44:48, repeating market source collection within minutes. The existing public workflow concurrency serialized the runs but did not suppress duplicate free-source requests or evidence uploads.
+
+The daily worker now reuses a market snapshot for at most ten minutes only when it matches the same sport and public operation scope, has valid captured time and evidence hash, and every requested source was observed with complete coverage. Unrequested sources must remain explicitly not requested. Stale, future, partial, failed, wrong-sport and wrong-scope snapshots trigger ordinary source collection. Schedules, history refresh and settlement work continue independently. A reused capture keeps its original timestamp, so it cannot extend dashboard freshness artificially. Paid modes and their quote cadence, credit caps and pregame reserve are unchanged. No API key, additional collection, purchase or bet is needed for the change.

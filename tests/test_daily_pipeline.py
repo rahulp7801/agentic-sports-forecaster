@@ -14,6 +14,7 @@ from sportsbet.config import settings
 def schedule_source(monkeypatch):
     monkeypatch.setattr(daily,'collect_schedule',AsyncMock(return_value={
         'status':'complete','captured_at':datetime.now(timezone.utc).isoformat(),'games':[]}))
+    monkeypatch.setattr(daily,'load_snapshot',lambda key:None)
     class Audit:
         def report(self,recommendations_only=False,model_version=None,sport=None):
             return {'cohort':'recommendations' if recommendations_only else 'all_predictions',
@@ -267,9 +268,12 @@ async def test_public_modes_use_real_graph_and_collector_without_paid_or_prop_ca
         refreshed.append(sport)
         return {'provider':'fixture'}
     monkeypatch.setattr(refresh_module,'refresh',refresh)
-    def unexpected_read(*args):raise AssertionError('Public monitor must not load history or spend credits')
-    monkeypatch.setattr(daily,'load_snapshot',unexpected_read)
-    monkeypatch.setattr(Ledger,'reserve_api_credits',unexpected_read)
+    def public_market_read(key):
+        assert key.startswith('markets:')  # Public modes never read history or credits.
+        return None
+    monkeypatch.setattr(daily,'load_snapshot',public_market_read)
+    def unexpected_credit(*args):raise AssertionError('Public collection must not spend credits')
+    monkeypatch.setattr(Ledger,'reserve_api_credits',unexpected_credit)
     books=AsyncMock();prizepicks=AsyncMock(return_value={
         'status':'observed','projections':[],'partial_coverage':False});props=AsyncMock()
     monkeypatch.setattr(market_watch,'sportsbooks',books)
@@ -363,3 +367,53 @@ async def test_shadow_report_failure_cannot_change_production_settlement(monkeyp
     result=await daily.run(['nba'],'monitor',25)
     assert result['status']=='complete' and result['settlements']['nba']['status']=='complete'
     assert 'picks:nba' in stored and 'metrics:all:nba' in stored
+
+
+def _complete_public_snapshot(sport,mode,when):
+    return {'schema_version':2,'sport':sport,'captured_at':when.isoformat(),
+            'execution_ready':False,'evidence_sha256':'a'*64,'comparisons':[],
+            'sources':{'sportsbook':{'status':'not_requested','partial_coverage':True},
+                       'kalshi':{'status':'observed','partial_coverage':False},
+                       'prizepicks':{'status':'observed' if mode=='public_daily' else 'not_requested',
+                                     'partial_coverage':mode!='public_daily'}}}
+
+
+@pytest.mark.asyncio
+async def test_public_monitor_reuses_fresh_complete_market_without_provider_calls(monkeypatch):
+    now=datetime.now(timezone.utc)
+    snapshots={sport:_complete_public_snapshot(sport,'public_monitor',now-timedelta(minutes=2))
+               for sport in ('nfl','nba')}
+    monkeypatch.setattr(daily,'load_snapshot',lambda key:snapshots[key.split(':')[1]])
+    stored={}
+    monkeypatch.setattr(daily,'publish_snapshot',lambda key,value:stored.update({key:deepcopy(value)}))
+    watch=AsyncMock(side_effect=AssertionError('fresh public source must be reused'))
+    monkeypatch.setattr(daily,'watch',watch)
+    result=await daily.run(['nfl','nba'],'public_monitor',25)
+    assert result['status']=='observed'
+    assert all(result['markets'][sport]['captured_at']==snapshots[sport]['captured_at']
+               for sport in snapshots)
+    watch.assert_not_called()
+    assert 'pipeline:public_monitor' in stored
+
+
+@pytest.mark.parametrize('fault',('stale','future','partial','wrong_scope','missing_hash','wrong_sport'))
+def test_public_market_reuse_fails_closed(fault):
+    now=datetime.now(timezone.utc)
+    snapshot=_complete_public_snapshot('nfl','public_monitor',now)
+    if fault=='stale':snapshot['captured_at']=(now-timedelta(minutes=11)).isoformat()
+    if fault=='future':snapshot['captured_at']=(now+timedelta(seconds=1)).isoformat()
+    if fault=='partial':snapshot['sources']['kalshi']['partial_coverage']=True
+    if fault=='wrong_scope':snapshot['sources']['prizepicks']['status']='observed'
+    if fault=='missing_hash':snapshot.pop('evidence_sha256')
+    if fault=='wrong_sport':snapshot['sport']='nba'
+    assert not daily.reusable_public_market(snapshot,'nfl','public_monitor',now)
+
+
+def test_public_daily_requires_all_requested_sources():
+    now=datetime.now(timezone.utc)
+    monitor=_complete_public_snapshot('nfl','public_monitor',now)
+    assert not daily.reusable_public_market(monitor,'nfl','public_daily',now)
+    complete=_complete_public_snapshot('nfl','public_daily',now)
+    assert daily.reusable_public_market(complete,'nfl','public_daily',now)
+    complete['sources']['prizepicks']['partial_coverage']=True
+    assert not daily.reusable_public_market(complete,'nfl','public_daily',now)
