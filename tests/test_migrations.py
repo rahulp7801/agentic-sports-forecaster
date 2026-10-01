@@ -52,6 +52,8 @@ def test_browser_role_migration_closes_owner_view_and_preserves_data():
         with engine.connect() as conn:
             assert conn.execute(sa.text("SELECT count(*) FROM dashboard_snapshots WHERE snapshot_key='acl-proof'")).scalar_one() == 1
             for role in ('anon', 'authenticated'):
+                assert not conn.execute(sa.text("SELECT has_function_privilege(:role,"
+                    "'analytics.stamp_prediction_record()','EXECUTE')"), {'role':role}).scalar_one()
                 for table in ('public.dashboard_snapshots', 'public.dashboard_gamelogs', 'public.dashboard_gamelogs_asof',
                               'public.provider_response_cache', 'public.ngs_stats',
                               'public.cfb_history_source_bundles', 'public.cfb_receiving_supplements',
@@ -118,8 +120,12 @@ def test_ngs_migration_replaces_preexisting_worker_policy():
             conn.execute(sa.text('ALTER TABLE ngs_stats ENABLE ROW LEVEL SECURITY'))
             conn.execute(sa.text("""CREATE POLICY sportsbet_worker_read ON ngs_stats
                 FOR SELECT TO sportsbet_worker USING (true)"""))
+        with engine.begin() as conn:
+            conn.execute(sa.text('GRANT DELETE ON analytics.predictions TO sportsbet_worker'))
         alembic.command.upgrade(cfg, 'head')
         with engine.connect() as conn:
+            assert not conn.execute(sa.text("SELECT has_table_privilege('sportsbet_worker',"
+                "'analytics.predictions','DELETE')")).scalar_one()
             policies = conn.execute(sa.text("""SELECT policyname FROM pg_policies
                 WHERE schemaname='public' AND tablename='ngs_stats'
                   AND policyname LIKE 'sportsbet_worker_%'""")).scalars().all()
@@ -211,7 +217,7 @@ def test_alembic_upgrade_clean() -> None:
             'targets','receptions','percent_attempts_gte_eight_defenders','rush_attempts',
             'source_provider','source_url','source_sha256','source_record_sha256',
             'source_observed_at'} <= ngs_columns
-    # Cleanup ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â leave DB clean for next test run
+    # Cleanup ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â leave DB clean for next test run
     alembic.command.downgrade(cfg, "base")
 
 
@@ -531,4 +537,45 @@ def test_cfb_supplements_are_append_only_and_view_is_restricted():
         with engine.begin() as conn:
             for role in created:
                 conn.execute(sa.text(f'DROP OWNED BY {role}'));conn.execute(sa.text(f'DROP ROLE {role}'))
+        engine.dispose()
+
+
+@pytest.mark.serial
+@pytest.mark.skipif(not os.environ.get('SPORTSBET_TEST_DATABASE_URL'), reason='Disposable database required')
+def test_prediction_record_receipts_are_database_owned():
+    url=os.environ['SPORTSBET_TEST_DATABASE_URL'];cfg=get_alembic_cfg(url)
+    engine=sa.create_engine(url)
+    try:
+        alembic.command.downgrade(cfg,'base')
+        alembic.command.upgrade(cfg,'0038_private_prospective_reports')
+        with engine.begin() as conn:
+            columns={column['name'] for column in sa.inspect(conn).get_columns('predictions',schema='analytics')}
+            assert 'recorded_at' not in columns and 'payload_sha256' not in columns
+            conn.execute(sa.text("INSERT INTO analytics.predictions(id,scan_id,payload) VALUES ('legacy','old','{}')"))
+        alembic.command.upgrade(cfg,'head')
+        with engine.begin() as conn:
+            legacy=conn.execute(sa.text("SELECT recorded_at,payload_sha256 FROM analytics.predictions WHERE id='legacy'")).one()
+            assert legacy == (None,None)
+            recorded,digest=conn.execute(sa.text("""INSERT INTO analytics.predictions
+                (id,scan_id,payload,recorded_at,payload_sha256)
+                VALUES ('new','scan','{}','2000-01-01T00:00:00Z',repeat('0',64))
+                RETURNING recorded_at,payload_sha256""")).one()
+            assert recorded.year >= 2026
+            assert digest == hashlib.sha256(b'{}').hexdigest()
+            assert conn.execute(sa.text("UPDATE analytics.predictions SET outcome_evidence='{}' WHERE id='new'")).rowcount == 1
+        for statement in (
+            "UPDATE analytics.predictions SET payload='changed' WHERE id='new'",
+            "UPDATE analytics.predictions SET recorded_at='2000-01-01T00:00:00Z' WHERE id='new'",
+        ):
+            with pytest.raises(sa.exc.DBAPIError):
+                with engine.begin() as conn:
+                    conn.execute(sa.text(statement))
+        with engine.connect() as conn:
+            assert conn.execute(sa.text("SELECT payload FROM analytics.predictions WHERE id='new'")).scalar_one() == '{}'
+        alembic.command.downgrade(cfg,'0038_private_prospective_reports')
+        with engine.connect() as conn:
+            columns={column['name'] for column in sa.inspect(conn).get_columns('predictions',schema='analytics')}
+            assert 'recorded_at' not in columns and 'payload_sha256' not in columns
+    finally:
+        alembic.command.downgrade(cfg,'base')
         engine.dispose()
