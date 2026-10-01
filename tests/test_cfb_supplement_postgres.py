@@ -52,6 +52,15 @@ def test_atomic_supplement_view_replay_and_source_refresh_invalidation():
             inserted=conn.execute('SELECT inserted_at FROM public.cfb_receiving_supplements WHERE athlete_id=%s AND game_id=%s',
                 (int(PLAYER),EVENT)).fetchone()[0]
             available=max(inserted,datetime.fromisoformat(plan['updates'][0]['observed_at']))
+            asof=conn.execute("SELECT record_available_at,payload FROM public.dashboard_gamelogs_asof "
+                "WHERE sport='cfb' AND player_id=%s AND game_key=%s",(PLAYER,EVENT)).fetchone()
+            assert asof[0]==available and asof[1]==public
+            assert conn.execute("SELECT count(*) FROM public.dashboard_gamelogs_asof WHERE sport='cfb' "
+                "AND player_id=%s AND game_key=%s AND record_available_at<=%s",
+                (PLAYER,EVENT,available-timedelta(microseconds=1))).fetchone()[0]==0
+            assert conn.execute("SELECT count(*) FROM public.dashboard_gamelogs_asof WHERE sport='cfb' "
+                "AND player_id=%s AND game_key=%s AND record_available_at<=%s",
+                (PLAYER,EVENT,available)).fetchone()[0]==1
             def sample(cutoff):
                 params=PropParams(game_id='future',player_id=PLAYER,season=2024,sport='cfb',
                     prop_type='rec_yds',line=Decimal('0.5'),filters={},as_of_date=date(2026,9,30),
