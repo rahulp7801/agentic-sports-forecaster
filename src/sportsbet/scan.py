@@ -23,7 +23,7 @@ from sportsbet.prop.agents import make_prop_quant_agent
 from sportsbet.prop.availability import (blocks_unadjusted_teammate_context,
                                          fetch_event_availability, player_availability, nfl_roster_history_bindings)
 from sportsbet.prop.admission import admission_timing_reason
-from sportsbet.prop.injury_context import historical_availability_splits, relevant_availability_reports
+from sportsbet.prop.injury_context import historical_availability_splits, screened_availability_reports
 from sportsbet.prop.ngs_evidence import load_ngs_evidence
 from sportsbet.arbitrage.ev import compute_expected_return, quote_terms
 from sportsbet.prop.nba_agents import make_nba_quant_agent
@@ -491,10 +491,10 @@ async def evaluate_event(pool, event: dict, sport: str, ledger: Ledger, scan_id:
         availability_evidence, availability_reason=player_availability(availability,player,now,
             player_id=player_id if sport in ('nfl','cfb') else None,sport=sport)
         relevant_reports=[]
-        if sport in ('nba','nfl') and availability_evidence['status']=='observed':
-            all_relevant_reports=relevant_availability_reports(availability,
+        if sport in ('nba','nfl','cfb') and availability_evidence['status']=='observed':
+            all_relevant_reports=screened_availability_reports(availability,
                 availability_evidence['team'],availability_evidence.get('roster_player_name',player),
-                sport,None)
+                sport,availability_evidence['teammates'])
             relevant_reports=all_relevant_reports[:8]
             availability_evidence['teammates']=relevant_reports
             # Reconcile the broad roster gate with every relevant offensive

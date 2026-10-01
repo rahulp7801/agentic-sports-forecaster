@@ -49,6 +49,29 @@ def relevant_availability_reports(context: dict | None, subject_team: str,
     return ordered if limit is None else ordered[:limit]
 
 
+def screened_availability_reports(context: dict | None, subject_team: str,
+                                  subject_player: str, sport: str,
+                                  raw_teammates: list[dict]) -> list[dict]:
+    """Keep relevant units; fail closed on acute CFB teammates of unknown unit.
+
+    The captured CFB roster can identify a teammate even when its position does
+    not establish offense or defense. Such a report remains a blocker and is
+    retained for public explanation, without inventing a unit classification.
+    """
+    relevant = relevant_availability_reports(context, subject_team, subject_player, sport, limit=None)
+    if sport != 'cfb':
+        return relevant
+    unknown = []
+    for report in raw_teammates:
+        position = str(report.get('position', '')).strip().upper()
+        if (blocks_unadjusted_teammate_context(report)
+                and position not in OFFENSE and position not in DEFENSE):
+            unknown.append(dict(player=report['player'], status=report['status'],
+                                position=position or 'Unknown', reported_at=report['reported_at']))
+    unknown.sort(key=lambda row:(row['status'].strip().lower(), row['player']))
+    return unknown + relevant
+
+
 def current_contexts(context: dict | None, subject_team: str, subject_player: str, sport: str) -> list[dict]:
     """Return relevant injury-report participants with exact identities for historical splits."""
     candidates = []
