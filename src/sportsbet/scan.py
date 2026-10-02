@@ -56,7 +56,8 @@ PRIOR_EVENT_EVIDENCE_QUERY = '''SELECT snapshot_key,jsonb_build_object(
     'signal_count',CASE WHEN jsonb_typeof(payload->'signals')='array'
         THEN jsonb_array_length(payload->'signals') ELSE -1 END,
     'signals',COALESCE((SELECT jsonb_agg(jsonb_build_object(
-        'sport',signal->'sport','game_id',signal->'game_id','sample_size',signal->'sample_size',
+        'sport',signal->'sport','game_id',signal->'game_id',
+        'player_id',signal->'player_id','prop_type',signal->'prop_type','sample_size',signal->'sample_size',
         'true_prob',signal->'true_prob','implied_prob',signal->'implied_prob','ev_pct',signal->'ev_pct',
         'push_probability',signal->'push_probability','confidence_interval',signal->'confidence_interval',
         'gate_reason',signal->'gate_reason','sportsbook',signal->'sportsbook',
@@ -154,9 +155,38 @@ def prior_event_evidence(sport: str, event_id: str, now: datetime | None = None)
         return None,None
 
 
+def _prior_event_coverage(snapshot: object,sport: str,event_id: str,now: datetime) -> int:
+    """Count prior roster-verified athletes without inflating alternate-line volume."""
+    try:
+        if not isinstance(snapshot,dict):return 0
+        age=now-timestamp(snapshot['generated_at'])
+        games=snapshot.get('games')
+        if (not timedelta(minutes=-1)<=age<=timedelta(hours=FORECAST_HORIZON_HOURS)
+                or not isinstance(games,list) or len(games)!=1
+                or not isinstance(games[0],dict)
+                or games[0].get('game_id')!=event_id or games[0].get('sport')!=sport):
+            return 0
+        signals=snapshot.get('signals')
+        count=snapshot.get('signal_count',len(signals) if isinstance(signals,list) else -1)
+        if (type(count) is not int or not 0<=count<=MAX_PRIORITY_SIGNALS
+                or not isinstance(signals,list) or len(signals)!=count):
+            return 0
+        return len({signal['player_id'] for signal in signals if isinstance(signal,dict)
+            and signal.get('sport')==sport and signal.get('game_id')==event_id
+            and isinstance(signal.get('player_id'),str)
+            and 0<len(signal['player_id'])<=32
+            and signal.get('prop_type') in MARKETS[sport].values()
+            and type(signal.get('sample_size')) is int and 0<signal['sample_size']<=40
+            and isinstance(signal.get('availability'),dict)
+            and signal['availability'].get('status')=='observed'
+            and signal['availability'].get('roster_confirmed') is True})
+    except (KeyError,TypeError,ValueError,AttributeError):
+        return 0
+
+
 async def prior_event_evidence_batch(pool,sport: str,event_ids: list[str],now: datetime):
     """Project and load only fields used for refresh priority, in one database read."""
-    evidence={event_id:(None,None) for event_id in event_ids}
+    evidence={event_id:(None,None,0) for event_id in event_ids}
     if not event_ids:
         return evidence
     keys=[f'signals:{sport}:{event_id}' for event_id in event_ids]
@@ -174,7 +204,8 @@ async def prior_event_evidence_batch(pool,sport: str,event_ids: list[str],now: d
                 continue
             if isinstance(payload,str):
                 payload=json.loads(payload)
-            evidence[event_id]=_prior_event_evidence(payload,sport,event_id,now)
+            evidence[event_id]=(*_prior_event_evidence(payload,sport,event_id,now),
+                                _prior_event_coverage(payload,sport,event_id,now))
         except (KeyError,TypeError,json.JSONDecodeError):
             continue
     return evidence
@@ -189,6 +220,11 @@ def prior_quality_sort(quality: tuple[float, int] | None) -> tuple[bool, float, 
     if quality is None:
         return True,0,0
     return False,-quality[0],-quality[1]
+
+def prelock_coverage_sort(event: dict,coverage: int,now: datetime) -> int:
+    """Keep the coverage tie-break inside the existing prelock reserve stage."""
+    start=timestamp(event['commence_time'])
+    return -coverage if now+LOCK_BEFORE_START<start<=now+PRELOCK_QUOTE_WINDOW else 0
 
 def timestamp(value: str) -> datetime:
     result=datetime.fromisoformat(value.replace('Z','+00:00'))
@@ -687,7 +723,7 @@ async def run(sports: list[str], daily_credit_limit: int, event_ids: frozenset[s
                     report['attempts']={identity:attempt for identity,attempt in report['attempts'].items()
                         if identity in active_ids}
                     evidence=await prior_event_evidence_batch(pool,sport,[event['id'] for event in events],now)
-                    for identity,(_,attempt) in evidence.items():
+                    for identity,(_,attempt,_) in evidence.items():
                         if identity not in report['attempts'] and attempt is not None:
                             report['attempts'][identity]=attempt
                     if event_ids is not None:
@@ -699,9 +735,11 @@ async def run(sports: list[str], daily_credit_limit: int, event_ids: frozenset[s
                         away_team=e['away_team'],game_start_time=e['commence_time'],state='waiting_quotes')
                         for e in events]
                     priorities={event['id']:evidence[event['id']][0] for event in events}
+                    prior_coverage={event['id']:evidence[event['id']][2] for event in events}
                     queues[sport]=sorted(events,key=lambda e:(timestamp(e['commence_time'])>now+LOCK_BEFORE_START,
                         timestamp(e['commence_time'])>now+PRELOCK_QUOTE_WINDOW,
                         *prior_quality_sort(priorities[e['id']]),
+                        prelock_coverage_sort(e,prior_coverage[e['id']],now),
                         report['attempts'].get(e['id'],''),timestamp(e['commence_time']),e['id']))
                 except Exception as exc:
                     report['failures'].append(dict(stage='event_discovery',**error_fields(exc)))

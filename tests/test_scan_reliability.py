@@ -39,7 +39,9 @@ def worker(monkeypatch,tmp_path):
     monkeypatch.setattr(scan,'load_snapshot',lambda key:deepcopy(stored.get(key)))
     monkeypatch.setattr(scan,'publish_snapshot',lambda key,value:stored.update({key:deepcopy(value)}))
     async def prior_batch(pool,sport,event_ids,now):
-        return {event_id:scan.prior_event_evidence(sport,event_id,now) for event_id in event_ids}
+        return {event_id:(*scan.prior_event_evidence(sport,event_id,now),
+            scan._prior_event_coverage(stored.get(f'signals:{sport}:{event_id}'),sport,event_id,now))
+            for event_id in event_ids}
     monkeypatch.setattr(scan,'prior_event_evidence_batch',prior_batch)
     pool=AsyncMock()
     pool.provider_cache=cache
@@ -139,6 +141,36 @@ async def test_scarce_budget_refreshes_best_prior_near_pass_first(monkeypatch,wo
         'nba0':'api_budget','nba1':'evaluated'}
 
 
+@pytest.mark.asyncio
+async def test_prelock_reserve_prefers_prior_roster_coverage_over_older_empty_capture(monkeypatch,worker):
+    stored,events,evaluated,_=worker
+    now=datetime.now(timezone.utc)
+    events['cfb']=[dict(id='cfb'+str(i),home_team='Home',away_team='Away',
+        commence_time=(now+timedelta(minutes=90)).isoformat()) for i in range(2)]
+    for index,event in enumerate(events['cfb']):
+        stored[f"signals:cfb:{event['id']}"]={
+            'generated_at':(now-timedelta(hours=2,seconds=10-index)).isoformat(),
+            'games':[dict(game_id=event['id'],sport='cfb')],
+            'signals':[] if index==0 else [dict(sport='cfb',game_id='cfb1',player_id='123',
+                prop_type='receptions',sample_size=19,
+                availability={'status':'observed','roster_confirmed':True})]}
+    assert scan._prior_event_coverage(stored['signals:cfb:cfb0'],'cfb','cfb0',now)==0
+    assert scan._prior_event_coverage(stored['signals:cfb:cfb1'],'cfb','cfb1',now)==1
+    assert scan.Ledger().reserve_api_credits(12,20)
+    requests=[]
+    def handle(request):
+        if request.url.path.endswith('/events'):
+            return httpx.Response(200,json=events['cfb'])
+        requests.append(request.url.path)
+        return httpx.Response(200,json=events['cfb'][1])
+    transport(monkeypatch,handle)
+    report=(await scan.run(['cfb'],20))['cfb']
+    assert evaluated==['cfb1'] and len(requests)==1
+    assert report['budget_reasons']=={'pregame_credit_reserve':1}
+    assert {event['game_id']:event['state'] for event in report['events']}=={
+        'cfb0':'api_budget','cfb1':'evaluated'}
+
+
 def test_prior_event_quality_rejects_malformed_and_weak_snapshots(monkeypatch):
     valid=dict(sport='nfl',game_id='event',sample_size=30,true_prob=.62,implied_prob=.55,
         ev_pct=.07,push_probability=0,confidence_interval=[.54,.70],
@@ -159,10 +191,40 @@ def test_prior_event_quality_rejects_malformed_and_weak_snapshots(monkeypatch):
     assert scan.prior_event_quality('nfl','event') is None
 
 
+def test_prior_coverage_fails_closed_for_stale_or_mismatched_snapshots():
+    now=datetime.now(timezone.utc)
+    signal=dict(sport='cfb',game_id='event',player_id='123',prop_type='receptions',sample_size=19,
+        availability={'status':'observed','roster_confirmed':True})
+    snapshot=dict(generated_at=now.isoformat(),games=[dict(game_id='event',sport='cfb')],
+                  signal_count=1,signals=[signal])
+    assert scan._prior_event_coverage(snapshot,'cfb','event',now)==1
+    assert scan._prior_event_coverage(snapshot | {'signal_count':2,
+        'signals':[signal,signal | {'prop_type':'rec_yds'}]},'cfb','event',now)==1
+    for changed in (
+        {'generated_at':(now-timedelta(hours=49)).isoformat()},
+        {'generated_at':(now+timedelta(minutes=2)).isoformat()},
+        {'games':[dict(game_id='other',sport='cfb')]},
+        {'signal_count':2},
+        {'signals':[signal | {'sample_size':True}]},
+        {'signals':[signal | {'game_id':'other'}]},
+        {'signals':[signal | {'availability':{'status':'unavailable'}}]},
+    ):
+        assert scan._prior_event_coverage(snapshot | changed,'cfb','event',now)==0
+
+
+def test_coverage_tie_break_only_applies_before_the_one_hour_lock():
+    now=datetime.now(timezone.utc)
+    event=lambda minutes:dict(commence_time=(now+timedelta(minutes=minutes)).isoformat())
+    assert scan.prelock_coverage_sort(event(90),12,now)==-12
+    assert scan.prelock_coverage_sort(event(60),12,now)==0
+    assert scan.prelock_coverage_sort(event(121),12,now)==0
+
+
 @pytest.mark.asyncio
 async def test_prior_event_batch_projects_bounded_fields_in_one_query():
     now=datetime.now(timezone.utc)
-    valid=dict(sport='nfl',game_id='event',sample_size=30,true_prob=.62,implied_prob=.55,
+    valid=dict(sport='nfl',game_id='event',player_id='00-0000001',prop_type='receptions',
+        sample_size=30,true_prob=.62,implied_prob=.55,
         ev_pct=.07,push_probability=0,confidence_interval=[.54,.70],
         gate_reason='stale_quote',sportsbook='book',american_odds=-110,
         availability={'status':'observed','roster_confirmed':True})
@@ -178,15 +240,16 @@ async def test_prior_event_batch_projects_bounded_fields_in_one_query():
     class Pool:
         def acquire(self): return Connection()
     result=await scan.prior_event_evidence_batch(Pool(),'nfl',['event'],now)
-    quality,attempt=result['event']
+    quality,attempt,coverage=result['event']
     assert quality==pytest.approx((-.01,30)),result
     assert attempt==now.isoformat()
+    assert coverage==1
 
     class OfflineConnection(Connection):
         async def fetch(self,*args): raise RuntimeError('offline')
     class OfflinePool:
         def acquire(self): return OfflineConnection()
-    assert await scan.prior_event_evidence_batch(OfflinePool(),'nfl',['event'],now)=={'event':(None,None)}
+    assert await scan.prior_event_evidence_batch(OfflinePool(),'nfl',['event'],now)=={'event':(None,None,0)}
 
 
 @pytest.mark.asyncio
@@ -421,7 +484,7 @@ async def test_prelock_event_precedes_distant_candidate_within_league(monkeypatc
     events['nfl'][0]['commence_time']=(now+timedelta(hours=3)).isoformat()
     events['nfl'][1]['commence_time']=(now+timedelta(minutes=90)).isoformat()
     async def evidence(pool,sport,identities,now):
-        return {'nfl0':((.2,40),None),'nfl1':(None,None)}
+        return {'nfl0':((.2,40),None,0),'nfl1':(None,None,0)}
     monkeypatch.setattr(scan,'prior_event_evidence_batch',evidence)
     def handle(request):
         if request.url.path.endswith('/events'):return httpx.Response(200,json=events['nfl'])
