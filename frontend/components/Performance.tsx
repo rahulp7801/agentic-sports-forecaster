@@ -76,12 +76,17 @@ export default function Performance({sport}:{sport:Sport}) {
     ? metrics.all.model_version
     : 'model cohort unavailable';
 
+  const availableVersions = metrics.all?.available_model_versions;
+  const hasEarlierVersion = Array.isArray(availableVersions)
+    && availableVersions.some((item: unknown) => typeof item === 'string' && item !== version);
+
   return (
     <section className={styles.performance} aria-labelledby="evaluation-title">
       <header className={styles.performanceHeader}>
         <h2 id="evaluation-title">{sport.toUpperCase()} model evaluation</h2>
         <span>{version} · game-cluster intervals where available</span>
       </header>
+      {hasEarlierVersion && <p className={styles.metricScope}>These metrics cover {version} only. The audited pick ledger also contains earlier model versions, so its all-version win rate uses a different cohort.</p>}
       <div className={styles.metricGrid}>
         <MetricBlock title="All eligible predictions · unit stakes" metrics={metrics.all} />
         <MetricBlock title="Accepted recommendations · recorded stakes" metrics={metrics.recommendations} />

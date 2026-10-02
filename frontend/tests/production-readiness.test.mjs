@@ -225,7 +225,9 @@ test('production readiness covers CFB consumer forecasts, replay, slate and hist
     assert.ok(paidPipelinePaths.includes(path));
     assert.deepEqual(readinessStatuses(path,{paidEnabled:true,publicEnabled:true}),[200]);
   }
-  for(const path of ['/api/slate?sport=cfb','/api/gamelogs?sport=cfb&player_id=1&exact=1&limit=1','/api/benchmarks?sport=cfb']) {
+  for(const path of ['/api/slate?sport=cfb','/api/gamelogs?sport=cfb&player_id=1&exact=1&limit=1',
+    '/api/gamelogs?sport=cfb&player_id=1&exact=1&limit=1&before=2026-10-02&observed_before=2026-10-01T23%3A00%3A00Z',
+    '/api/benchmarks?sport=cfb']) {
     assert.ok(publicPipelinePaths.includes(path));
     assert.deepEqual(readinessStatuses(path,{paidEnabled:false,publicEnabled:true}),[200]);
   }

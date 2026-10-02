@@ -126,3 +126,19 @@ def test_atomic_recovery_rejects_mixed_sport_plan_before_database_access():
     with pytest.raises(ValueError,match='Mixed recovery sports'):apply_plan(conn,plan)
     with pytest.raises(ValueError,match='Unsupported recovery sport'):apply_plan(conn,plan,sport='nba')
     conn.execute.assert_not_called()
+
+def test_unrelated_event_category_without_events_does_not_hide_valid_final():
+    b = bundle()
+    change(b, 1, lambda d: d['seasonTypes'][0]['categories'].insert(
+        0, dict(type='event', splitType='2')))
+    evidence, = inspect_bundle(b, now=NOW)
+    assert evidence['status'] == 'verified_explicit_stats'
+    assert evidence['stat_row']['receptions'] == 0
+
+
+def test_target_event_category_without_events_stays_unavailable():
+    b = bundle()
+    change(b, 1, lambda d: d['seasonTypes'][0]['categories'][0].pop('events'))
+    evidence, = inspect_bundle(b, now=NOW)
+    assert evidence['status'] == 'unavailable'
+    assert evidence['reason'] == 'explicit_game_stats_missing'

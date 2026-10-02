@@ -178,7 +178,7 @@ jobs:
           import json
           import os
           from pathlib import Path
-          from sportsbet.quant.edge_evidence import assess_prospective_edge
+          from sportsbet.quant.nfl_priced_checkpoint import build_report, store_report
 
           root = Path(os.environ['PRIVATE_EDGE_DIR'])
           reports = {
@@ -188,8 +188,35 @@ jobs:
                   ('Recommendations', 'recommendations.json'),
               )
           }
-          assess_prospective_edge(reports['All forecasts'], reports['Recommendations'])
-          print('Private prospective NFL market evaluation completed')
+          try:
+              store_report(os.environ['ANALYTICS_DATABASE_URL'], build_report(reports))
+          except Exception as exc:
+              raise SystemExit(f'Private prospective NFL market evaluation unavailable: {type(exc).__name__}') from None
+          print('Private prospective NFL market evaluation retained')
+          PY
+      - name: Retain current NFL model priced evidence privately
+        if: env.OPERATION == 'daily' && (env.SPORT == 'both' || env.SPORT == 'all' || env.SPORT == 'nfl')
+        timeout-minutes: 10
+        env:
+          ANALYTICS_DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          private_dir="$(mktemp -d "${RUNNER_TEMP}/current-nfl-edge.XXXXXXXX")"
+          trap 'rm -rf "$private_dir"' EXIT
+          uv run --locked python -m sportsbet.quant.nfl_history_edge --output "$private_dir/current.json"
+          PRIVATE_EDGE_DIR="$private_dir" uv run --locked python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from sportsbet.quant.nfl_history_checkpoint import build_report, store_report
+
+          root = Path(os.environ['PRIVATE_EDGE_DIR'])
+          result = json.loads((root / 'current.json').read_text(encoding='utf8'))['nfl']
+          try:
+              store_report(os.environ['ANALYTICS_DATABASE_URL'], build_report(result))
+          except Exception as exc:
+              raise SystemExit(f'Current NFL model priced evaluation unavailable: {type(exc).__name__}') from None
+          print('Current NFL model priced evaluation retained')
           PY
       - name: Stage public evidence without configured credentials
         if: always() && (env.OPERATION == 'watch' || env.OPERATION == 'daily' || env.OPERATION == 'monitor' || env.OPERATION == 'public_daily' || env.OPERATION == 'public_monitor' || env.OPERATION == 'refresh' || env.OPERATION == 'scan')

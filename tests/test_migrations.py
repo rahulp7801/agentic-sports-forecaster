@@ -55,6 +55,7 @@ def test_browser_role_migration_closes_owner_view_and_preserves_data():
                 assert not conn.execute(sa.text("SELECT has_function_privilege(:role,"
                     "'analytics.stamp_prediction_record()','EXECUTE')"), {'role':role}).scalar_one()
                 for table in ('public.dashboard_snapshots', 'public.dashboard_gamelogs', 'public.dashboard_gamelogs_asof',
+                              'public.dashboard_gamelog_versions',
                               'public.provider_response_cache', 'public.ngs_stats',
                               'public.cfb_history_source_bundles', 'public.cfb_receiving_supplements',
                               'public.cfb_primary_revisions',
@@ -62,12 +63,12 @@ def test_browser_role_migration_closes_owner_view_and_preserves_data():
                               'public.nfl_receiving_supplements', 'public.nfl_effective_receiving_gamelogs',
                               'analytics.paper_selections', 'analytics.prospective_audit_reports'):
                     assert not conn.execute(sa.text("SELECT has_table_privilege(:role,:table,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE')"),
-                                            {'role': role, 'table': table}).scalar_one()
+                                            {'role': role, 'table': table}).scalar_one(), table
         for role in ('anon', 'authenticated'):
             with pytest.raises(sa.exc.ProgrammingError):
                 with engine.begin() as conn:
                     conn.execute(sa.text(f'SET LOCAL ROLE {role}'))
-                    conn.execute(sa.text('SELECT * FROM public.dashboard_gamelogs_asof LIMIT 1'))
+                    conn.execute(sa.text('SELECT * FROM public.dashboard_gamelog_versions LIMIT 1'))
         alembic.command.downgrade(cfg, '0023_worker_snapshot_append')
         with engine.connect() as conn:
             assert not conn.execute(sa.text("SELECT has_table_privilege('anon','public.dashboard_gamelogs','SELECT')")).scalar_one()
@@ -177,6 +178,40 @@ def test_ngs_migration_replaces_preexisting_worker_policy():
                  'payload':payload,'digest':digest}).one()
             assert inserted.recorded_at.year >= 2026
             assert conn.execute(sa.text('SELECT count(*) FROM analytics.prospective_audit_reports')).scalar_one()==1
+        priced={'protocol':{'version':'nfl-priced-prospective-checkpoint-v1'},
+                'observed_at':'2026-10-02T00:00:00+00:00',
+                'assessment':{'status':'insufficient_data'},
+                'promote':False,'target_verified':False}
+        priced_payload=json.dumps(priced,sort_keys=True,separators=(',',':'))
+        with engine.begin() as conn:
+            conn.execute(sa.text('SET LOCAL ROLE sportsbet_worker'))
+            conn.execute(sa.text('''INSERT INTO analytics.prospective_audit_reports
+                (protocol,observed_at,payload,payload_sha256)
+                VALUES (:protocol,:observed,:payload,:digest)'''),
+                {'protocol':'nfl-priced-prospective-checkpoint-v1',
+                 'observed':priced['observed_at'],'payload':priced_payload,
+                 'digest':hashlib.sha256(priced_payload.encode()).hexdigest()})
+            assert conn.execute(sa.text('SELECT count(*) FROM analytics.prospective_audit_reports')).scalar_one()==2
+        current={'protocol':{'version':'nfl-history-priced-prospective-v1'},
+                 'observed_at':'2026-10-02T00:00:00+00:00',
+                 'assessment':{'status':'insufficient_data'},
+                 'promote':False,'target_verified':False}
+        current_payload=json.dumps(current,sort_keys=True,separators=(',',':'))
+        with engine.begin() as conn:
+            conn.execute(sa.text('SET LOCAL ROLE sportsbet_worker'))
+            conn.execute(sa.text('''INSERT INTO analytics.prospective_audit_reports
+                (protocol,observed_at,payload,payload_sha256)
+                VALUES (:protocol,:observed,:payload,:digest)'''),
+                {'protocol':'nfl-history-priced-prospective-v1',
+                 'observed':current['observed_at'],'payload':current_payload,
+                 'digest':hashlib.sha256(current_payload.encode()).hexdigest()})
+            assert conn.execute(sa.text('SELECT count(*) FROM analytics.prospective_audit_reports')).scalar_one()==3
+        # The downgrade must refuse retained priced reports; this disposable test
+        # removes its own row with the owner role before the ordinary teardown.
+        with engine.begin() as conn:
+            conn.execute(sa.text("DELETE FROM analytics.prospective_audit_reports "
+                                 "WHERE protocol IN ('nfl-priced-prospective-checkpoint-v1',"
+                                 "'nfl-history-priced-prospective-v1')"))
     finally:
         alembic.command.downgrade(cfg, 'base')
         if created_role:
