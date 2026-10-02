@@ -4,7 +4,7 @@ This private research path records a separately versioned probability on future 
 
 ## Why prospective capture is necessary
 
-The earlier CFB team-context protocol was exploratory on reused game outcomes. A read-only chronology audit on October 2 found that primary 2024 and 2025 CFB rows in the current database were first observed on September 19, 2026; current 2026 rows were first observed on September 30. None of those historical rows was recorded within one day of its own game. A retrospective calculation using the final rows is useful for finding a failure mode, but cannot establish pregame source availability or a matching-price edge. Keep the detailed local report and raw rows out of GitHub.
+The earlier CFB team-context protocol was exploratory on reused game outcomes. A read-only chronology audit on October 2 found that primary 2024 and 2025 CFB rows in the current database carry September 19, 2026 observation timestamps; current 2026 rows carried September 30 timestamps at that check. Refreshes can replace these timestamps, so they do not prove first arrival. None of the inspected historical rows had a retained pregame source receipt. A retrospective calculation using the final rows is useful for finding a failure mode, but cannot establish pregame source availability or a matching-price edge. Keep the detailed local report and raw rows out of GitHub.
 
 ## Fixed forward candidate
 

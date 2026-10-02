@@ -440,8 +440,10 @@ async def evaluate_event(pool, event: dict, sport: str, ledger: Ledger, scan_id:
     rushing_only_ids={s[5] for s in prepared if rushing_model is not None
         and MARKETS[sport][s[1]]==rushing_model.MARKET}-receiving_ids
     cfb_role_model=None
+    cfb_low_model=None
     if settings.role_history_shadow_enabled and sport=='cfb':
         from sportsbet.quant import cfb_team_role_shadow as cfb_role_model
+        from sportsbet.quant import cfb_low_sample_shadow as cfb_low_model
     async def capture_cfb_role_history():
         if cfb_role_model is None:return {},None
         requests={(s[5],MARKETS[sport][s[1]]) for s in prepared}
@@ -484,7 +486,7 @@ async def evaluate_event(pool, event: dict, sport: str, ledger: Ledger, scan_id:
     # Alphabetical/line order must not consume a player's risk slot ahead of a
     # stronger qualified estimate. Keep all forecasts; retain every existing gate.
     modeled.sort(key=lambda candidate:recommendation_quality(candidate[1].get('ev_signal')),reverse=True)
-    shadow_counts=Counter();role_counts=Counter();rushing_counts=Counter()
+    shadow_counts=Counter();role_counts=Counter();rushing_counts=Counter();cfb_low_counts=Counter()
     explained_contexts=set()
     ngs_contexts={}
     for selection,state in modeled:
@@ -649,6 +651,16 @@ async def evaluate_event(pool, event: dict, sport: str, ledger: Ledger, scan_id:
                 payload['cfb_team_role_shadow']=dict(model_version=cfb_role_model.VERSION,
                     policy_version=cfb_role_model.POLICY,status='unavailable',reason='invalid_shadow_input')
             role_counts[payload['cfb_team_role_shadow'].get('reason','predicted')]+=1
+        if cfb_low_model is not None and (prop.sample_size or 0)<20:
+            try:
+                payload['cfb_low_sample_shadow']=cfb_low_model.shadow_record(payload,
+                    cfb_role_inputs.get((player_id,MARKETS[sport][market]),[]),
+                    unavailable=cfb_role_unavailable)
+            except Exception as exc:
+                log.warning('cfb_low_sample_shadow_unavailable',error_type=type(exc).__name__)
+                payload['cfb_low_sample_shadow']=dict(model_version=cfb_low_model.VERSION,
+                    policy_version=cfb_low_model.POLICY,status='unavailable',reason='invalid_shadow_input')
+            cfb_low_counts[payload['cfb_low_sample_shadow'].get('reason','predicted')]+=1
         audited.append((payload,public_signal))
     prediction_ids=ledger.record_many(scan_id,[payload for payload,_ in audited])
     for prediction_id,(_,public_signal) in zip(prediction_ids,audited,strict=True):
@@ -669,6 +681,7 @@ async def evaluate_event(pool, event: dict, sport: str, ledger: Ledger, scan_id:
             model_concurrency_limit=MAX_MODEL_CONCURRENCY,counts=dict(counts),
             history_shadow=dict(enabled=settings.history_shadow_enabled,inference_counts=dict(shadow_counts)),
             role_history_shadow=dict(enabled=settings.role_history_shadow_enabled and sport in ('nfl','cfb'),inference_counts=dict(role_counts)),
+            cfb_low_sample_shadow=dict(enabled=cfb_low_model is not None,inference_counts=dict(cfb_low_counts)),
             rushing_role_shadow=dict(enabled=rushing_model is not None,inference_counts=dict(rushing_counts))),games=[dict(game_id=event['id'],
         home_team=event['home_team'],away_team=event['away_team'],date=game_date.strftime('%Y%m%d'),sport=sport)])
 
