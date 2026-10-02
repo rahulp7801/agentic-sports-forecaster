@@ -58,3 +58,4 @@ subprocess.run([sys.executable,'-m','sportsbet.quant.history_shadow_audit','--he
 from sportsbet.quant.nfl_role_shadow import artifact as role_artifact
 assert len(role_artifact()[1])==4 and len(role_artifact()[2])==12
 subprocess.run([sys.executable,"-m","sportsbet.quant.nfl_role_shadow_audit","--help"],check=True)
+subprocess.run([sys.executable,"-m","sportsbet.quant.cfb_low_sample_audit","--help"],check=True)
