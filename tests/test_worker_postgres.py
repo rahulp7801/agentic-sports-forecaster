@@ -761,6 +761,52 @@ def test_explicit_cfb_recovery_locks_forecast_and_preserves_source_payload():
             conn.execute('DELETE FROM analytics.predictions WHERE id=%s',(key,))
 
 
+@pytest.mark.serial
+def test_explicit_cfb_passing_rushing_recovery_writes_two_source_proofs_atomically():
+    import json
+    import psycopg
+    from tests.test_cfb_final_evidence import _bundle_with_passing,prediction,NOW
+    from sportsbet.ingestion.cfb_nonreceiving_evidence import inspect_bundle,plan_recovery
+    from sportsbet.quant.nfl_final_recovery import apply_plan
+    from sportsbet.ledger import verified_settlement_evidence,VERIFIED_SETTLEMENT_SOURCE
+
+    url=os.environ['SPORTSBET_TEST_DATABASE_URL'];ledger=Ledger(database_url=url)
+    scan='explicit-cfb-nonreceiving-'+uuid.uuid4().hex
+    keys=[]
+    for market,line,direction in (('pass_yds',254.5,'over'),('rush_yds',70.5,'under')):
+        payload=prediction(game_id=scan,prop_type=market,line=line,direction=direction)
+        payload.pop('prediction_id');payload.pop('outcome')
+        keys.append(ledger.record(scan,payload))
+    evidence=inspect_bundle(_bundle_with_passing(),now=NOW)
+    dsn=url.replace('postgresql+psycopg://','postgresql://',1)
+    try:
+        with psycopg.connect(dsn) as conn:
+            conn.execute('SET LOCAL search_path TO analytics, public')
+            original=conn.execute('SELECT id,payload FROM predictions WHERE id=ANY(%s)',
+                (keys,)).fetchall()
+            plan=plan_recovery([json.loads(payload)|dict(prediction_id=key,outcome=None)
+                for key,payload in original],evidence)
+            assert len(plan['updates'])==2
+            assert apply_plan(conn,plan,sport='cfb')==2
+            stored=conn.execute('SELECT id,payload,outcome,outcome_source,outcome_ref, '
+                'outcome_observed_at,actual_value,outcome_evidence FROM predictions '
+                'WHERE id=ANY(%s)',(keys,)).fetchall()
+            assert len(stored)==2
+            before=dict(original)
+            for key,payload,outcome,source,ref,observed,actual,proof in stored:
+                assert payload==before[key] and json.loads(outcome) is True
+                assert source==VERIFIED_SETTLEMENT_SOURCE
+                assert verified_settlement_evidence(json.loads(payload),True,source,ref,
+                    observed,actual,proof)
+        with psycopg.connect(dsn) as conn:
+            conn.execute('SET LOCAL search_path TO analytics, public')
+            with pytest.raises(ValueError,match='re-preview'):
+                apply_plan(conn,plan,sport='cfb')
+    finally:
+        with psycopg.connect(dsn) as conn:
+            conn.execute('DELETE FROM analytics.predictions WHERE id=ANY(%s)',(keys,))
+
+
 @pytest.mark.asyncio
 async def test_model_paper_batch_preserves_protocol_identity_and_database_receipts(monkeypatch):
     from sportsbet.quant import model_selection_paper as paper
