@@ -90,6 +90,8 @@ async def test_scheduled_graph_routes_real_quotes_and_retains_recency(sport,tmp_
         and s['gate_reason']=='availability_unavailable' and s['kelly_fraction']==0 for s in result['signals'])
     assert {s['direction'] for s in result['signals']}=={'over','under'}
     assert len(ledger.predictions())==2
+    assert all(p['cross_book_quote_receipt']=={
+        'version':'cross-book-quote-receipt-v2','references':[]} for p in ledger.predictions())
     assert all(p['model_version']==({'cfb':'empirical-jeffreys-v4-cfb-history-v1','nfl':'empirical-jeffreys-v4-nfl-history-v1'}.get(sport,'empirical-jeffreys-v4')) and p['model_generated_at']==p['captured_at']
         and p['model_sample_size']==40 and len(p['model_confidence_interval'])==2
         and p['model_mean_stat']==24
