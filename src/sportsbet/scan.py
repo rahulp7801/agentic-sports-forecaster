@@ -555,6 +555,10 @@ async def evaluate_event(pool, event: dict, sport: str, ledger: Ledger, scan_id:
             **({'history_policy_version':history_policy_for(sport),'history_observed_before':selection_time.isoformat()} if sport in ('cfb','nfl') else {}),
             recommendation_policy_version=RECOMMENDATION_POLICY_VERSION,
             **paired_market_baseline(quote, quotes))
+        # Research only: the production model still uses its single best offer.
+        # Commit already-fetched alternate books before the immutable forecast write.
+        from sportsbet.quant.cross_book_quote_receipt import capture as capture_cross_book_quotes
+        payload['cross_book_quote_receipt']=capture_cross_book_quotes(quote,quotes)
         if player in identity_evidence:
             payload['player_identity_evidence']=identity_evidence[player]
         counts[reason] += 1
