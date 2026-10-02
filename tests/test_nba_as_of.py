@@ -4,7 +4,7 @@ SQLite supports these aggregates/placeholders; only PostgreSQL casts and ILIKE
 are normalized here. This verifies selected rows, not PostgreSQL connectivity.
 """
 import sqlite3
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -26,10 +26,13 @@ def query_fixture(p):
         db.row_factory = sqlite3.Row
         db.execute("CREATE TABLE nba_player_gamelogs (player_id INT, season INT, game_id TEXT, game_date TEXT, "
                    "points INT, rebounds INT, assists INT, steals INT, blocks INT, threes_made INT, "
-                   "opponent_team TEXT, is_home INT, player_name TEXT)")
-        db.executemany("INSERT INTO nba_player_gamelogs VALUES (1,2025,?,?,?,10,5,0,0,2,'BOS',1,'Player')",
-                       [("old", "2026-01-01", 30), ("recent", "2026-01-09", 10),
-                        ("target", "2026-01-10", 90), ("future", "2026-01-15", 100)])
+                   "opponent_team TEXT, is_home INT, player_name TEXT, source_observed_at TEXT)")
+        db.executemany("INSERT INTO nba_player_gamelogs VALUES (1,2025,?,?,?,10,5,0,0,2,'BOS',1,'Player',?)",
+                       [("old", "2026-01-01", 30, "2026-01-02T00:00:00+00:00"),
+                        ("recent", "2026-01-09", 10, "2026-01-09T23:00:00+00:00"),
+                        ("late", "2026-01-09", 70, "2026-01-11T00:00:00+00:00"),
+                        ("target", "2026-01-10", 90, "2026-01-10T23:00:00+00:00"),
+                        ("future", "2026-01-15", 100, "2026-01-15T23:00:00+00:00")])
         sql, args = NBAQueryBuilder.build(p)
         bound = {str(i): value.isoformat() if isinstance(value, date) else value
                  for i, value in enumerate(args, 1)}
@@ -38,9 +41,9 @@ def query_fixture(p):
 
 def test_target_and_future_games_do_not_change_probability_sample():
     result = query_fixture(params(home_away="home"))
-    assert result["total"] == 2
-    assert result["successes"] == 1
-    assert result["mean_val"] == 20
+    assert result["total"] == 3
+    assert result["successes"] == 2
+    assert result["mean_val"] == pytest.approx(110 / 3)
 
 
 def test_recent_window_applies_cutoff_before_limit():
@@ -50,11 +53,27 @@ def test_recent_window_applies_cutoff_before_limit():
     assert result["mean_val"] == 10
 
 
+def test_source_arrival_cutoff_applies_before_recent_limit_and_fallback():
+    observed = datetime(2026, 1, 10, tzinfo=timezone.utc)
+    recent = query_fixture(params(last_n_games=2, observed_before=observed))
+    assert recent["total"] == 2
+    assert recent["successes"] == 1
+    assert recent["mean_val"] == 20
+    filtered = query_fixture(params(opponent_team="BOS", observed_before=observed))
+    assert filtered["total"] == 2
+    assert filtered["successes"] == 1
+
+
+def test_source_cutoff_requires_timezone():
+    with pytest.raises(ValueError, match="timezone"):
+        NBAQueryBuilder.build(params(observed_before=datetime(2026, 1, 10)))
+
+
 def test_dated_unconditional_and_double_double_use_actual_history():
-    assert query_fixture(params())["total"] == 2
+    assert query_fixture(params())["total"] == 3
     result = query_fixture(params(prop_type="double_double", line=Decimal("0")))
-    assert result["total"] == 2
-    assert result["successes"] == 2
+    assert result["total"] == 3
+    assert result["successes"] == 3
 
 
 def test_empty_pre_game_history_stays_empty():

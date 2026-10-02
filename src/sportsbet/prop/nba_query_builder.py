@@ -185,6 +185,7 @@ def _is_conditional(params: "PropParams") -> bool:
     """Return True if any Phase 18 situational filter field is set."""
     return bool(
         params.as_of_date is not None
+        or params.observed_before is not None
         or params.last_n_games is not None
         or params.opponent_team is not None
         or params.home_away is not None
@@ -245,7 +246,8 @@ class NBAQueryBuilder:
         # --- Phase 18: conditional gamelog path ---
         # Dispatch to nba_player_gamelogs when any situational filter is set.
         # double_double excluded: no per-game composite binary model in v1.
-        if _is_conditional(params) and (params.prop_type != "double_double" or params.as_of_date is not None):
+        if _is_conditional(params) and (params.prop_type != "double_double" or params.as_of_date is not None
+                or params.observed_before is not None):
             args: list[object] = [player_id_int, params.season, float(params.line)]
             next_idx = 4
 
@@ -278,6 +280,16 @@ class NBAQueryBuilder:
                 cutoff_idx = next_idx
                 sql += f"  AND game_date < ${next_idx}\n"
                 args.append(params.as_of_date)
+                next_idx += 1
+
+            # The game-date cutoff alone cannot prove that a late backfill or
+            # correction was available when the price was captured. This is
+            # intentionally opt-in for the separately versioned NBA scan policy.
+            if params.observed_before is not None:
+                if params.observed_before.utcoffset() is None:
+                    raise ValueError("NBA source cutoff must include a timezone")
+                sql += f"  AND source_observed_at IS NOT NULL AND source_observed_at <= ${next_idx}\n"
+                args.append(params.observed_before)
                 next_idx += 1
 
             # opponent_team filter
