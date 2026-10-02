@@ -439,6 +439,19 @@ async def evaluate_event(pool, event: dict, sport: str, ledger: Ledger, scan_id:
         and MARKETS[sport][s[1]] in role_model.MARKETS[sport]}
     rushing_only_ids={s[5] for s in prepared if rushing_model is not None
         and MARKETS[sport][s[1]]==rushing_model.MARKET}-receiving_ids
+    cfb_role_model=None
+    if settings.role_history_shadow_enabled and sport=='cfb':
+        from sportsbet.quant import cfb_team_role_shadow as cfb_role_model
+    async def capture_cfb_role_history():
+        if cfb_role_model is None:return {},None
+        requests={(s[5],MARKETS[sport][s[1]]) for s in prepared}
+        if not requests:return {},None
+        try:
+            async with asyncio.timeout(8):
+                return await cfb_role_model.load_inputs(pool,season,game_date,selection_time,requests),None
+        except Exception as exc:
+            log.warning('cfb_role_history_unavailable',error_type=type(exc).__name__)
+            return {},'history_read_failed'
     async def capture_role_history():
         if not receiving_ids:return {},None
         try:
@@ -457,9 +470,9 @@ async def evaluate_event(pool, event: dict, sport: str, ledger: Ledger, scan_id:
         except Exception as exc:
             log.warning('rushing_role_history_unavailable',error_type=type(exc).__name__)
             return {},'history_read_failed'
-    modeled,(shadow_histories,shadow_unavailable),(role_inputs,role_unavailable),(rushing_inputs,rushing_unavailable)=await asyncio.gather(
+    modeled,(shadow_histories,shadow_unavailable),(role_inputs,role_unavailable),(rushing_inputs,rushing_unavailable),(cfb_role_inputs,cfb_role_unavailable)=await asyncio.gather(
         asyncio.gather(*(model(selection) for selection in prepared)),capture_shadow_history(),
-        capture_role_history(),capture_rushing_only_history())
+        capture_role_history(),capture_rushing_only_history(),capture_cfb_role_history())
     failures=sum(bool(state.get('error')) for _,state in modeled)
     if failures and failures==len(modeled):
         raise RuntimeError('Model evaluation failed')
@@ -626,6 +639,16 @@ async def evaluate_event(pool, event: dict, sport: str, ledger: Ledger, scan_id:
                     payload['rushing_role_shadow']=dict(model_version=rushing_model.VERSION,policy_version=rushing_model.POLICY,
                         status='unavailable',reason='shadow_evaluation_failed')
                 rushing_counts[payload['rushing_role_shadow'].get('reason','predicted')]+=1
+        if cfb_role_model is not None:
+            try:
+                payload['cfb_team_role_shadow']=cfb_role_model.shadow_record(payload,
+                    cfb_role_inputs.get((player_id,MARKETS[sport][market]),[]),
+                    unavailable=cfb_role_unavailable)
+            except Exception as exc:
+                log.warning('cfb_role_shadow_evaluation_failed',error_type=type(exc).__name__)
+                payload['cfb_team_role_shadow']=dict(model_version=cfb_role_model.VERSION,
+                    policy_version=cfb_role_model.POLICY,status='unavailable',reason='invalid_shadow_input')
+            role_counts[payload['cfb_team_role_shadow'].get('reason','predicted')]+=1
         audited.append((payload,public_signal))
     prediction_ids=ledger.record_many(scan_id,[payload for payload,_ in audited])
     for prediction_id,(_,public_signal) in zip(prediction_ids,audited,strict=True):
@@ -645,7 +668,7 @@ async def evaluate_event(pool, event: dict, sport: str, ledger: Ledger, scan_id:
             model_estimates=estimates,model_status=model_status,
             model_concurrency_limit=MAX_MODEL_CONCURRENCY,counts=dict(counts),
             history_shadow=dict(enabled=settings.history_shadow_enabled,inference_counts=dict(shadow_counts)),
-            role_history_shadow=dict(enabled=settings.role_history_shadow_enabled and sport=='nfl',inference_counts=dict(role_counts)),
+            role_history_shadow=dict(enabled=settings.role_history_shadow_enabled and sport in ('nfl','cfb'),inference_counts=dict(role_counts)),
             rushing_role_shadow=dict(enabled=rushing_model is not None,inference_counts=dict(rushing_counts))),games=[dict(game_id=event['id'],
         home_team=event['home_team'],away_team=event['away_team'],date=game_date.strftime('%Y%m%d'),sport=sport)])
 
