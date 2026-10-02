@@ -55,6 +55,7 @@ def test_browser_role_migration_closes_owner_view_and_preserves_data():
                 assert not conn.execute(sa.text("SELECT has_function_privilege(:role,"
                     "'analytics.stamp_prediction_record()','EXECUTE')"), {'role':role}).scalar_one()
                 for table in ('public.dashboard_snapshots', 'public.dashboard_gamelogs', 'public.dashboard_gamelogs_asof',
+                              'public.dashboard_gamelog_versions',
                               'public.provider_response_cache', 'public.ngs_stats',
                               'public.cfb_history_source_bundles', 'public.cfb_receiving_supplements',
                               'public.cfb_primary_revisions',
@@ -62,12 +63,12 @@ def test_browser_role_migration_closes_owner_view_and_preserves_data():
                               'public.nfl_receiving_supplements', 'public.nfl_effective_receiving_gamelogs',
                               'analytics.paper_selections', 'analytics.prospective_audit_reports'):
                     assert not conn.execute(sa.text("SELECT has_table_privilege(:role,:table,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE')"),
-                                            {'role': role, 'table': table}).scalar_one()
+                                            {'role': role, 'table': table}).scalar_one(), table
         for role in ('anon', 'authenticated'):
             with pytest.raises(sa.exc.ProgrammingError):
                 with engine.begin() as conn:
                     conn.execute(sa.text(f'SET LOCAL ROLE {role}'))
-                    conn.execute(sa.text('SELECT * FROM public.dashboard_gamelogs_asof LIMIT 1'))
+                    conn.execute(sa.text('SELECT * FROM public.dashboard_gamelog_versions LIMIT 1'))
         alembic.command.downgrade(cfg, '0023_worker_snapshot_append')
         with engine.connect() as conn:
             assert not conn.execute(sa.text("SELECT has_table_privilege('anon','public.dashboard_gamelogs','SELECT')")).scalar_one()
