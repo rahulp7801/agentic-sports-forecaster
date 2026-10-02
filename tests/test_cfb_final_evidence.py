@@ -126,3 +126,82 @@ def test_atomic_recovery_rejects_mixed_sport_plan_before_database_access():
     with pytest.raises(ValueError,match='Mixed recovery sports'):apply_plan(conn,plan)
     with pytest.raises(ValueError,match='Unsupported recovery sport'):apply_plan(conn,plan,sport='nba')
     conn.execute.assert_not_called()
+
+
+# Passing and rushing recovery is a separate evidence contract; receiving behavior
+# above remains unchanged when a category is missing.
+from sportsbet.ingestion.cfb_nonreceiving_evidence import (
+    inspect_bundle as inspect_nonreceiving_bundle,
+    plan_recovery as plan_nonreceiving_recovery,
+)
+
+
+def _bundle_with_passing():
+    b=bundle()
+    def summary(data):
+        data['boxscore']['players'][0]['statistics'].append(dict(name='passing',
+            labels=['C/ATT','YDS'],athletes=[dict(
+                athlete=dict(id=PLAYER,displayName='Fixture Player'),
+                stats=['12/19','255'])]))
+    def gamelog(data):
+        data['categories'].insert(0,dict(name='passing',count=3))
+        data['names'][:0]=['completions','passingAttempts','passingYards']
+        data['seasonTypes'][0]['categories'][0]['events'][0]['stats'][:0]=['12','19','255']
+    change(b,0,summary);change(b,1,gamelog)
+    return b
+
+
+def test_explicit_passing_and_rushing_roundtrip_through_settlement_proof(tmp_path):
+    evidence=inspect_nonreceiving_bundle(_bundle_with_passing(),now=NOW)
+    item,=evidence
+    assert item['stat_row']['passing_yards']==255
+    assert item['stat_row']['rushing_yards']==68
+    assert item['stat_row']['receiving_yards'] is None
+    ledger=Ledger(tmp_path/'nonreceiving.sqlite')
+    source=[prediction(prop_type='pass_yds',direction='over',line=254.5)]
+    source[0].pop('prediction_id');source[0].pop('outcome')
+    key=ledger.record('scan',source[0]);before=deepcopy(ledger.predictions())
+    plan=plan_nonreceiving_recovery(before,evidence)
+    update,=plan['updates']
+    assert update['outcome'] is True and before==ledger.predictions()
+    ledger.settle({key:True},source=VERIFIED_SETTLEMENT_SOURCE,
+        source_ref=update['source_ref'],observed_at=NOW,
+        actual_values={key:255},evidence={key:update['evidence']})
+    assert ledger.report()['settled_count']==1
+    assert plan_nonreceiving_recovery(ledger.predictions(),evidence)['updates']==[]
+    rushing=prediction(prop_type='rush_yds',direction='under',line=70.5)
+    assert plan_nonreceiving_recovery([rushing],evidence)['updates'][0]['actual']==68
+
+
+def test_missing_passing_box_or_zero_attempts_never_become_settled_zeroes():
+    b=_bundle_with_passing()
+    change(b,0,lambda data:data['boxscore']['players'][0]['statistics'].pop())
+    item,=inspect_nonreceiving_bundle(b,now=NOW)
+    assert item['stat_row']['passing_yards'] is None
+    assert plan_nonreceiving_recovery([prediction(prop_type='pass_yds')],[item])['updates']==[]
+    assert plan_nonreceiving_recovery([prediction(prop_type='rush_yds')],[item])['updates']
+    b=bundle()
+    change(b,1,lambda data:data['seasonTypes'][0]['categories'][0]['events'][0]['stats'].__setitem__(0,'0'))
+    # The conflicting game log is rejected rather than converted to an inferred zero.
+    with pytest.raises(ValueError):inspect_nonreceiving_bundle(b,now=NOW)
+
+
+@pytest.mark.parametrize(('index','mutate'),[
+    (0,lambda data:data['boxscore']['players'][0]['statistics'][-1]['athletes'][0].update(stats=['12/19','256'])),
+    (0,lambda data:data['boxscore']['players'][0]['statistics'][-1]['athletes'][0].update(stats=['11/19','255'])),
+    (0,lambda data:data['header']['competitions'][0]['status']['type'].update(completed=False)),
+    (1,lambda data:data['events'][EVENT].update(gameDate='2026-09-26T00:01:00Z')),
+    (1,lambda data:data['seasonTypes'][0]['categories'][0]['events'][0]['stats'].__setitem__(2,'256')),
+    (1,lambda data:data['seasonTypes'][0]['categories'][0]['events'][0].update(stats=['12','19','255'])),
+])
+def test_passing_recovery_rejects_conflicting_or_malformed_sources(index,mutate):
+    b=_bundle_with_passing();change(b,index,mutate)
+    with pytest.raises((ValueError,KeyError)):inspect_nonreceiving_bundle(b,now=NOW)
+
+
+def test_nonreceiving_recovery_preserves_market_and_identity_scope():
+    evidence=inspect_nonreceiving_bundle(_bundle_with_passing(),now=NOW)
+    for changes in (dict(outcome=False),dict(player_id='999'),dict(sport='nfl'),
+                    dict(prop_type='receptions'),dict(home_team='Other'),
+                    dict(captured_at='2026-09-26T00:01:00Z')):
+        assert plan_nonreceiving_recovery([prediction(**(dict(prop_type='pass_yds') | changes))],evidence)['updates']==[]
