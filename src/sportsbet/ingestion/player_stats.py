@@ -124,7 +124,8 @@ def ingest_player_stats_seasons(
         with engine.begin() as conn:
             frame.to_sql(
                 "player_stats", conn, if_exists="append", index=False, chunksize=1000,
-                method=upsert_rows(['player_id', 'season', 'week']),
+                method=upsert_rows(['player_id', 'season', 'week'],
+                    preserve_observation_on_unchanged=True),
             )
             conn.execute(sa.text('''
                 WITH team_games AS (
