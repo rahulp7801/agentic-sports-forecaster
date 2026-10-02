@@ -1,8 +1,10 @@
 from copy import deepcopy
-from datetime import datetime,timezone
+from datetime import date,datetime,timezone
 import json
+import httpx
 import pytest
 from sportsbet.ingestion.cfb_final_evidence import SUMMARY,GAMELOG,digest,inspect_bundle,plan_recovery
+from sportsbet.ingestion.cfb_final_collect import collect_bundle
 from sportsbet.ledger import Ledger,VERIFIED_SETTLEMENT_SOURCE
 
 NOW=datetime(2026,9,29,tzinfo=timezone.utc)
@@ -30,6 +32,38 @@ def bundle():
         seasonTypes=[dict(categories=[dict(type='event',splitType='2',events=[dict(eventId=EVENT,stats=['9','68','0','0'])])])])
     return dict(version=1,players=[dict(player_id=PLAYER,espn_event_id=EVENT,date='2026-09-25')],sources=[
         receipt(SUMMARY+EVENT,summary),receipt(GAMELOG.format(player=PLAYER,season=2026),gamelog,'2026-09-28T00:01:00Z')])
+
+
+def test_bounded_free_collector_replays_exact_final_sources_without_a_database():
+    fixture=bundle();requested=[]
+    bodies={row['url']:row['response_text'] for row in fixture['sources']}
+    def respond(request):
+        requested.append(str(request.url))
+        return httpx.Response(200,text=bodies[str(request.url)])
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        captured,evidence=collect_bundle(client,EVENT,date.fromisoformat('2026-09-25'),[PLAYER])
+    assert requested==[SUMMARY+EVENT,GAMELOG.format(player=PLAYER,season=2026)]
+    assert captured['sources'][0]['sha256']==digest(bodies[SUMMARY+EVENT])
+    assert evidence[0]['status']=='verified_explicit_stats'
+    assert evidence[0]['stat_row']['receptions']==0
+
+
+def test_free_collector_rejects_ambiguous_ids_redirects_and_oversized_sources():
+    requested=[]
+    def respond(request):
+        requested.append(str(request.url))
+        return httpx.Response(302,headers={'location':'https://attacker.invalid/source'})
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        with pytest.raises(ValueError,match='scope'):
+            collect_bundle(client,EVENT,date.fromisoformat('2026-09-25'),[PLAYER,PLAYER])
+        assert requested==[]
+        with pytest.raises(ValueError,match='unavailable'):
+            collect_bundle(client,EVENT,date.fromisoformat('2026-09-25'),[PLAYER])
+    assert requested==[SUMMARY+EVENT]
+    with httpx.Client(transport=httpx.MockTransport(lambda request:
+            httpx.Response(200,content=b'{}',headers={'content-length':'4000001'}))) as client:
+        with pytest.raises(ValueError,match='bound'):
+            collect_bundle(client,EVENT,date.fromisoformat('2026-09-25'),[PLAYER])
 
 
 def prediction(**updates):

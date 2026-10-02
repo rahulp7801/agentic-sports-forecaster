@@ -53,6 +53,20 @@ test('production security policy requires nonce scripts and isolation headers', 
     ? "default-src 'self'; script-src 'self' 'unsafe-inline'" : securityHeaders.get(name) }), /CSP/);
 });
 
+test('readiness rejects a stale deployment missing free research routes without reading providers', async () => {
+  for (const route of ['/api/kalshi-research?sport=invalid', '/api/polymarket?sport=invalid']) {
+    assert.ok(publicSecurityProbes.some(probe => probe.path === route && probe.statuses.includes(400)));
+    const fetchImpl = async (url, options = {}) => {
+      const path = new URL(url).pathname + new URL(url).search;
+      if (path === '/app.css') return {status: 200, text: async () => deploymentCss};
+      return {status: path === route ? 404 : securityProbeStatus(path, options) ?? 200,
+        headers: securityHeaders, text: async () => deploymentHtml};
+    };
+    await assert.rejects(verifyProduction({base: 'https://example.test', fetchImpl}),
+      new RegExp(`${route.replace('?', '\\?')}: unexpected HTTP 404`));
+  }
+});
+
 test('public pipeline makes public endpoints mandatory without requiring paid endpoints', () => {
   const flags = { paidEnabled: false, publicEnabled: true };
   for (const path of publicPipelinePaths) assert.deepEqual(readinessStatuses(path, flags), [200]);
@@ -83,6 +97,43 @@ test('production verification rejects unavailable public data when its pipeline 
     verifyProduction({ base: 'https://example.test', fetchImpl, paidEnabled: false, publicEnabled: true }),
     /\/api\/markets\?sport=nfl: unexpected HTTP 503/,
   );
+});
+
+test('public readiness retries only a transient mandatory 503 without recollecting', async () => {
+  const target='/api/gamelogs?sport=cfb&player_id=1&exact=1&limit=1';
+  const counts=new Map(),waits=[];
+  const fetchImpl=async(url,options={})=>{
+    const parsed=new URL(url),path=parsed.pathname+parsed.search;
+    counts.set(path,(counts.get(path)??0)+1);
+    if(path==='/app.css')return {status:200,text:async()=>deploymentCss};
+    const status=path===target && counts.get(path)<3 ? 503 : securityProbeStatus(path,options)
+      ?? (['/.env','/signals_cache.json'].includes(path)?404:200);
+    return {status,headers:securityHeaders,text:async()=>deploymentHtml,json:async()=>({})};
+  };
+  await verifyProduction({base:'https://example.test',fetchImpl,paidEnabled:false,publicEnabled:true,
+    transient503Attempts:3,transient503DelayMs:5000,
+    transient503Wait:async delay=>waits.push(delay)});
+  assert.equal(counts.get(target),3);
+  assert.equal(counts.get('/api/markets?sport=nfl'),1);
+  assert.deepEqual(waits,[5000,5000]);
+});
+
+test('public readiness still fails after the bounded 503 window', async () => {
+  const target='/api/gamelogs?sport=cfb&player_id=1&exact=1&limit=1';
+  let reads=0;
+  const fetchImpl=async(url,options={})=>{
+    const parsed=new URL(url),path=parsed.pathname+parsed.search;
+    if(path==='/app.css')return {status:200,text:async()=>deploymentCss};
+    if(path===target)reads++;
+    return {status:path===target?503:securityProbeStatus(path,options)
+      ?? (['/.env','/signals_cache.json'].includes(path)?404:200),
+      headers:securityHeaders,text:async()=>deploymentHtml,json:async()=>({})};
+  };
+  await assert.rejects(verifyProduction({base:'https://example.test',fetchImpl,
+    paidEnabled:false,publicEnabled:true,transient503Attempts:3,
+    transient503DelayMs:0,transient503Wait:async()=>{}}),
+  /\/api\/gamelogs\?sport=cfb.*unexpected HTTP 503/);
+  assert.equal(reads,3);
 });
 
 test('production verification binds public endpoints to the current collection report', async () => {
@@ -213,7 +264,9 @@ for(const observed of ['2026-09-24T17:00:00Z','2026-09-24T19:00:00Z',undefined])
 
 test('public capture retry settings are bounded before any requests',async()=>{
   for(const patch of [{captureAttempts:0},{captureAttempts:38},{captureAttempts:1.5},
-    {captureDelayMs:-1},{captureDelayMs:5001},{captureDelayMs:NaN}]) {
+    {captureDelayMs:-1},{captureDelayMs:5001},{captureDelayMs:NaN},
+    {transient503Attempts:0},{transient503Attempts:4},{transient503Attempts:1.5},
+    {transient503DelayMs:-1},{transient503DelayMs:5001}]) {
     await assert.rejects(verifyProduction({...patch,fetchImpl:async()=>{assert.fail('must not request');}}),/retry bounds/);
   }
 });

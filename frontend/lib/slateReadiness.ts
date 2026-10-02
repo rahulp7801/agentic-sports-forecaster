@@ -20,9 +20,11 @@ function name(value:unknown) {return typeof value==='string' && value.length<=10
 function stamp(value:unknown) {return typeof value==='string' && value.length<=64 && /(?:Z|[+-]\d\d:\d\d)$/.test(value) && Number.isFinite(Date.parse(value));}
 
 /** Join providers only by exact teams AND kickoff; missing matches never imply evaluation. */
-export function slateReadiness(games:SlateGame[],scan:Record<string,unknown>|null,now=Date.now()) {
+export function slateReadiness(games:SlateGame[],scan:Record<string,unknown>|null,now=Date.now(),scheduleCapturedAt?:string) {
   const finished=scan?.finished_at ?? scan?.started_at;
   const scanFresh=stamp(finished) && now-Date.parse(finished as string)>=-60000 && now-Date.parse(finished as string)<=45*60000;
+  const scheduleAge=stamp(scheduleCapturedAt) ? now-Date.parse(scheduleCapturedAt as string) : Infinity;
+  const liveScheduleFresh=scheduleAge>=-60000 && scheduleAge<=60*60000;
   const events=Array.isArray(scan?.events) && scan.events.length<=100 ? scan.events : [];
   return games.filter(game=>!game.completed).map(game=>{
     const started=Date.parse(game.game_time)<=now;
@@ -43,7 +45,10 @@ export function slateReadiness(games:SlateGame[],scan:Record<string,unknown>|nul
     const validReserve=!started && scanFresh && !!checked && !!reserve && Date.parse(reserve)>now
       && Date.parse(reserve)>=Date.parse(checked) && Date.parse(reserve)<=Date.parse(checked)+48*3600000
       && Date.parse(reserve)<Date.parse(game.game_time);
-    let state=started ? 'Live · picks locked' : Date.parse(game.game_time)-now>48*3600000 ? 'Outside the 48-hour scan window' : 'Waiting for scan';
+    // A pregame or old schedule cannot establish that a started game is live now.
+    const liveObserved=liveScheduleFresh && Date.parse(scheduleCapturedAt as string)>=Date.parse(game.game_time);
+    let state=started ? liveObserved ? 'Live · picks locked' : 'Status update pending · picks locked'
+      : Date.parse(game.game_time)-now>48*3600000 ? 'Outside the 48-hour scan window' : 'Waiting for scan';
     if(!started && state==='Waiting for scan' && scanFresh && scan?.status==='blocked') state='Waiting for verified history';
     if(!started && state==='Waiting for scan' && scanFresh && scan?.status==='failed') state='Scan failed';
     if(!started && event && scanFresh) state=STATES[String(event.state)] ?? 'Coverage unavailable';
