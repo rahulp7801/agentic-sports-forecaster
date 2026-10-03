@@ -33,7 +33,9 @@ def test_availability_never_infers_healthy_or_boosts_probability():
     assert player_availability(data,'Player',now)[1]=='player_availability_risk'
     data=context();data['status']='partial'
     data['teams'].append(dict(abbreviation='OTHER',roster_names=['Opponent'],injury_coverage='unavailable'))
-    assert player_availability(data,'Player',now)[1] is None
+    evidence, reason = player_availability(data,'Player',now)
+    assert reason is None
+    assert evidence['opponent_team']=='OTHER' and evidence['opponent_injury_coverage']=='unavailable'
     assert player_availability(data,'Opponent',now)[1]=='availability_unavailable'
 
 
@@ -79,6 +81,8 @@ async def test_exact_team_rosters_and_archived_response_hashes(sport,missing_tea
         image_sport='college-football' if sport=='cfb' else sport
         evidence=player_availability(result,'Player',datetime.now(timezone.utc),sport=sport)[0]
         assert evidence['player_id']=='123'
+        assert evidence['opponent_team']=='Away'
+        assert evidence['opponent_injury_coverage']==('unavailable' if missing_team else 'observed')
         if photo is True:assert evidence['player_image_url']==f'https://a.espncdn.com/i/headshots/{image_sport}/players/full/123.png'
         else:assert 'player_image_url' not in evidence
         assert player_availability(result,'Opponent',datetime.now(timezone.utc))[0]['status']==('unavailable' if missing_team else 'observed')

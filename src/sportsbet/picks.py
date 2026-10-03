@@ -6,12 +6,15 @@ from decimal import Decimal
 import re
 
 from sportsbet.arbitrage.ev import compute_expected_return, quote_terms
-from sportsbet.ledger import (quote_evidence_valid, settlement_identity_valid,
+from sportsbet.ledger import (settlement_identity_valid,
                               utc_timestamp, validated_selection, verified_settlement_evidence)
-from sportsbet.model_contract import forecast_version_valid
+from sportsbet.model_contract import CFB_MODEL_VERSION, NFL_MODEL_VERSION
+from sportsbet.nba_source_asof import NBA_MODEL_VERSION, forecast_version_valid, quote_evidence_valid
+from sportsbet.prop.admission import LOCK_BEFORE_START
 
-LOCK_BEFORE_START = timedelta(minutes=60)
 BOARD_POLICY_VERSION = 'pregame-t60-v1'
+NFL_CORE_SOURCE_ADMISSION_POLICY = 'nfl-core-history-source-admission-v1'
+NFL_CORE_SOURCE_ADMISSION_AT = datetime.fromisoformat('2026-10-04T19:39:00+00:00')
 MAX_CURRENT_PICKS = 100
 MAX_HISTORY_PICKS = 200
 
@@ -44,6 +47,11 @@ def _accepted(row: dict, sport: str) -> bool:
         return (row.get('sport') == sport and forecast_version_valid(row,captured)
             and row.get('accepted') is True and row.get('gate_reason') == 'accepted'
             and row.get('recommendation_policy_version') == 'confidence-floor-v2'
+            and (row.get('sport') != 'nfl' or row.get('model_version') != NFL_MODEL_VERSION
+                or row.get('prop_type') not in ('pass_yds','rush_yds')
+                or captured < NFL_CORE_SOURCE_ADMISSION_AT
+                or (row.get('history_source_admission_policy') == NFL_CORE_SOURCE_ADMISSION_POLICY
+                    and row.get('history_source_verified') is True))
             and Decimal('0') < stake <= Decimal('.05')
             and Decimal('0') <= push <= Decimal('1')
             and Decimal('0') <= probability <= Decimal('1')-push
@@ -88,7 +96,14 @@ def _signal(row: dict, state: str, lock_at: datetime) -> dict:
         sample_size=row['model_sample_size'],
         mean_stat=float(row['model_mean_stat']) if row.get('model_mean_stat') is not None else None,
         model_version=row['model_version'],
+        **({'history_source_verified':True,'history_source_admission_policy':NFL_CORE_SOURCE_ADMISSION_POLICY}
+            if row.get('history_source_admission_policy') == NFL_CORE_SOURCE_ADMISSION_POLICY else {}),
         **({'history_policy_version':row['history_policy_version']} if row.get('history_policy_version') else {}),
+        **({'history_observed_before':row['history_observed_before']}
+           if isinstance(row.get('history_observed_before'),str)
+           and (row['sport'],row['model_version']) in (
+               ('nba',NBA_MODEL_VERSION),('nfl',NFL_MODEL_VERSION),('cfb',CFB_MODEL_VERSION))
+           else {}),
         kelly_fraction=float(row['stake_fraction']), gated=False, gate_reason='accepted',
         snapped_at=utc_timestamp(row['quote_time']).isoformat(),
         captured_at=utc_timestamp(row['captured_at']).isoformat(),

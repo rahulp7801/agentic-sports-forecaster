@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import type { GameLog, Sport } from '@/lib/types';
-import { gameLog, overFrequency } from '@/lib/gameLogMetrics';
+import { gameLog, gameLogSelection, overFrequency } from '@/lib/gameLogMetrics';
 import {gameLogRequest,publicGameLogs} from '@/lib/publicGameLogs';
 import styles from './ResearchViews.module.css';
 
@@ -30,15 +30,19 @@ export default function GameLogs({ sport }: GameLogsProps) {
   const [playerFilter, setPlayerFilter] = useState('');
   const [activeProp, setActiveProp] = useState<string>(sport === 'nba' ? 'points' : 'pass_yds');
   const [activeLine, setActiveLine] = useState('');
+  const [selectedPlayerId, setSelectedPlayerId] = useState('');
   const [allLogs, setAllLogs] = useState<GameLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [refresh,setRefresh]=useState(0);
   const [error, setError] = useState('');
+  const [checkedAt,setCheckedAt]=useState<string|null>(null);
 
   const fetchLogs = useCallback(async (signal: AbortSignal) => {
     setLoading(true);
     setAllLogs([]);
+    setSelectedPlayerId('');
     setError('');
+    setCheckedAt(null);
     try {
       const params = new URLSearchParams({ sport, limit: '40' });
       if (playerFilter.trim()) params.set('player', playerFilter.trim().normalize('NFC'));
@@ -50,7 +54,7 @@ export default function GameLogs({ sport }: GameLogsProps) {
       if (!response.ok) throw new Error('Game logs unavailable');
       const data = await response.json();
       const logs: GameLog[] = publicGameLogs(data.logs,sport).map((row,index)=>gameLog(row,sport,String(index)));
-      if (!signal.aborted) setAllLogs(logs);
+      if (!signal.aborted) {setAllLogs(logs);setCheckedAt(new Date().toISOString());}
     } catch {
       if (!signal.aborted) {
         setAllLogs([]);
@@ -67,12 +71,13 @@ export default function GameLogs({ sport }: GameLogsProps) {
     return () => { controller.abort(); clearTimeout(timer); };
   }, [fetchLogs,refresh]);
 
-  const refreshLogs=()=>{setError('');setAllLogs([]);setLoading(true);setRefresh(value=>value+1);};
+  const refreshLogs=()=>{setError('');setAllLogs([]);setCheckedAt(null);setLoading(true);setRefresh(value=>value+1);};
 
   const cols = sport === 'nba' ? NBA_COLS : sport==='cfb' ? CFB_COLS : NFL_COLS;
   const numericLine = activeLine.trim() === '' ? NaN : Number(activeLine);
   const lineValue = Number.isFinite(numericLine) && numericLine >= 0 ? numericLine : undefined;
-  const frequency = overFrequency(allLogs, activeProp, lineValue);
+  const {athletes, selectedAthlete, unidentifiedRows, displayLogs} = gameLogSelection(allLogs, selectedPlayerId);
+  const frequency = selectedAthlete ? overFrequency(displayLogs, activeProp, lineValue) : null;
 
   return (
     <section className={styles.toolView} aria-labelledby="logs-title">
@@ -87,9 +92,21 @@ export default function GameLogs({ sport }: GameLogsProps) {
       <div className={styles.controlBar}>
         <div className={styles.controlGroup} style={{ minWidth: 190 }}>
           <label htmlFor="log-player">Player filter</label>
-          <input id="log-player" className="term-input" placeholder="Search recorded players" value={playerFilter} maxLength={80} onChange={event => {setAllLogs([]);setError('');setLoading(true);setPlayerFilter(event.target.value);}} />
+          <input id="log-player" className="term-input" placeholder="Search recorded players" value={playerFilter} maxLength={80} onChange={event => {setAllLogs([]);setSelectedPlayerId('');setCheckedAt(null);setError('');setLoading(true);setPlayerFilter(event.target.value);}} />
         </div>
         <button type="button" className={styles.uxButton} onClick={refreshLogs} disabled={loading}>{loading ? 'Loading logs...' : error ? 'Retry logs' : 'Refresh logs'}</button>
+        {athletes.length > 0 && (athletes.length > 1 || unidentifiedRows > 0) && (
+          <div className={styles.controlGroup} style={{ minWidth: 190 }}>
+            <label htmlFor="log-athlete">Athlete to inspect</label>
+            <select id="log-athlete" className="term-select" value={selectedAthlete?.playerId ?? ''}
+              onChange={event => setSelectedPlayerId(event.target.value)}>
+              <option value="">Select an athlete</option>
+              {athletes.map(athlete => <option key={athlete.playerId} value={athlete.playerId}>
+                {athlete.player} | {[...athlete.teams].join('/')} | {athlete.playerId}
+              </option>)}
+            </select>
+          </div>
+        )}
         <div className={styles.controlSpacer} />
         <div className={styles.controlGroup}>
           <label htmlFor="log-prop">Stat</label>
@@ -103,7 +120,7 @@ export default function GameLogs({ sport }: GameLogsProps) {
         </div>
         {frequency && frequency.rate !== null && (
           <div className={styles.analysisReadout}>
-            <span>Shown-row over rate</span>
+            <span>{selectedAthlete?.player} | shown-row over rate</span>
             <strong>{(frequency.rate * 100).toFixed(0)}%</strong>
             <span>{frequency.wins}/{frequency.decided}</span>
           </div>
@@ -111,7 +128,11 @@ export default function GameLogs({ sport }: GameLogsProps) {
       </div>
 
       {error && <div className={styles.notice} role="alert">{error}</div>}
-      {frequency && <p className={styles.contextNote}><b>Descriptive only</b> · {frequency.pushes} ties and {frequency.missing} missing stats excluded from the shown-row rate.</p>}
+      {checkedAt && !loading && !error && <p className={styles.contextNote}>History loaded <time dateTime={checkedAt}>{new Date(checkedAt).toLocaleString()}</time>. This response may include a recent cache; source updates can arrive later.</p>}
+      {lineValue !== undefined && !loading && !error && allLogs.length > 0 && !selectedAthlete && (
+        <p className={styles.contextNote}>Select one identified athlete to calculate an individual over rate. Unidentified rows cannot be assigned safely.</p>
+      )}
+      {frequency && <p className={styles.contextNote}><b>Descriptive only</b> · {frequency.pushes} ties and {frequency.missing} missing stats excluded from this athlete&apos;s shown-row rate.{unidentifiedRows > 0 ? ` ${unidentifiedRows} rows without a player ID excluded.` : ''}</p>}
 
       <div className={styles.tableViewport} tabIndex={0} aria-label="Recorded player game logs">
         <table className={`data-table ${styles.toolTable}`}>
@@ -122,7 +143,7 @@ export default function GameLogs({ sport }: GameLogsProps) {
             </tr>
           </thead>
           <tbody>
-            {allLogs.map(log => (
+            {displayLogs.map(log => (
               <tr key={log.id}>
                 <td><strong style={{ color: 'var(--text-primary)', fontSize: 11 }}>{log.player}</strong><br /><small style={{ color: 'var(--text-muted)' }}>{log.team}</small></td>
                 <td style={{ color: 'var(--text-secondary)' }}>{log.date}</td>

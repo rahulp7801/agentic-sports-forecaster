@@ -3,12 +3,17 @@ import {validPlayerId} from './publicGameLogs.ts';
 import type {AvailabilityEvidence,EVSignal,ModelSport,NextGenMetric,NextGenStatsEvidence,PlayerProfile,PropType,Sport} from './types';
 
 const CURRENT_MODEL_VERSION = 'empirical-jeffreys-v4';
+const NBA_MODEL_VERSION = 'empirical-jeffreys-v4-nba-source-asof-v1';
+const NBA_HISTORY_POLICY = 'nba-source-asof-v1';
+const NBA_HISTORY_FROZEN_AT = Date.parse('2026-10-04T03:00:00+00:00');
 const CFB_MODEL_VERSION = 'empirical-jeffreys-v4-cfb-history-v1';
 const CFB_HISTORY_POLICY = 'cfb-explicit-receiving-v1';
 const CFB_HISTORY_FROZEN_AT = Date.parse('2026-09-29T04:15:00+00:00');
 const NFL_MODEL_VERSION = 'empirical-jeffreys-v4-nfl-history-v1';
 const NFL_HISTORY_POLICY = 'nfl-explicit-receiving-v1';
 const NFL_HISTORY_FROZEN_AT = Date.parse('2026-09-29T05:45:00+00:00');
+const NFL_CORE_SOURCE_ADMISSION_AT = Date.parse('2026-10-04T19:39:00+00:00');
+const NFL_CORE_SOURCE_ADMISSION_POLICY = 'nfl-core-history-source-admission-v1';
 
 /** Validate display metrics without inventing uncertainty or execution eligibility. */
 export function expectedProfit(expectedReturn: unknown, stake: number): number | null {
@@ -23,6 +28,19 @@ export function signalMetrics(s: Record<string, unknown>, now = Date.now(), reta
   const start = Date.parse(String(s.game_start_time ?? ''));
   const synthetic = String(s.sportsbook).toLowerCase() === 'prizepicks';
   const sample = Number(s.sample_size), kelly = Number(s.kelly_fraction);
+  const sourceCutoff = Date.parse(String(s.history_observed_before ?? ''));
+  const forecastTime = Date.parse(String(s.captured_at ?? ''));
+  const sourceVersionStart=s.sport==='nba' && s.model_version===NBA_MODEL_VERSION ? NBA_HISTORY_FROZEN_AT
+    : s.sport==='nfl' && s.model_version===NFL_MODEL_VERSION ? NFL_HISTORY_FROZEN_AT
+    : s.sport==='cfb' && s.model_version===CFB_MODEL_VERSION ? CFB_HISTORY_FROZEN_AT : null;
+  const sourceValid=sourceVersionStart===null || (Number.isFinite(sourceCutoff) && Number.isFinite(forecastTime)
+    && sourceCutoff>=sourceVersionStart && quoteTime<=sourceCutoff
+    && sourceCutoff<=forecastTime && forecastTime<start && forecastTime<=now+60000);
+  const coreSourceValid=s.sport!=='nfl' || s.model_version!==NFL_MODEL_VERSION
+    || !['pass_yds','rush_yds'].includes(String(s.prop_type))
+    || (Number.isFinite(forecastTime) && forecastTime<NFL_CORE_SOURCE_ADMISSION_AT)
+    || (s.history_source_admission_policy===NFL_CORE_SOURCE_ADMISSION_POLICY
+      && s.history_source_verified===true);
   const valid = typeof s.true_prob === 'number' && typeof s.american_odds === 'number' && Number.isFinite(p) && p >= 0 && p <= 1 && Number.isFinite(push) && push >= 0 && p + push <= 1.000001
     && Number.isInteger(odds) && Math.abs(odds) >= 100 && (s.direction === 'over' || s.direction === 'under');
   const legacy = s.sport==='cfb'
@@ -33,9 +51,15 @@ export function signalMetrics(s: Record<string, unknown>, now = Date.now(), reta
       ? retained && s.model_version===CURRENT_MODEL_VERSION ? false
         : now < NFL_HISTORY_FROZEN_AT ? s.model_version!==CURRENT_MODEL_VERSION
         : s.model_version!==NFL_MODEL_VERSION || s.history_policy_version!==NFL_HISTORY_POLICY
-      : s.model_version!==CURRENT_MODEL_VERSION;
+      : retained && s.model_version===CURRENT_MODEL_VERSION ? false
+        : now < NBA_HISTORY_FROZEN_AT ? s.model_version!==CURRENT_MODEL_VERSION
+        : s.model_version!==NBA_MODEL_VERSION || s.history_policy_version!==NBA_HISTORY_POLICY;
   const stale = !Number.isFinite(quoteTime) || now - quoteTime > 300000 || quoteTime > now + 60000;
   const missingStart = !Number.isFinite(start), started = Number.isFinite(start) && start <= now;
+  // The recorded board freezes at T-60. A still-fresh scan cannot revive a
+  // live suggestion during the locked hour; retained board rows replay at capture.
+  const locked = !retained && Number.isFinite(start) && Number.isFinite(now)
+    && now >= start - 3_600_000;
   const availability = s.availability as AvailabilityEvidence | undefined;
   const availabilityTime = Date.parse(availability?.captured_at ?? '');
   const availabilityReason = availability?.status !== 'observed' || !availability.roster_confirmed
@@ -54,8 +78,11 @@ export function signalMetrics(s: Record<string, unknown>, now = Date.now(), reta
   const breakEven = (1 - push) / (1 + b);
   const expectedReturn=p*b-(1-p-push);
   const cutoff=Number.isFinite(start) ? new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(start) : null;
-  const reason = !valid ? 'invalid_metrics' : legacy ? 'legacy_model' : synthetic ? 'synthetic_price'
-    : missingStart ? 'missing_or_started_game' : started ? 'game_started' : stale ? 'stale_quote'
+  const reason = !valid ? 'invalid_metrics' : legacy ? 'legacy_model'
+    : !sourceValid ? 'source_chronology_unavailable'
+    : !coreSourceValid ? 'history_source_unavailable' : synthetic ? 'synthetic_price'
+    : missingStart ? 'missing_or_started_game' : started ? 'game_started'
+    : locked ? 'game_locked' : stale ? 'stale_quote'
     : (!Number.isFinite(sample) || sample < 20) ? 'insufficient_sample'
     : (!Number.isFinite(kelly) || kelly < 0 || kelly > 0.25) ? 'invalid_stake'
     : availabilityReason ? availabilityReason
@@ -116,7 +143,13 @@ function publicAvailability(value:unknown,sport:Sport,historyPlayerId?:unknown,f
     || !/^[a-f0-9]{64}$/.test(a.source_sha256) || !bounded(a.roster_source_sha256,64)
     || !/^[a-f0-9]{64}$/.test(a.roster_source_sha256) || !rosterSource(a.roster_source_url,sport)
     || !bounded(a.subject_status,100)
+    // College history and the roster share ESPN athlete IDs. An observed roster
+    // must bind the exact history athlete even when the display names match.
+    || (sport==='cfb' && (!validPlayerId(historyPlayerId,sport) || a.player_id!==historyPlayerId))
     || !bounded(a.team,5) || !Array.isArray(a.teammates) || a.teammates.length>64) return undefined;
+  const hasOpponentCoverage=a.opponent_team!==undefined || a.opponent_injury_coverage!==undefined;
+  if(hasOpponentCoverage && (!bounded(a.opponent_team,5) || a.opponent_team===a.team
+    || !['observed','unavailable'].includes(String(a.opponent_injury_coverage)))) return undefined;
   const teammates:AvailabilityEvidence['teammates']=[];
   const contextSplits:NonNullable<AvailabilityEvidence['context_splits']>=[];
   const identityFields=['roster_player_name','identity_source_url','identity_source_sha256'];
@@ -132,7 +165,7 @@ function publicAvailability(value:unknown,sport:Sport,historyPlayerId?:unknown,f
     if(!value || typeof value!=='object' || Array.isArray(value)) return undefined;
     const row=value as Record<string,unknown>;
     if(!bounded(row.player,100) || !bounded(row.status,100) || !bounded(row.position,10)
-      || !timestamp(row.reported_at) || Date.parse(row.reported_at)>Date.parse(a.captured_at)+60000) return undefined;
+      || !timestamp(row.reported_at) || Date.parse(row.reported_at)>Date.parse(a.captured_at)) return undefined;
     const contextFields=[row.team,row.relationship,row.unit,row.source_url,row.source_sha256];
     const hasContext=contextFields.some(item=>item!==undefined);
     if(hasContext && (!bounded(row.team,5) || !['teammate','opponent'].includes(String(row.relationship))
@@ -174,6 +207,11 @@ function publicAvailability(value:unknown,sport:Sport,historyPlayerId?:unknown,f
       const window=row.sample_window===undefined ? undefined : publicContextWindow(row.sample_window,
         {active:Number(active!.games),absent:Number(absent!.games),unknown:row.unknown_games},forecastCutoff);
       if(window===null) continue;
+      // A participation comparison must describe a report retained in this
+      // forecast, not an unrelated or later injury context.
+      if(!teammates.some(report=>report.player===row.player && report.status===row.status
+        && report.position===row.position && report.team===row.team
+        && report.relationship===row.relationship && report.unit===row.unit)) continue;
       const projectCohort=(item:Record<string,unknown>)=>({games:item.games as number,mean:item.mean as number|null,hit_rate:item.hit_rate as number|null});
       contextSplits.push({player:row.player,status:row.status,position:row.position,team:row.team,
         relationship:row.relationship as 'teammate'|'opponent',unit:row.unit as 'offense'|'defense',
@@ -183,6 +221,8 @@ function publicAvailability(value:unknown,sport:Sport,historyPlayerId?:unknown,f
   }
   return {status:'observed',roster_confirmed:true,subject_status:a.subject_status,
     captured_at:a.captured_at,source_url:a.source_url as string,source_sha256:a.source_sha256,team:a.team,
+    ...(hasOpponentCoverage ? {opponent_team:a.opponent_team as string,
+      opponent_injury_coverage:a.opponent_injury_coverage as 'observed'|'unavailable'} : {}),
     roster_source_url:a.roster_source_url,roster_source_sha256:a.roster_source_sha256,
     ...(bounded(a.player_id,20) && /^[1-9][0-9]*$/.test(a.player_id)
       ? {player_id:a.player_id,...(a.player_image_url===`https://a.espncdn.com/i/headshots/${sport==='cfb'?'college-football':sport}/players/full/${a.player_id}.png`
@@ -310,14 +350,22 @@ export function publicSignal(value:unknown, now=Date.now(), retained=false):EVSi
       || Object.entries(flags).length>20 || Object.entries(flags).some(
         ([key,item])=>!bounded(key,64) || !bounded(item,300,true))
       || !bounded(s.market_type,100)) return null;
-  const availability=publicAvailability(s.availability,sport,s.player_id,s.forecast_cutoff);
   // The quote can precede inference. Retain the actual forecast capture time
   // rather than treating the earlier price timestamp as source availability.
   const capturedAt=timestamp(s.captured_at) && Date.parse(s.captured_at)>=Date.parse(s.snapped_at)
     && Date.parse(s.captured_at)<Date.parse(s.game_start_time) && Date.parse(s.captured_at)<=now+60000
     ? s.captured_at : undefined;
+  const recordedAvailability=publicAvailability(s.availability,sport,s.player_id,s.forecast_cutoff);
+  // An observed roster needs a known forecast time, and its capture must
+  // precede that forecast. Missing chronology cannot qualify a pick.
+  const availability=recordedAvailability?.status==='observed'
+    && (!capturedAt || Date.parse(recordedAvailability.captured_at ?? '')>Date.parse(capturedAt))
+    ? undefined : recordedAvailability;
   const nextGenStats=publicNextGenStats(s.next_gen_stats,sport,prop,capturedAt,availability?.team);
-  const playerProfile=publicPlayerProfile(s.player_profile,sport,s.player,now,availability?.player_id);
+  const candidateProfile=capturedAt ? publicPlayerProfile(s.player_profile,sport,s.player,Date.parse(capturedAt),availability?.player_id) : undefined;
+  const playerProfile=candidateProfile && capturedAt && availability?.status==='observed'
+    && availability.roster_confirmed && candidateProfile.team===availability.team
+    && Date.parse(candidateProfile.captured_at)<=Date.parse(capturedAt) ? candidateProfile : undefined;
   const metrics=signalMetrics({...s,availability},now,retained);
   if (!finite(metrics.implied_prob) || !finite(metrics.ev_pct)
       || (metrics.expected_return !== null && !finite(metrics.expected_return))) return null;
@@ -328,10 +376,20 @@ export function publicSignal(value:unknown, now=Date.now(), retained=false):EVSi
     true_prob:s.true_prob,implied_prob:metrics.implied_prob as number,ev_pct:metrics.ev_pct as number,
     expected_return:metrics.expected_return as number|null,push_probability:s.push_probability,
     confidence_interval:interval,model_version:s.model_version,game_start_time:s.game_start_time,
+    ...(s.sport==='nba' && s.model_version===NBA_MODEL_VERSION && s.history_policy_version===NBA_HISTORY_POLICY
+      ? {history_policy_version:NBA_HISTORY_POLICY} : {}),
+    ...(((s.sport==='nba' && s.model_version===NBA_MODEL_VERSION && s.history_policy_version===NBA_HISTORY_POLICY)
+      || (s.sport==='nfl' && s.model_version===NFL_MODEL_VERSION && s.history_policy_version===NFL_HISTORY_POLICY)
+      || (s.sport==='cfb' && s.model_version===CFB_MODEL_VERSION && s.history_policy_version===CFB_HISTORY_POLICY))
+      && timestamp(s.history_observed_before) ? {history_observed_before:s.history_observed_before} : {}),
     ...(s.sport==='cfb' && s.model_version===CFB_MODEL_VERSION && s.history_policy_version===CFB_HISTORY_POLICY
       ? {history_policy_version:CFB_HISTORY_POLICY} : {}),
     ...(s.sport==='nfl' && s.model_version===NFL_MODEL_VERSION && s.history_policy_version===NFL_HISTORY_POLICY
       ? {history_policy_version:NFL_HISTORY_POLICY} : {}),
+    ...(s.sport==='nfl' && ['pass_yds','rush_yds'].includes(prop)
+      && s.history_source_admission_policy===NFL_CORE_SOURCE_ADMISSION_POLICY
+      && s.history_source_verified===true
+      ? {history_source_admission_policy:NFL_CORE_SOURCE_ADMISSION_POLICY,history_source_verified:true} : {}),
     kelly_fraction:metrics.kelly_fraction as number,american_odds:s.american_odds,
     sportsbook:s.sportsbook,
     // Preserve stored forecasts, but withhold the obsolete generated claim of exact on/off evidence.

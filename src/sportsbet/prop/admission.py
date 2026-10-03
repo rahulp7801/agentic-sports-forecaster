@@ -1,5 +1,7 @@
 """Decision-time guards shared by scanner admission and exposure reservation."""
-from datetime import datetime
+from datetime import datetime, timedelta
+
+LOCK_BEFORE_START = timedelta(minutes=60)
 
 
 def admission_timing_reason(now: datetime, *, game_start_time: datetime,
@@ -9,6 +11,8 @@ def admission_timing_reason(now: datetime, *, game_start_time: datetime,
         raise ValueError('Admission timing requires aware timestamps')
     if now >= game_start_time:
         return 'game_started'
+    if now >= game_start_time - LOCK_BEFORE_START:
+        return 'game_locked'
     if not -60 <= (now-quote_time).total_seconds() <= 300:
         return 'stale_quote'
     if availability_time is None or not -60 <= (now-availability_time).total_seconds() <= 3600:

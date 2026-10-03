@@ -1,8 +1,10 @@
 import {reportGameLogValidationFailure} from '@/lib/databaseFailure';
 import { databaseQuery } from '@/lib/database';
 import { gameLogRequest,publicGameLogs } from '@/lib/publicGameLogs';
+import {gameLogQuery} from '@/lib/gameLogQuery';
+import {nflCoreHistoryPayloads} from '@/lib/nflCoreHistoryEvidence';
 import { NextResponse } from 'next/server';
-import {NO_STORE_HEADERS,PUBLIC_CACHE_HEADERS} from '@/lib/publicCache';
+import {NO_STORE_HEADERS,gameLogCacheHeaders} from '@/lib/publicCache';
 
 export const dynamic = 'force-dynamic';
 
@@ -11,19 +13,15 @@ export async function GET(request: Request) {
   try {query=gameLogRequest(new URL(request.url).searchParams);} catch {
     return NextResponse.json({error:'Invalid game-log request'}, {status:400,headers:NO_STORE_HEADERS});
   }
-  const {sport,player,limit,before,exact,playerId,observedBefore}=query;
+  const {sport,observedBefore}=query;
   let validatingRows=false;
   try {
-    const {rows} = await databaseQuery<{payload: unknown}>(
-      'SELECT payload FROM dashboard_gamelogs_asof WHERE sport=$1 '
-      + 'AND ($6::text IS NULL OR player_id=$6) '
-      + 'AND ($6::text IS NOT NULL OR $2=\'\' OR CASE WHEN $5 THEN lower(player_name)=lower($2) ELSE strpos(lower(player_name),lower($2))>0 END) '
-      + 'AND ($4::date IS NULL OR game_date<$4::date) '
-      + 'AND ($7::timestamptz IS NULL OR record_available_at<=$7::timestamptz) '
-      + 'ORDER BY game_date DESC,player_name,game_key LIMIT $3', [sport,player,limit,before,exact,playerId ?? null,observedBefore],'gamelogs');
+    const {sql,args}=gameLogQuery(query);
+    const {rows} = await databaseQuery<{payload: unknown;source_row?: unknown}>(sql,args,'gamelogs');
     validatingRows=true;
-    return NextResponse.json({logs:publicGameLogs(rows.map(row=>row.payload),sport)},
-      {headers:PUBLIC_CACHE_HEADERS.archive});
+    const payloads=query.stat===undefined ? rows.map(row=>row.payload) : nflCoreHistoryPayloads(rows);
+    return NextResponse.json({logs:publicGameLogs(payloads,sport)},
+      {headers:gameLogCacheHeaders(observedBefore)});
   } catch {
     if(validatingRows) reportGameLogValidationFailure();
     return NextResponse.json({error:'Game logs are temporarily unavailable.',logs:[]}, {status:503,headers:NO_STORE_HEADERS});

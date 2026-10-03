@@ -260,7 +260,7 @@ async def run_nba_prop_query(pool: asyncpg.Pool, params: PropParams) -> PropResu
         or params.opponent_team is not None
         or params.home_away is not None
     )
-    if params.as_of_date is not None or (is_conditional and params.prop_type != "double_double"):
+    if params.as_of_date is not None or params.observed_before is not None or (is_conditional and params.prop_type != "double_double"):
         gamelog_result = await run_nba_gamelog_query(pool, params)
         has_narrow_context = bool(
             params.opponent_team is not None

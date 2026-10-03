@@ -24,6 +24,9 @@ APPEND_TABLES = ('odds_snapshots', 'player_prop_snapshots', 'cfb_history_source_
                'nfl_history_source_bundles', 'nfl_receiving_supplements')
 CACHE_TABLES = ('provider_response_cache',)
 ANALYTICS_TABLES = ('predictions', 'exposure', 'quotes', 'api_usage', 'paper_selections')
+PRIVATE_REPORT_TABLE = 'prospective_audit_reports'
+OPTIONAL_DASHBOARD_VIEWS = ('dashboard_gamelogs_asof', 'dashboard_gamelog_versions',
+                            'dashboard_nfl_core_gamelogs_asof')
 
 
 def deny_browser_roles(conn):
@@ -31,7 +34,9 @@ def deny_browser_roles(conn):
     targets: list[sql.Composable] = [sql.Identifier('public', table) for table in
                                      (*READ_TABLES, *CACHE_TABLES, 'alembic_version',
                                       'ev_signals', 'dashboard_gamelogs', 'cfb_effective_gamelogs', 'nfl_effective_receiving_gamelogs')]
-    targets.extend(sql.Identifier('analytics', table) for table in ANALYTICS_TABLES)
+    targets.extend(sql.Identifier('public', table) for table in OPTIONAL_DASHBOARD_VIEWS
+                   if conn.execute('SELECT to_regclass(%s)', (f'public.{table}',)).fetchone()[0])
+    targets.extend(sql.Identifier('analytics', table) for table in (*ANALYTICS_TABLES, PRIVATE_REPORT_TABLE))
     grantees: list[sql.Composable] = [sql.SQL('PUBLIC')]
     for role in ('anon', 'authenticated'):
         if conn.execute('SELECT 1 FROM pg_roles WHERE rolname=%s', (role,)).fetchone():
@@ -43,6 +48,8 @@ def deny_browser_roles(conn):
                 sql.Identifier(schema), sql.SQL(kind), sql.SQL(', ').join(grantees)))
     conn.execute(sql.SQL('REVOKE ALL ON {} FROM {}').format(
         sql.SQL(', ').join(targets), sql.SQL(', ').join(grantees)))
+    conn.execute(sql.SQL('REVOKE ALL ON SEQUENCE analytics.prospective_audit_reports_report_id_seq FROM {}')
+                 .format(sql.SQL(', ').join(grantees)))
 
 
 def _lock_policy_tables(conn):
@@ -50,7 +57,7 @@ def _lock_policy_tables(conn):
     targets = [sql.Identifier('public', 'alembic_version')]
     targets.extend(sql.Identifier('public', table) for table in READ_TABLES)
     targets.extend(sql.Identifier('public', table) for table in CACHE_TABLES)
-    targets.extend(sql.Identifier('analytics', table) for table in ANALYTICS_TABLES)
+    targets.extend(sql.Identifier('analytics', table) for table in (*ANALYTICS_TABLES, PRIVATE_REPORT_TABLE))
     conn.execute(sql.SQL('LOCK TABLE {} IN ACCESS EXCLUSIVE MODE').format(sql.SQL(', ').join(targets)))
 
 
@@ -64,6 +71,12 @@ def apply_access(conn):
     conn.execute(sql.SQL('GRANT USAGE ON SCHEMA public TO {}, {}').format(sql.Identifier(READER), sql.Identifier(WORKER)))
     conn.execute(sql.SQL('GRANT SELECT ON public.dashboard_snapshots TO {}').format(sql.Identifier(READER)))
     conn.execute(sql.SQL('GRANT SELECT ON public.dashboard_gamelogs TO {}').format(sql.Identifier(READER)))
+    # Role provisioning may happen after migrations; restore versioned-view
+    # grants in that order as well as when migrations run against existing roles.
+    for table in OPTIONAL_DASHBOARD_VIEWS:
+        if conn.execute('SELECT to_regclass(%s)', (f'public.{table}',)).fetchone()[0]:
+            conn.execute(sql.SQL('GRANT SELECT ON {} TO {}').format(
+                sql.Identifier('public', table), sql.Identifier(READER)))
     conn.execute(sql.SQL('GRANT SELECT ON public.cfb_effective_gamelogs TO {}').format(sql.Identifier(WORKER)))
     conn.execute(sql.SQL('GRANT SELECT ON public.nfl_effective_receiving_gamelogs TO {}').format(sql.Identifier(WORKER)))
     for table in READ_TABLES:
@@ -117,6 +130,21 @@ def apply_access(conn):
         conn.execute(sql.SQL('DROP POLICY IF EXISTS sportsbet_worker_access ON {}').format(target))
         conn.execute(sql.SQL('CREATE POLICY sportsbet_worker_access ON {} TO {} USING (true) WITH CHECK (true)').format(target, sql.Identifier(WORKER)))
     conn.execute(sql.SQL('REVOKE UPDATE, DELETE, TRUNCATE ON analytics.paper_selections FROM {}').format(sql.Identifier(WORKER)))
+    # Migrations may run before roles are first provisioned. Restore the
+    # private audit table's append-only ACL and RLS policies in either order.
+    conn.execute(sql.SQL('GRANT SELECT, INSERT ON analytics.prospective_audit_reports TO {}')
+                 .format(sql.Identifier(WORKER)))
+    conn.execute(sql.SQL('GRANT USAGE, SELECT ON SEQUENCE analytics.prospective_audit_reports_report_id_seq TO {}')
+                 .format(sql.Identifier(WORKER)))
+    conn.execute(sql.SQL('REVOKE UPDATE, DELETE, TRUNCATE ON analytics.prospective_audit_reports FROM {}')
+                 .format(sql.Identifier(WORKER)))
+    conn.execute('ALTER TABLE analytics.prospective_audit_reports ENABLE ROW LEVEL SECURITY')
+    for command in ('SELECT', 'INSERT'):
+        policy = sql.Identifier('worker_' + ('read' if command == 'SELECT' else 'insert') + '_prospective_reports')
+        conn.execute(sql.SQL('DROP POLICY IF EXISTS {} ON analytics.prospective_audit_reports').format(policy))
+        clause = sql.SQL('USING (true)' if command == 'SELECT' else 'WITH CHECK (true)')
+        conn.execute(sql.SQL('CREATE POLICY {} ON analytics.prospective_audit_reports FOR {} TO {} {}')
+                     .format(policy, sql.SQL(command), sql.Identifier(WORKER), clause))
     conn.execute(sql.SQL('GRANT UPDATE (outcome,outcome_source,outcome_ref,outcome_observed_at,actual_value,outcome_evidence) ON analytics.predictions TO {}').format(sql.Identifier(WORKER)))
     for table in ('exposure', 'api_usage'):
         conn.execute(sql.SQL('GRANT UPDATE ON {} TO {}').format(sql.Identifier('analytics', table), sql.Identifier(WORKER)))

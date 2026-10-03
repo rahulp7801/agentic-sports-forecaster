@@ -11,3 +11,10 @@ test('player previews retain the displayed watchlist side instead of the last op
  assert.deepEqual(researchPlayerPreview(input,1),[best]);
  assert.deepEqual(researchPlayerPreview([]),[]);
 });
+
+test('research previews preserve distinct same-name athlete receipts',()=>{
+ const first={id:'first',sport:'nfl',player:'Shared Name',player_id:'00-0000001'};
+ const second={...first,id:'second',player_id:'00-0000002'};
+ const alias={...first,id:'alias',player:'Updated Name'};
+ assert.deepEqual(researchPlayerPreview([first,second,alias]),[first,second]);
+});

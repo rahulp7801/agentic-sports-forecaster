@@ -110,7 +110,7 @@ def test_reviewed_nfl_archive_is_atomic_replay_safe_and_private():
                 with pytest.raises(psycopg.errors.CheckViolation):
                     with conn.transaction():
                         conn.execute('UPDATE public.nfl_receiving_supplements SET stat_row=%s',(Jsonb(bad),))
-            row = primary(rushing_yards=3)
+            row = primary(rushing_yards=3, player_name='Adam Trautman')
             conn.execute('INSERT INTO public.player_stats ('+','.join(row)+') VALUES ('+','.join(['%s']*len(row))+')',tuple(row.values()))
             replay = plan_supplements(raw,*load_state(Session(),evidence),now=NOW)
             assert replay['updates'] == [] and replay['complete'] == replay['retained'] == 1
@@ -119,6 +119,58 @@ def test_reviewed_nfl_archive_is_atomic_replay_safe_and_private():
             conn.execute('UPDATE public.player_stats SET receptions=1 WHERE player_id=%s',(item['player_id'],))
             assert sample(available)[0]==0  # Conflicting receiving sources block the player's effective history.
             assert conn.execute('SELECT count(*) FROM public.nfl_receiving_supplements').fetchone()[0]==1
+            assert conn.execute("SELECT count(*) FROM public.dashboard_gamelog_versions "
+                "WHERE sport='nfl' AND player_id=%s AND game_key=%s",
+                (item['player_id'],g['game_id'])).fetchone()[0]==0
+            core=conn.execute("""SELECT payload,record_available_at
+                FROM public.dashboard_nfl_core_gamelogs_asof
+                WHERE player_id=%s AND game_key=%s""",
+                (item['player_id'],g['game_id'])).fetchone()
+            assert core is not None and core[0]['rush_yds']==3
+            assert core[0]['rec_yds'] is None and core[0]['receptions'] is None
+            assert conn.execute("""SELECT count(*) FROM public.dashboard_nfl_core_gamelogs_asof
+                WHERE player_id=%s AND game_key=%s AND record_available_at<=%s""",
+                (item['player_id'],g['game_id'],core[1])).fetchone()[0]==1
+            assert conn.execute("SELECT has_table_privilege('sportsbet_dashboard',"
+                "'public.dashboard_nfl_core_gamelogs_asof','SELECT')").fetchone()[0]
+
+            # The later matching primary must not erase a verified supplement
+            # that an earlier forecast could have read.
+            late=inserted+timedelta(hours=1)
+            conn.execute('UPDATE public.player_stats SET receptions=0,player_name=%s,'
+                'source_observed_at=%s WHERE player_id=%s',
+                ('Adam Trautman',late,item['player_id']))
+            def displayed(cutoff):
+                return conn.execute("""SELECT payload FROM (
+                    SELECT DISTINCT ON (sport,COALESCE(player_id,player_name),game_key)
+                        payload,game_date,player_name,game_key
+                    FROM public.dashboard_gamelog_versions
+                    WHERE sport='nfl' AND player_id=%s AND game_key=%s
+                      AND record_available_at<=%s::timestamptz
+                    ORDER BY sport,COALESCE(player_id,player_name),game_key,
+                        record_available_at DESC NULLS LAST
+                    ) latest ORDER BY game_date DESC,player_name,game_key LIMIT 20""",
+                    (item['player_id'],g['game_id'],cutoff)).fetchall()
+            assert len(displayed(available-timedelta(microseconds=1)))==0
+            earlier=displayed(available)
+            assert len(earlier)==1 and earlier[0][0]['receptions']==0
+            assert earlier[0][0]['rush_yds'] is None
+            current=displayed(late)
+            assert len(current)==1 and current[0][0]['rush_yds']==3
+            assert conn.execute("SELECT count(*) FROM public.dashboard_gamelog_versions "
+                "WHERE sport='nfl' AND player_id=%s AND game_key=%s",
+                (item['player_id'],g['game_id'])).fetchone()[0]==2
+            for role in ('anon','authenticated','sportsbet_worker'):
+                if conn.execute('SELECT 1 FROM pg_roles WHERE rolname=%s',(role,)).fetchone():
+                    assert not conn.execute('SELECT has_table_privilege(%s,%s,%s)',
+                        (role,'public.dashboard_gamelog_versions','SELECT')).fetchone()[0]
+            # Some disposable suites provision the reader after migrations.
+            # When the baseline as-of view is granted, this view must be too.
+            baseline=conn.execute('SELECT has_table_privilege(%s,%s,%s)',
+                ('sportsbet_dashboard','public.dashboard_gamelogs_asof','SELECT')).fetchone()[0]
+            versions=conn.execute('SELECT has_table_privilege(%s,%s,%s)',
+                ('sportsbet_dashboard','public.dashboard_gamelog_versions','SELECT')).fetchone()[0]
+            assert versions==baseline
 
         finally:
             conn.rollback()

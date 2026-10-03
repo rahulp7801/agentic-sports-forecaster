@@ -26,6 +26,9 @@ export const publicPipelinePaths = [
   '/api/slate?sport=nba',
   '/api/slate?sport=cfb',
   '/api/gamelogs?sport=cfb&player_id=1&exact=1&limit=1',
+  '/api/gamelogs?sport=nfl&player_id=00-0000001&exact=1&limit=1&before=2026-10-02&observed_before=2026-10-01T23%3A00%3A00Z',
+  '/api/gamelogs?sport=nba&player_id=1&exact=1&limit=1&before=2026-10-02&observed_before=2026-10-01T23%3A00%3A00Z',
+  '/api/gamelogs?sport=cfb&player_id=1&exact=1&limit=1&before=2026-10-02&observed_before=2026-10-01T23%3A00%3A00Z',
   '/api/benchmarks?sport=cfb',
   '/api/markets?sport=nfl',
   '/api/markets?sport=nba',
@@ -65,6 +68,10 @@ export const publicSecurityProbes = [
   { path: '/api/signals?sport=nfl&offset=1000', statuses: [400] },
   { path: '/api/gamelogs?sport=nfl&player=%25', statuses: [400] },
   { path: '/api/picks?sport=mlb', statuses: [400] },
+  // Invalid leagues are rejected by these route handlers before any free-provider read.
+  // A stale deployment with no route or proxy allowlist returns 404 instead.
+  { path: '/api/kalshi-research?sport=invalid', statuses: [400] },
+  { path: '/api/polymarket?sport=invalid', statuses: [400] },
 ];
 
 export function readinessStatuses(path, { paidEnabled, publicEnabled }) {
@@ -122,22 +129,31 @@ export async function verifyProduction({
   captureAttempts = 1,
   captureDelayMs = 5000,
   captureWait = delay => new Promise(resolve => setTimeout(resolve, delay)),
+  transient503Attempts = 1,
+  transient503DelayMs = 5000,
+  transient503Wait = delay => new Promise(resolve => setTimeout(resolve, delay)),
 } = {}) {
   if (!Number.isInteger(captureAttempts) || captureAttempts < 1 || captureAttempts > 37
-      || !Number.isInteger(captureDelayMs) || captureDelayMs < 0 || captureDelayMs > 5000) {
-    throw new Error('Invalid public capture retry bounds');
+      || !Number.isInteger(captureDelayMs) || captureDelayMs < 0 || captureDelayMs > 5000
+      || !Number.isInteger(transient503Attempts) || transient503Attempts < 1 || transient503Attempts > 3
+      || !Number.isInteger(transient503DelayMs) || transient503DelayMs < 0 || transient503DelayMs > 5000) {
+    throw new Error('Invalid production retry bounds');
   }
   base = base.replace(/\/$/, '');
   async function check(path, expected, options = {}) {
-    const response = await fetchImpl(base + path, {
-      ...options,
-      signal: AbortSignal.timeout(20000),
-      redirect: 'manual',
-    });
-    if (!expected.includes(response.status)) {
-      throw new Error(`${path}: unexpected HTTP ${response.status}`);
+    for (let attempt = 1; attempt <= transient503Attempts; attempt++) {
+      const response = await fetchImpl(base + path, {
+        ...options,
+        signal: AbortSignal.timeout(20000),
+        redirect: 'manual',
+      });
+      if (expected.includes(response.status)) return response;
+      if (response.status !== 503 || attempt === transient503Attempts) {
+        throw new Error(`${path}: unexpected HTTP ${response.status}`);
+      }
+      console.log(`::warning::${path} returned transient HTTP 503 (${attempt}/${transient503Attempts})`);
+      await transient503Wait(transient503DelayMs);
     }
-    return response;
   }
 
   const cacheKey = encodeURIComponent(process.env.GITHUB_SHA || Date.now().toString());
@@ -235,7 +251,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   await verifyProductionWithRetry(
     { expectedPublicReport,
       captureAttempts: Number(process.env.PUBLIC_CAPTURE_VERIFY_ATTEMPTS || '1'),
-      captureDelayMs: Number(process.env.PUBLIC_CAPTURE_VERIFY_DELAY_MS || '5000') },
+      captureDelayMs: Number(process.env.PUBLIC_CAPTURE_VERIFY_DELAY_MS || '5000'),
+      transient503Attempts: Number(process.env.PUBLIC_READINESS_503_ATTEMPTS || '1'),
+      transient503DelayMs: Number(process.env.PUBLIC_READINESS_503_DELAY_MS || '5000') },
     { attempts: Number.isInteger(attempts) && attempts > 0 ? attempts : 1,
       delayMs: Number.isInteger(delayMs) && delayMs >= 0 ? delayMs : 0 },
   );

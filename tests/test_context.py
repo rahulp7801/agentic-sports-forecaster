@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from sportsbet.config import settings
 from sportsbet.ingestion.odds_poller import (
     BudgetExhaustedError,
     OddsAPIPoller,
@@ -71,7 +72,7 @@ async def test_budget_exhausted_raises() -> None:
         mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        async with OddsAPIPoller(api_key="test-key", daily_credit_cap=500) as poller:
+        async with OddsAPIPoller(api_key="test-key", daily_credit_cap=20) as poller:
             # Force budget counter to exhausted state
             poller._credits_remaining = 0
 
@@ -83,7 +84,7 @@ async def test_budget_exhausted_raises() -> None:
 
 
 @pytest.mark.asyncio
-async def test_odds_poller_writes_snapshot() -> None:
+async def test_odds_poller_writes_snapshot(monkeypatch) -> None:
     """Mocked httpx returns valid payload + x-requests-remaining=499.
 
     After a successful fetch:
@@ -101,16 +102,21 @@ async def test_odds_poller_writes_snapshot() -> None:
 
     mock_async_client = AsyncMock()
     mock_async_client.get = AsyncMock(return_value=mock_response)
+    monkeypatch.setattr(settings, 'analytics_database_url', 'postgresql://test-ledger')
 
-    with patch("sportsbet.ingestion.odds_poller.httpx.AsyncClient") as mock_client_cls:
+    with patch("sportsbet.ingestion.odds_poller.httpx.AsyncClient") as mock_client_cls, \
+            patch("sportsbet.ingestion.odds_poller.Ledger") as mock_ledger_cls:
         mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_async_client)
         mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_ledger_cls.return_value.reserve_api_credits.return_value = True
 
-        async with OddsAPIPoller(api_key="test-key", daily_credit_cap=500) as poller:
+        async with OddsAPIPoller(api_key="test-key", daily_credit_cap=20) as poller:
             result = await poller.fetch_nfl_odds()
 
         assert result == ODDS_FIXTURE
         assert poller._credits_remaining == 499
+        mock_ledger_cls.return_value.reserve_api_credits.assert_called_once_with(
+            3, 20, holdback=8)
 
 
 @pytest.mark.asyncio
@@ -124,10 +130,117 @@ async def test_odds_poller_rejects_requests_outside_context(
     args: tuple[str, ...],
 ) -> None:
     """Public fetch methods must fail even when Python assertions are disabled."""
-    poller = OddsAPIPoller(api_key="test-key", daily_credit_cap=500)
+    poller = OddsAPIPoller(api_key="test-key", daily_credit_cap=20)
 
     with pytest.raises(RuntimeError, match="active async context manager"):
         await getattr(poller, method)(*args)
+
+
+@pytest.mark.parametrize('cap', [0, 21, 500, True])
+def test_legacy_poller_rejects_unapproved_daily_allowance(cap) -> None:
+    with pytest.raises(ValueError, match='at most 20'):
+        OddsAPIPoller(api_key='test-key', daily_credit_cap=cap)
+
+
+@pytest.mark.asyncio
+async def test_shared_ledger_denial_prevents_legacy_http_request(monkeypatch) -> None:
+    monkeypatch.setattr(settings, 'analytics_database_url', 'postgresql://test-ledger')
+    mock_client = AsyncMock()
+    with patch('sportsbet.ingestion.odds_poller.httpx.AsyncClient') as client_cls, \
+            patch('sportsbet.ingestion.odds_poller.Ledger') as ledger_cls:
+        client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+        ledger_cls.return_value.reserve_api_credits.return_value = False
+        async with OddsAPIPoller(api_key='test-key', daily_credit_cap=20) as poller:
+            with pytest.raises(BudgetExhaustedError, match='Shared'):
+                await poller.fetch_nfl_odds()
+        ledger_cls.return_value.reserve_api_credits.assert_called_once_with(
+            3, 20, holdback=8)
+        mock_client.get.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_missing_shared_ledger_configuration_prevents_paid_request(monkeypatch) -> None:
+    monkeypatch.setattr(settings, 'analytics_database_url', None)
+    mock_client = AsyncMock()
+    with patch('sportsbet.ingestion.odds_poller.httpx.AsyncClient') as client_cls, \
+            patch('sportsbet.ingestion.odds_poller.Ledger') as ledger_cls:
+        client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+        async with OddsAPIPoller(api_key='test-key', daily_credit_cap=20) as poller:
+            with pytest.raises(BudgetExhaustedError, match='Shared analytics'):
+                await poller.fetch_nfl_odds()
+        ledger_cls.assert_not_called()
+        mock_client.get.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_legacy_poller_restart_cannot_reuse_reserved_daily_credits(tmp_path, monkeypatch) -> None:
+    from sportsbet.ledger import Ledger
+
+    monkeypatch.setattr(settings, 'analytics_database_url', 'postgresql://test-ledger')
+    path = tmp_path / 'shared-usage.sqlite'
+    assert Ledger(path).reserve_api_credits(12, 20, holdback=8)
+    mock_client = AsyncMock()
+    with patch('sportsbet.ingestion.odds_poller.httpx.AsyncClient') as client_cls, \
+            patch('sportsbet.ingestion.odds_poller.Ledger', side_effect=lambda: Ledger(path)):
+        client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+        for _ in range(2):
+            async with OddsAPIPoller(api_key='test-key', daily_credit_cap=20) as poller:
+                with pytest.raises(BudgetExhaustedError, match='Shared'):
+                    await poller.fetch_nfl_odds()
+    mock_client.get.assert_not_called()
+    with Ledger(path).connect() as db:
+        assert db.execute('SELECT SUM(credits) FROM api_usage').fetchone()[0] == 12
+
+
+@pytest.mark.asyncio
+async def test_legacy_poller_refuses_raised_rolling_cap_before_http(monkeypatch) -> None:
+    monkeypatch.setattr(settings, 'analytics_database_url', 'postgresql://test-ledger')
+    monkeypatch.setattr(settings, 'odds_rolling_credit_limit', 451)
+    mock_client = AsyncMock()
+    with patch('sportsbet.ingestion.odds_poller.httpx.AsyncClient') as client_cls:
+        client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+        async with OddsAPIPoller(api_key='test-key', daily_credit_cap=20) as poller:
+            with pytest.raises(BudgetExhaustedError, match='450'):
+                await poller.fetch_nfl_odds()
+    mock_client.get.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_prop_events_reserve_does_not_authorize_seven_market_detail(monkeypatch) -> None:
+    monkeypatch.setattr(settings, 'analytics_database_url', 'postgresql://test-ledger')
+    events = MagicMock()
+    events.json.return_value = [{'id': 'fixture-event'}]
+    events.headers = {'x-requests-remaining': '20'}
+    events.raise_for_status = MagicMock()
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(return_value=events)
+    with patch('sportsbet.ingestion.odds_poller.httpx.AsyncClient') as client_cls, \
+            patch('sportsbet.ingestion.odds_poller.Ledger') as ledger_cls:
+        client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+        ledger_cls.return_value.reserve_api_credits.side_effect = [True, False]
+        async with OddsAPIPoller(api_key='test-key', daily_credit_cap=20) as poller:
+            with pytest.raises(BudgetExhaustedError, match='Shared'):
+                await poller.fetch_player_props('nfl')
+        assert [call.args for call in ledger_cls.return_value.reserve_api_credits.call_args_list] == [
+            (1, 20), (7, 20)]
+        assert mock_client.get.call_count == 1
+
+
+def test_legacy_poller_rejects_blank_api_key() -> None:
+    with pytest.raises(ValueError, match='API key'):
+        OddsAPIPoller(api_key=' ', daily_credit_cap=20)
+
+
+def test_context_agent_rejects_unapproved_allowance_at_construction() -> None:
+    from sportsbet.graph.agents import make_context_agent
+
+    with pytest.raises(ValueError, match='at most 20'):
+        make_context_agent(MagicMock(), api_key='test-key', daily_credit_cap=500)
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +397,7 @@ def _make_full_state(
 async def test_context_agent_updates_graphstate() -> None:
     """make_context_agent returns ContextSignals in GraphState partial dict.
 
-    Given make_context_agent(mock_pool, api_key="test_key", daily_credit_cap=500),
+    Given make_context_agent(mock_pool, api_key="test_key", daily_credit_cap=20),
     when the returned async node is called with a GraphState fixture,
     then the return value is a dict with key "context_signals",
     and context_signals is a ContextSignals instance with the correct game_id.
@@ -336,7 +449,7 @@ async def test_context_agent_updates_graphstate() -> None:
         mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client_instance)
         mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        agent = make_context_agent(mock_pool, api_key="test_key", daily_credit_cap=500)
+        agent = make_context_agent(mock_pool, api_key="test_key", daily_credit_cap=20)
         state = _make_full_state()
         result = await agent(state)
 
@@ -400,7 +513,7 @@ async def test_downstream_reads_state() -> None:
         mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client_instance)
         mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        context_node = make_context_agent(mock_pool, api_key="test_key", daily_credit_cap=500)
+        context_node = make_context_agent(mock_pool, api_key="test_key", daily_credit_cap=20)
         graph = create_graph(checkpointer=MemorySaver(), context_node=context_node)
 
         state = _make_full_state()
@@ -461,7 +574,7 @@ async def test_context_agent_persists_odds_snapshot() -> None:
             return_value=0,
         ),
     ):
-        agent = make_context_agent(mock_pool, api_key="test_key", daily_credit_cap=500)
+        agent = make_context_agent(mock_pool, api_key="test_key", daily_credit_cap=20)
         state = _make_full_state()
         state["game_id"] = "test_event_001"
         await agent(state)
@@ -531,7 +644,7 @@ async def test_context_agent_rejects_stale_odds() -> None:
             return_value=0,
         ),
     ):
-        agent = make_context_agent(mock_pool, api_key="test_key", daily_credit_cap=500)
+        agent = make_context_agent(mock_pool, api_key="test_key", daily_credit_cap=20)
         state = _make_full_state()
         result = await agent(state)
 
@@ -603,7 +716,7 @@ class TestContextAgentStatType:
             mock_scraper_instance.write_injury_reports = AsyncMock(return_value=0)
             mock_scraper_cls.return_value = mock_scraper_instance
 
-            agent = make_context_agent(mock_pool, api_key="test_key", daily_credit_cap=500)
+            agent = make_context_agent(mock_pool, api_key="test_key", daily_credit_cap=20)
             return await agent(state)
 
     @pytest.mark.asyncio

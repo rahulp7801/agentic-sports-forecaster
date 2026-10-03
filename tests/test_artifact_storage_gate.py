@@ -39,6 +39,9 @@ class ArtifactStorageGateTests(unittest.TestCase):
         self.assertFalse(gate.may_upload(300_000_000, 25_000_001))
         self.assertFalse(gate.may_upload(-1, 1))
         self.assertFalse(gate.may_upload(0, 0))
+        self.assertTrue(gate.may_upload(300_000_000, 20_000_000, 25_000_000))
+        self.assertFalse(gate.may_upload(305_000_000, 20_000_000, 25_000_000))
+        self.assertFalse(gate.may_upload(0, 1, -1))
 
 
 if __name__ == '__main__':
