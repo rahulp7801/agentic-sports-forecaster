@@ -21,7 +21,17 @@ from sportsbet.ingestion.odds import OddsSnapshotCreate, write_odds_snapshot
 from sportsbet.ingestion.odds_poller import BudgetExhaustedError, OddsAPIPoller
 from sportsbet.ingestion.prop_odds import PlayerPropSnapshotCreate, write_player_prop_snapshot, parse_event_quotes
 from sportsbet.ingestion.scraper import TEAM_ABBR_TO_ESPN_ID, InjuryWeatherScraper
-from sportsbet.ingestion.sleeper import fetch_sleeper_team_injuries as _fetch_sleeper_injuries
+
+
+async def _fetch_sleeper_injuries(sport: str, team_abbr: str) -> list[dict[str, str]]:
+    """Keep the legacy context graph off the noncommercial Sleeper API.
+
+    Scheduled consumer scans use source-backed ESPN availability instead.
+    This adapter stays test-injectable for legacy graph behavior, but makes no
+    provider request until commercial licensing is explicitly addressed.
+    """
+    return []
+
 
 if TYPE_CHECKING:
     pass
@@ -203,7 +213,10 @@ def make_context_agent(
     """
     from datetime import datetime, timezone
 
-    from sportsbet.config import settings as _settings
+    from sportsbet.config import DEFAULT_DAILY_CREDIT_LIMIT, settings as _settings
+    if (type(daily_credit_cap) is not int
+            or not 1 <= daily_credit_cap <= DEFAULT_DAILY_CREDIT_LIMIT):
+        raise ValueError('Context agent allowance must be at most 20 credits')
     from sportsbet.graph.models import AgentOddsSnapshot, ContextSignals
     # OddsAPIPoller, BudgetExhaustedError, InjuryWeatherScraper imported at module level for patchability (Phase 14 — PROP-01)
 
@@ -334,8 +347,8 @@ def make_context_agent(
         injury_details: list[dict[str, str]] = []
         try:
             if sport == "nba":
-                # Sleeper API covers NBA injuries — fetch both teams in parallel (each call
-                # downloads the full players list, so parallel cuts latency in half).
+                # Legacy NBA injury context is unavailable here. The scheduled
+                # consumer scanner uses source-backed ESPN availability instead.
                 import asyncio as _asyncio
                 home_injs, away_injs = await _asyncio.gather(
                     _fetch_sleeper_injuries("nba", home_team),
@@ -359,7 +372,7 @@ def make_context_agent(
                                 "status": status,
                             })
             else:
-                # NFL: ESPN Core API (primary) + Sleeper supplement
+                # NFL: ESPN Core API; legacy Sleeper supplement is disabled by default
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     scraper = InjuryWeatherScraper(client)
                     for team_abbr in (home_team, away_team):
@@ -381,7 +394,7 @@ def make_context_agent(
                                     "position": position,
                                     "status": status,
                                 })
-                # Supplement NFL with Sleeper (catches IR/PUP players ESPN may miss)
+                # Legacy Sleeper supplement is disabled for commercial use
                 try:
                     for team_abbr in (home_team, away_team):
                         sleeper_injs = await _fetch_sleeper_injuries("nfl", team_abbr)

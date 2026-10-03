@@ -7,6 +7,7 @@ import pytest
 from sportsbet.ingestion.nfl_final_evidence import CORE,BASE,IDENTITY_URL,digest,inspect_bundle,plan_recovery
 from sportsbet.ledger import Ledger,VERIFIED_SETTLEMENT_SOURCE
 from sportsbet.ingestion.provenance import row_sha256
+from sportsbet.ingestion.nfl_recovery_proof import valid_recovery_proof
 
 NOW=datetime(2026,9,23,tzinfo=timezone.utc)
 EVENT='401872940';PLAYER='00-0036422';ESPN='3911853'
@@ -71,6 +72,34 @@ def test_explicit_zero_round_trips_through_existing_ledger_contract(tmp_path):
         observed_at=NOW,actual_values={key:u['actual']},evidence={key:u['evidence']})
     assert ledger.report()['settled_count']==1
     assert plan_recovery(ledger.predictions(),evidence)['updates']==[]
+
+
+@pytest.mark.parametrize('mutation',[
+    'missing_explicit','bad_source_hash','wrong_player','zero_snaps',
+    'pregame_snap','wrong_summary_url',
+])
+def test_write_boundary_rechecks_independent_nfl_source(mutation):
+    update=plan_recovery([prediction()],inspect_bundle(bundle(),now=NOW))['updates'][0]
+    assert valid_recovery_proof(update['evidence'])
+    proof=copy.deepcopy(update['evidence'])
+    explicit=proof.get('explicit_final_source')
+    if mutation=='missing_explicit':
+        proof.pop('explicit_final_source')
+    elif mutation=='bad_source_hash':
+        proof['stat_source_sha256']='0'*64
+    elif mutation=='wrong_player':
+        explicit['gsis_player_id']='00-0000001'
+    elif mutation=='zero_snaps':
+        participation=explicit['participation']
+        participation['row']['offense_snaps']=0
+        participation['source_record_sha256']=row_sha256(participation['row'])
+    elif mutation=='pregame_snap':
+        explicit['participation']['source_observed_at']='2026-09-20T19:00:00Z'
+    elif mutation=='wrong_summary_url':
+        explicit['sources'][0]['url']='https://example.invalid/summary'
+    if mutation not in ('missing_explicit','bad_source_hash'):
+        proof['stat_source_sha256']=digest(json.dumps(explicit,sort_keys=True,separators=(',',':')))
+    assert not valid_recovery_proof(proof)
 
 
 @pytest.mark.parametrize(('direction','line','result'),[('over',.5,False),('under',.5,True),('under',0,'push')])

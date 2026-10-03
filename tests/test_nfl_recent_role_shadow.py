@@ -224,3 +224,43 @@ def test_verified_roster_identity_reaches_recent_role_without_requiring_photo(po
     result=role.shadow_record(p,data)
     assert result['status']=='predicted',result
     assert p['model_probability']==30.5/34 and evidence['probability_adjusted'] is False
+
+def test_portable_role_audit_accepts_only_gzip_os_header_difference(tmp_path):
+    from sportsbet.quant.nfl_recent_role_audit import report_role_history_shadow
+    from sportsbet.quant.nfl_recent_role_portable_proof import (
+        AUDIT_PROTOCOL, verified_recorded_shadow_probability)
+
+    p, data = fixture()
+    p['role_history_shadow'] = role.shadow_record(p, data)
+    ledger = Ledger(tmp_path / 'portable.sqlite', database_url='')
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.fromisoformat(p['captured_at']) + timedelta(seconds=1)
+    with patch('sportsbet.ledger.datetime', Clock):
+        ledger.record('same', p)
+    row = ledger.predictions()[0]
+    recorded = deepcopy(row)
+    proof = recorded['role_history_shadow']
+    compressed = bytearray(base64.b64decode(proof['inputs']['data']))
+    assert compressed[9] in (3, 10)
+    compressed[9] = 3 if compressed[9] == 10 else 10
+    proof['inputs']['data'] = base64.b64encode(compressed).decode('ascii')
+    proof['record_sha256'] = role.digest({k: v for k, v in proof.items() if k != 'record_sha256'})
+    assert role.verified_recorded_shadow_probability(recorded) is None
+    assert verified_recorded_shadow_probability(recorded) == proof['probability']
+    report = report_role_history_shadow([recorded], 'nfl')
+    assert report['audit_protocol'] == AUDIT_PROTOCOL
+    assert 'nfl_recent_role_portable_proof.py' in report['evaluator_sha256']
+    assert report['markets']['receptions']['counts']['valid_predictions'] == 1
+
+    tampered = deepcopy(recorded)
+    wrong = bytearray(base64.b64decode(tampered['role_history_shadow']['inputs']['data']))
+    wrong[8] ^= 1
+    tampered['role_history_shadow']['inputs']['data'] = base64.b64encode(wrong).decode('ascii')
+    tampered['role_history_shadow']['record_sha256'] = role.digest({
+        k: v for k, v in tampered['role_history_shadow'].items() if k != 'record_sha256'})
+    assert verified_recorded_shadow_probability(tampered) is None
+    malformed = deepcopy(recorded)
+    malformed['role_history_shadow']['inputs']['data'] = '!!!'
+    assert verified_recorded_shadow_probability(malformed) is None

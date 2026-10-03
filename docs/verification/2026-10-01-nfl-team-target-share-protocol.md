@@ -1,0 +1,9 @@
+﻿# NFL receiving role and teammate competition experiment, frozen before score inspection
+
+Source: free nflverse weekly player stats and schedules for 2023-2025, captured 2026-10-01. Private local source SHA-256 values are printed by the fetch scripts. Historical archives may contain later stat corrections; no sportsbook prices, roster injury state, DNP census, or original pregame source versions are claimed.
+
+Market: receptions only. Use regular season observations with a unique player/game and exact schedule/team match. Research lines are the unique 25th/50th/75th quantiles of the player's ten prior observed receptions, rounded to half points, as in the existing history_tuning.build_examples. Require at least 20 prior observed games, at most 40, and the existing last-five target workload floor of 2.
+
+Context eligibility: use the latest five prior observed games for that player on the target team, with at least two and a latest game at most 35 days before the target. Require exact scheduled team games and positive team target totals. Missing player games are unknown and are never filled as zero. In those same games, derive (1) player targets divided by all team targets and (2) the largest other player's targets divided by all team targets. Both are pregame features from completed prior games.
+
+Fit both offset logistic corrections with L2 penalty 0.1 on 2024. Baseline uses exactly the existing history_features.FEATURES; challenger adds only the two context features above. Same eligible examples, weights, research lines and outcomes for both. Early 2025 through October 31 is a descriptive validation check. November 1 2025 onward is the held-out evaluation. Do not select or retune after seeing either split. Compare game-balanced Brier and log loss with both game- and player-clustered 95% intervals. Report missing-context exclusions and denominators. No model promotion or betting-edge claim from this retrospective, unpriced study.

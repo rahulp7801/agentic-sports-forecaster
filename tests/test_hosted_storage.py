@@ -155,7 +155,7 @@ def test_postgres_admission_deadline_after_database_wait(monkeypatch,phase):
                     return result
             yield Session()
     monkeypatch.setattr(ledger,'connect',delayed)
-    assert ledger.reserve(signal,20.5,risk_day=group,game_start_time=now+timedelta(hours=1),
+    assert ledger.reserve(signal,20.5,risk_day=group,game_start_time=now+timedelta(hours=2),
         quote_time=now,availability_time=now)==(False,'stale_quote')
     with connect() as db:
         assert db.execute('SELECT count(*) FROM exposure WHERE risk_day=?',(group,)).fetchone()[0]==0

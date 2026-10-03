@@ -15,10 +15,21 @@ function reserveRelease(data:Record<string,unknown>,stamp:unknown,deferred:numbe
   return reserved.map(event=>event.next_reserve_release_at as string).sort((a,b)=>Date.parse(a)-Date.parse(b))[0];
 }
 
+function rollingRelease(data:Record<string,unknown>,stamp:unknown):string|null {
+  const release=data.next_rolling_allowance_at;
+  if(!timestamp(stamp) || !timestamp(release))return null;
+  const recorded=Date.parse(stamp as string), projected=Date.parse(release as string);
+  if(projected<=recorded || projected>recorded+32*24*3600_000)return null;
+  if(new Date(projected).getUTCHours()!==0 || new Date(projected).getUTCMinutes()!==0
+    || new Date(projected).getUTCSeconds()!==0 || new Date(projected).getUTCMilliseconds()!==0)return null;
+  return release as string;
+}
+
 export function scanStatus(value: unknown, now = Date.now()) {
   const empty={state:value==null ? 'not_run' : 'unknown',label:value==null ? 'No scan recorded' : 'Scan status unavailable',
     updated_at:null as string|null,next_refresh_at:null as string|null,overdue_at:null as string|null,
     recorded_budget_label:null as string|null,reserve_release_at:null as string|null,reserve_release_passed:false,
+    rolling_release_at:null as string|null,rolling_release_passed:false,
     eligible:null as number|null,completed:null as number|null,deferred:null as number|null,
     quotes:null as number|null,selections:null as number|null,model_requests:null as number|null,
     model_estimates:null as number|null,unresolved_selections:null as number|null,missing_estimates:null as number|null};
@@ -54,6 +65,7 @@ export function scanStatus(value: unknown, now = Date.now()) {
   const budgetLabel=reasons.length===1 && Object.hasOwn(labels,reasons[0][0])
     && deferred!==null && count(reasons[0][1])===deferred ? labels[reasons[0][0]] : null;
   const release=budgetLabel===labels.pregame_credit_reserve ? reserveRelease(data,stamp,deferred) : null;
+  const rolling=budgetLabel===labels.rolling_credit_limit ? rollingRelease(data,stamp) : null;
   const planValid=Number.isFinite(age) && age>=-60000 && age<=48*3600000
     && deferred!==null && deferred>0 && data.status==='degraded' && Array.isArray(data.failures) && data.failures.length===0
     && eligible!==null && completed!==null && completed+Number(deferred)<=eligible;
@@ -90,6 +102,8 @@ export function scanStatus(value: unknown, now = Date.now()) {
     recorded_budget_label:planValid ? budgetLabel : null,
     reserve_release_at:planValid ? release : null,
     reserve_release_passed:!!(planValid && release && Date.parse(release)<=now),
+    rolling_release_at:planValid ? rolling : null,
+    rolling_release_passed:!!(planValid && rolling && Date.parse(rolling)<=now),
     overdue_at:state==='overdue' ? next : null,eligible,completed,deferred,quotes,selections,model_requests,
     model_estimates,unresolved_selections,missing_estimates};
 }

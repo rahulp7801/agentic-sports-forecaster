@@ -4,13 +4,14 @@ SQLite supports these aggregates/placeholders; only PostgreSQL casts and ILIKE
 are normalized here. This verifies selected rows, not PostgreSQL connectivity.
 """
 import sqlite3
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from sportsbet.graph.models import PropParams, PropResult
+from sportsbet.nba_source_asof import NBA_HISTORY_FROZEN_AT
 from sportsbet.prop.nba_agents import make_nba_quant_agent
 from sportsbet.prop.nba_executor import run_nba_prop_query
 from sportsbet.prop.nba_query_builder import NBAQueryBuilder
@@ -21,26 +22,42 @@ def params(**overrides):
         prop_type="points", line=Decimal("20.5"), filters={}, as_of_date=date(2026, 1, 10)) | overrides))
 
 
-def query_fixture(p):
+def query_fixture(p, *, include_uncommitted=False):
     with sqlite3.connect(":memory:") as db:
         db.row_factory = sqlite3.Row
         db.execute("CREATE TABLE nba_player_gamelogs (player_id INT, season INT, game_id TEXT, game_date TEXT, "
                    "points INT, rebounds INT, assists INT, steals INT, blocks INT, threes_made INT, "
-                   "opponent_team TEXT, is_home INT, player_name TEXT)")
-        db.executemany("INSERT INTO nba_player_gamelogs VALUES (1,2025,?,?,?,10,5,0,0,2,'BOS',1,'Player')",
-                       [("old", "2026-01-01", 30), ("recent", "2026-01-09", 10),
-                        ("target", "2026-01-10", 90), ("future", "2026-01-15", 100)])
+                   "opponent_team TEXT, is_home INT, player_name TEXT, source_observed_at TEXT, "
+                   "source_provider TEXT, source_sha256 TEXT, source_record_sha256 TEXT)")
+        games = [("old", "2026-01-01", 30, "2026-01-02T00:00:00+00:00"),
+                        ("recent", "2026-01-09", 10, "2026-01-09T23:00:00+00:00"),
+                        ("late", "2026-01-09", 70, "2026-01-11T00:00:00+00:00"),
+                        ("target", "2026-01-10", 90, "2026-01-10T23:00:00+00:00"),
+                        ("future", "2026-01-15", 100, "2026-01-15T23:00:00+00:00")]
+        if include_uncommitted:
+            games.append(("uncommitted", "2026-01-08", 100,
+                          "2026-01-08T23:00:00+00:00"))
+        db.executemany("INSERT INTO nba_player_gamelogs VALUES "
+                       "(1,2025,?,?,?,10,5,0,0,2,'BOS',1,'Player',?,?,?,?)",
+                       [(game, day, points, observed, 'nba', 'a'*64, 'b'*64)
+                        if game != 'uncommitted' else
+                        (game, day, points, observed, 'nba', None, None)
+                        for game, day, points, observed in games])
         sql, args = NBAQueryBuilder.build(p)
         bound = {str(i): value.isoformat() if isinstance(value, date) else value
                  for i, value in enumerate(args, 1)}
-        return dict(db.execute(sql.replace("::float", "").replace("ILIKE", "LIKE"), bound).fetchone())
+        sqlite_sql = (sql.replace("::float", "").replace("ILIKE", "LIKE")
+            .replace("source_sha256 ~ '^[0-9a-f]{64}$'", "length(source_sha256)=64")
+            .replace("source_record_sha256 ~ '^[0-9a-f]{64}$'",
+                     "length(source_record_sha256)=64"))
+        return dict(db.execute(sqlite_sql, bound).fetchone())
 
 
 def test_target_and_future_games_do_not_change_probability_sample():
     result = query_fixture(params(home_away="home"))
-    assert result["total"] == 2
-    assert result["successes"] == 1
-    assert result["mean_val"] == 20
+    assert result["total"] == 3
+    assert result["successes"] == 2
+    assert result["mean_val"] == pytest.approx(110 / 3)
 
 
 def test_recent_window_applies_cutoff_before_limit():
@@ -50,11 +67,36 @@ def test_recent_window_applies_cutoff_before_limit():
     assert result["mean_val"] == 10
 
 
+def test_source_arrival_cutoff_applies_before_recent_limit_and_fallback():
+    observed = datetime(2026, 1, 10, tzinfo=timezone.utc)
+    recent = query_fixture(params(last_n_games=2, observed_before=observed))
+    assert recent["total"] == 2
+    assert recent["successes"] == 1
+    assert recent["mean_val"] == 20
+    filtered = query_fixture(params(opponent_team="BOS", observed_before=observed))
+    assert filtered["total"] == 2
+    assert filtered["successes"] == 1
+
+
+def test_source_cutoff_excludes_uncommitted_row_before_recent_selection():
+    observed = datetime(2026, 1, 10, tzinfo=timezone.utc)
+    result = query_fixture(params(last_n_games=3, observed_before=observed),
+                           include_uncommitted=True)
+    assert result['total'] == 2
+    assert result['successes'] == 1
+    assert query_fixture(params(last_n_games=3), include_uncommitted=True)['total'] == 3
+
+
+def test_source_cutoff_requires_timezone():
+    with pytest.raises(ValueError, match="timezone"):
+        NBAQueryBuilder.build(params(observed_before=datetime(2026, 1, 10)))
+
+
 def test_dated_unconditional_and_double_double_use_actual_history():
-    assert query_fixture(params())["total"] == 2
+    assert query_fixture(params())["total"] == 3
     result = query_fixture(params(prop_type="double_double", line=Decimal("0")))
-    assert result["total"] == 2
-    assert result["successes"] == 2
+    assert result["total"] == 3
+    assert result["successes"] == 3
 
 
 def test_empty_pre_game_history_stays_empty():
@@ -109,6 +151,23 @@ async def test_agent_forwards_prediction_date():
             "game_id": "target", "prop_type": "points", "prop_line": "20.5",
             "as_of_date": date(2026, 1, 10)})
     assert run.call_args.args[1].as_of_date == date(2026, 1, 10)
+
+
+async def test_agent_forwards_source_cutoff_only_for_new_nba_version():
+    run = AsyncMock(return_value=PropResult(data_source="insufficient_sample", sample_size=0))
+    base = {"receiver_gsis_id": "1", "season": 2025, "game_id": "target",
+            "prop_type": "points", "prop_line": "20.5",
+            "as_of_date": date(2026, 10, 5)}
+    cutoff = datetime.fromisoformat(NBA_HISTORY_FROZEN_AT)
+    with patch("sportsbet.prop.nba_agents.run_nba_prop_query", run):
+        agent = make_nba_quant_agent(MagicMock())
+        await agent(base | {"observed_before": cutoff})
+        params = run.call_args.args[1]
+        assert params.observed_before == cutoff
+        sql, args = NBAQueryBuilder.build(params)
+        assert "source_observed_at <= " in sql and cutoff in args
+        await agent(base | {"observed_before": cutoff - timedelta(microseconds=1)})
+        assert run.call_args.args[1].observed_before is None
 
 
 async def test_factory_date_and_context_date_agree():

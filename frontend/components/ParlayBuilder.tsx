@@ -4,7 +4,8 @@ import {useEffect,useMemo,useState} from 'react';
 import {AlertTriangle,Check,Plus,RefreshCw,Sparkles,X} from 'lucide-react';
 import type {PickBoard,PickBoardRecord} from '@/lib/pickBoard';
 import {PROP_LABELS} from '@/lib/pickTerms';
-import {assistantReasons,assistedSlip,dependenceEnvelope,expectedSlipReturn,MAX_SLIP_LEGS,slipWarnings,type SlipMode} from '@/lib/slipBuilder';
+import {capturedPlayerProfile,capturedRosterTeam} from '@/lib/pickContext';
+import {assistantReasons,assistedSlip,dependenceEnvelope,eligibleBoardRecords,expectedSlipReturn,MAX_SLIP_LEGS,slipWarnings,type SlipMode} from '@/lib/slipBuilder';
 import type {Sport} from '@/lib/types';
 import PlayerPortrait from './PlayerPortrait';
 import styles from './ResearchViews.module.css';
@@ -22,6 +23,13 @@ export default function ParlayBuilder({sport}:{sport:Sport}) {
   const [mode,setMode]=useState<SlipMode>('balanced'),[payout,setPayout]=useState(''),[error,setError]=useState('');
   const [edited,setEdited]=useState(false);
   const [loading,setLoading]=useState(true),[revision,setRevision]=useState(0);
+  const [now,setNow]=useState(()=>Date.now());
+  useEffect(()=>{const tick=window.setInterval(()=>setNow(Date.now()),5_000);
+    const visible=()=>{if(document.visibilityState==='visible')setNow(Date.now());};
+    document.addEventListener('visibilitychange',visible);
+    window.addEventListener('focus',visible);
+    return()=>{window.clearInterval(tick);document.removeEventListener('visibilitychange',visible);
+      window.removeEventListener('focus',visible);};},[]);
 
   useEffect(()=>{
     const controller=new AbortController();
@@ -39,7 +47,7 @@ export default function ParlayBuilder({sport}:{sport:Sport}) {
     return()=>controller.abort();
   },[sport,revision]);
 
-  const candidates=board?.current ?? EMPTY_RECORDS;
+  const candidates=eligibleBoardRecords(board?.current ?? EMPTY_RECORDS,now);
   const legs=useMemo(()=>candidates.filter(record=>selected.includes(record.id)),[candidates,selected]);
   const envelope=dependenceEnvelope(legs),returns=expectedSlipReturn(envelope,Number(payout));
   const warnings=slipWarnings(legs),reasons=assistantReasons(legs,mode,edited);
@@ -63,9 +71,9 @@ export default function ParlayBuilder({sport}:{sport:Sport}) {
           <div className={styles.slipSectionHeading}><div><span>Approved board</span><h3 id="suggested-picks-title">Suggested picks</h3></div><strong>{candidates.length} available</strong></div>
           {!candidates.length ? <div className={styles.slipEmpty}><strong>No approved pregame picks</strong><p>The assistant will not fill an empty board with research forecasts. Check again after the next worker scan.</p></div> :
             <div className={styles.slipCandidates}>{candidates.map(record=>{
-              const active=selected.includes(record.id),profile=record.player_profile;
+              const active=selected.includes(record.id),profile=capturedPlayerProfile(record);
               return <article className={active?styles.slipCandidateActive:styles.slipCandidate} key={record.id}>
-                <header><PlayerPortrait signal={record} /><div><strong>{record.player}</strong><small>{profile?.team ?? record.team}{profile?.jersey?` · #${profile.jersey}`:''}{profile?.position?` · ${profile.position}`:''}</small></div><span>{record.board_state==='locked'?'Locked T-60':'Recorded · reprice'}</span></header>
+                <header><PlayerPortrait signal={record} /><div><strong>{record.player}</strong><small>{capturedRosterTeam(record) ?? record.sport.toUpperCase()}{profile?.jersey?` · #${profile.jersey}`:''}{profile?.position?` · ${profile.position}`:''}</small></div><span>{record.board_state==='locked'?'Locked T-60':'Recorded · reprice'}</span></header>
                 <h4>{record.direction==='over'?'Over':'Under'} {record.line} {PROP_LABELS[record.prop_type]}</h4>
                 <p>{record.away_team} at {record.home_team} · {new Date(record.game_start_time ?? '').toLocaleString(undefined,{weekday:'short',hour:'numeric',minute:'2-digit'})}</p>
                 <dl><div><dt>Model</dt><dd>{pct(record.true_prob)}</dd></div><div><dt>Confidence floor</dt><dd>{record.confidence_interval?pct(record.confidence_interval[0]):'Unavailable'}</dd></div><div><dt>Recorded price</dt><dd>{record.sportsbook} {record.american_odds>0?'+':''}{record.american_odds}</dd></div></dl>

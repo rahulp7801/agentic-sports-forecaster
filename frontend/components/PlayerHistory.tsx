@@ -13,6 +13,8 @@ export default function PlayerHistory({signal}:{signal:EVSignal}) {
   const {sport,player,player_id}=signal;
   let cutoff:string|undefined,observedBefore:string|undefined;
   try {cutoff=historyCutoff(signal);observedBefore=historyObservedBefore(signal);} catch { /* Older forecasts may lack timing evidence. */ }
+  const sourceWindow=observedBefore && signal.history_observed_before===observedBefore
+    ? 'the recorded model-selection cutoff' : 'forecast capture';
   useEffect(()=>{
     const controller=new AbortController();
     const timer=window.setTimeout(()=>{
@@ -39,14 +41,14 @@ export default function PlayerHistory({signal}:{signal:EVSignal}) {
   }
   const formWindows=form ? [{label:'Latest 5 recorded games',sample:form.recent},{label:'Previous 5 recorded games',sample:form.previous}] : [];
   return <section className={styles.playerHistory} aria-label="Player history before forecast">
-    <div className={styles.historyHeader}><div><h3>History behind the line</h3><p>Recorded games before {cutoff ?? 'an unavailable cutoff'}, compared with {signal.direction} {signal.line} {signal.prop_type.replaceAll('_',' ')}. Only source records available by the forecast capture time are shown. A conservative one-day gap before price capture excludes overnight games.</p></div>
+    <div className={styles.historyHeader}><div><h3>History behind the line</h3><p>Recorded games before {cutoff ?? 'an unavailable cutoff'}, compared with {signal.direction} {signal.line} {signal.prop_type.replaceAll('_',' ')}. Only source records available by {sourceWindow} are shown.</p></div>
       <div className={styles.historyActions}><button className={styles.uxButton} type="button" disabled={loading || !cutoff || !observedBefore} onClick={refreshHistory}>{loading ? 'Loading history...' : error ? 'Retry history' : 'Refresh history'}</button><div className={styles.viewSwitch} aria-label="History window">{[10,20].map(n=><button type="button" key={n} aria-pressed={count===n} onClick={()=>setCount(n)}>Last {n}</button>)}</div></div>
     </div>
     {loading ? <p role="status">Loading recorded history…</p> : error || invalid ? <p role="status">{error || invalid}</p>
       : !history?.rows.length ? <p>No exact-player game records were available by this forecast capture time.</p> : <>
         {calendar && <section className={styles.recentForm} aria-label="Last 30 days before forecast">
           <h4>The 30 days before the target game</h4>
-          <p>Available records from {calendar.from}, before {calendar.before}. The cutoff also preserves the gap before price capture.</p>
+          <p>Available records from {calendar.from}, before {calendar.before}, with source receipt no later than {sourceWindow}.</p>
           <div className={styles.evidenceMetrics}>{[
             {label:'All recorded teams',sample:calendar.allTeams},
             {label:calendar.capturedTeam ? `${calendar.capturedTeam} | roster team at capture` : 'Roster team unavailable',sample:calendar.capturedTeamSample},

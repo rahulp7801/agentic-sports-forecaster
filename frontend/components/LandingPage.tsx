@@ -66,13 +66,16 @@ function useMarketPulse() {
 
   useEffect(() => {
     const controller = new AbortController();
+    let generation = 0;
     const load = () => {
+      const current = ++generation;
+      const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]);
       Promise.allSettled([
-        fetch('/api/markets?sport=nfl', { cache: 'no-store', signal: controller.signal }).then(async response => response.ok ? response.json() : Promise.reject()),
-        fetch('/api/games?sport=nfl', { cache: 'no-store', signal: controller.signal }).then(async response => response.ok ? response.json() : Promise.reject()),
-        fetch('/api/scans', { cache: 'no-store', signal: controller.signal }).then(async response => response.ok ? response.json() : Promise.reject()),
+        fetch('/api/markets?sport=nfl', { cache: 'no-store', signal }).then(async response => response.ok ? response.json() : Promise.reject()),
+        fetch('/api/games?sport=nfl', { cache: 'no-store', signal }).then(async response => response.ok ? response.json() : Promise.reject()),
+        fetch('/api/scans', { cache: 'no-store', signal }).then(async response => response.ok ? response.json() : Promise.reject()),
       ]).then(([markets, games, scans]) => {
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted || current !== generation) return;
         const market = markets.status === 'fulfilled' ? markets.value : null;
         const coverage = market?.sources?.kalshi?.coverage;
         const capturedAt = typeof market?.captured_at === 'string' ? market.captured_at : null;
@@ -203,12 +206,12 @@ export default function LandingPage() {
         <section className={styles.results} id="results" aria-labelledby="results-title">
           <div className={styles.resultsIntro}>
             <div>
-              <span>Retrospective accuracy in context</span>
-              <h2 id="results-title">{percent(replicatedReceptionEvidence.prior.hit_rate)}.<br />Then {percent(replicatedReceptionEvidence.current.hit_rate)}.</h2>
+              <span>Retrospective fixed-threshold research calls, not sportsbook picks</span>
+              <h2 id="results-title"><small>2025</small>{percent(replicatedReceptionEvidence.prior.hit_rate)}<br /><small>2026</small>{percent(replicatedReceptionEvidence.current.hit_rate)}</h2>
             </div>
             <div className={styles.resultsSummary}>
               <div><ShieldCheck size={18} /><strong>Compare with constant directions</strong></div>
-              <p>The model trailed always choosing Under in 2025 and scored higher in 2026 on the same selected records. These historical comparisons do not establish a profitable edge.</p>
+              <p>At the fixed {replicatedReceptionEvidence.research_threshold}-reception research threshold, the model was correct on {replicatedReceptionEvidence.prior.correct}/{replicatedReceptionEvidence.prior.sample} selected 2025 rows versus {replicatedReceptionEvidence.prior.always_under_correct}/{replicatedReceptionEvidence.prior.sample} for always Under; in 2026 Week 1 it was correct on {replicatedReceptionEvidence.current.correct}/{replicatedReceptionEvidence.current.sample} versus {replicatedReceptionEvidence.current.always_under_correct}/{replicatedReceptionEvidence.current.sample}. These are not priced pick results or evidence of a profitable edge.</p>
             </div>
           </div>
 

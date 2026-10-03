@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {assistantReasons,assistedSlip,dependenceEnvelope,expectedSlipReturn,MAX_SLIP_LEGS,slipWarnings} from '../lib/slipBuilder.ts';
+import {assistantReasons,assistedSlip,dependenceEnvelope,eligibleBoardRecords,expectedSlipReturn,MAX_SLIP_LEGS,slipWarnings} from '../lib/slipBuilder.ts';
 
 const now=Date.parse('2026-09-20T12:00:00Z');
 function pick(id,overrides={}) {
@@ -58,4 +58,16 @@ test('an empty or single-leg slip has no invented joint probability',()=>{
   assert.equal(dependenceEnvelope([]),null);
   assert.equal(dependenceEnvelope([pick('a')]),null);
   assert.match(assistantReasons([],'balanced')[0],/will not manufacture/);
+});
+
+test('an open slip drops started games as the clock advances',()=>{
+  const kickoff=now+10_000;
+  const expiring=pick('expiring',{game_start_time:new Date(kickoff).toISOString()});
+  const later=pick('later');
+  assert.deepEqual(eligibleBoardRecords([expiring,later],now).map(row=>row.id),
+    ['expiring','later']);
+  assert.deepEqual(eligibleBoardRecords([expiring,later],kickoff).map(row=>row.id),
+    ['later']);
+  assert.deepEqual(assistedSlip([expiring,later],'balanced',kickoff).map(row=>row.id),
+    ['later']);
 });

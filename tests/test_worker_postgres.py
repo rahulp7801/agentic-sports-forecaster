@@ -172,6 +172,98 @@ def test_nba_fallback_protects_official_rows_and_applies_corrections_atomically(
         engine.dispose()
 
 
+def test_nba_official_refresh_preserves_first_unchanged_observation():
+    """A repeat pull cannot erase when a row first became available."""
+    engine=sa.create_engine(os.environ['SPORTSBET_TEST_DATABASE_URL'])
+    game=uuid.uuid4().hex[:18];player=int(uuid.uuid4().int%900000000)+1
+    now=datetime.now(timezone.utc);day=(now-timedelta(days=1)).date()
+    row=dict(player_id=player,player_name='Refresh fixture',game_id=game,game_date=day,
+        season=2025,team_abbreviation='BOS',points=10,rebounds=2,assists=3,
+        minutes=21.0,source_provider='nba',source_sha256='a'*64,
+        source_observed_at=now-timedelta(hours=3))
+    row['source_record_sha256']=stat_row_sha256('nba',row)
+    writer=upsert_rows(['player_id','game_id'],preserve_observation_on_unchanged=True)
+    try:
+        with engine.begin() as conn:
+            pd.DataFrame([row]).to_sql('nba_player_gamelogs',conn,if_exists='append',
+                index=False,method=writer)
+            pd.DataFrame([row|dict(source_sha256='b'*64,
+                source_observed_at=now-timedelta(hours=2))]).to_sql(
+                    'nba_player_gamelogs',conn,if_exists='append',index=False,method=writer)
+            observed=conn.execute(sa.text('SELECT source_observed_at FROM nba_player_gamelogs '
+                'WHERE game_id=:game'),{'game':game}).scalar_one()
+            assert observed==row['source_observed_at']
+            digest=conn.execute(sa.text('SELECT source_sha256 FROM nba_player_gamelogs '
+                'WHERE game_id=:game'),{'game':game}).scalar_one()
+            assert digest=='a'*64
+            # Minutes are outside the core settlement hash but must still
+            # register as a changed source row.
+            pd.DataFrame([row|dict(minutes=22.0,source_sha256='c'*64,
+                source_observed_at=now-timedelta(hours=1))]).to_sql(
+                    'nba_player_gamelogs',conn,if_exists='append',index=False,method=writer)
+            observed=conn.execute(sa.text('SELECT source_observed_at FROM nba_player_gamelogs '
+                'WHERE game_id=:game'),{'game':game}).scalar_one()
+            assert observed==now-timedelta(hours=1)
+            digest=conn.execute(sa.text('SELECT source_sha256 FROM nba_player_gamelogs '
+                'WHERE game_id=:game'),{'game':game}).scalar_one()
+            assert digest=='c'*64
+    finally:
+        with engine.begin() as conn:
+            conn.execute(sa.text('DELETE FROM nba_player_gamelogs WHERE game_id=:game'),{'game':game})
+        engine.dispose()
+
+
+def test_cfb_refresh_preserves_entire_unchanged_source_receipt():
+    from sportsbet.ingestion.provenance import row_sha256
+
+    engine=sa.create_engine(os.environ['SPORTSBET_TEST_DATABASE_URL'])
+    game=int(uuid.uuid4().int%900000000)+100000000
+    game_key=str(game);athlete=int(uuid.uuid4().int%900000000)+1
+    now=datetime.now(timezone.utc)
+    row=dict(athlete_id=athlete,game_id=game,season=2026,week=3,
+        game_date=(now-timedelta(days=1)).date(),player_name='Refresh fixture',
+        team_id=10,team_name='Home University',team_abbreviation='HOM',
+        opponent_id=20,opponent_name='Away State',opponent_abbreviation='AWY',
+        is_home=True,passing_yards=None,rushing_yards=None,receiving_yards=82,
+        receptions=6)
+    row=row|dict(source_provider='sportsdataverse_espn',source_sha256='a'*64,
+        source_player_sha256='b'*64,source_schedule_sha256='c'*64,
+        source_record_sha256=row_sha256(row),source_observed_at=now-timedelta(hours=3))
+    writer=upsert_rows(['athlete_id','game_id'],preserve_observation_on_unchanged=True)
+    try:
+        with engine.begin() as conn:
+            pd.DataFrame([row]).to_sql('cfb_player_gamelogs',conn,if_exists='append',
+                index=False,method=writer)
+            pd.DataFrame([row|dict(source_sha256='d'*64,
+                source_player_sha256='e'*64,source_schedule_sha256='f'*64,
+                source_observed_at=now-timedelta(hours=2))]).to_sql(
+                    'cfb_player_gamelogs',conn,if_exists='append',index=False,method=writer)
+            actual=conn.execute(sa.text('''SELECT source_observed_at,source_sha256,
+                source_player_sha256,source_schedule_sha256 FROM cfb_player_gamelogs
+                WHERE game_id=:game'''),{'game':game_key}).one()
+            assert tuple(actual)==(row['source_observed_at'],'a'*64,'b'*64,'c'*64)
+            corrected=row|dict(receiving_yards=83,source_sha256='d'*64,
+                source_player_sha256='e'*64,source_schedule_sha256='f'*64,
+                source_observed_at=now-timedelta(hours=1))
+            corrected['source_record_sha256']=stat_row_sha256('cfb',corrected)
+            pd.DataFrame([corrected]).to_sql('cfb_player_gamelogs',conn,if_exists='append',
+                index=False,method=writer)
+            actual=conn.execute(sa.text('''SELECT receiving_yards,source_observed_at,
+                source_sha256,source_player_sha256,source_schedule_sha256,
+                source_record_sha256 FROM cfb_player_gamelogs WHERE game_id=:game'''),
+                {'game':game_key}).one()
+            # The revision trigger stamps a real correction at database write time.
+            assert actual[1]>=corrected['source_observed_at']
+            assert actual[1]>row['source_observed_at']
+            assert (actual[0],*actual[2:])==(83,'d'*64,'e'*64,'f'*64,
+                corrected['source_record_sha256'])
+    finally:
+        with engine.begin() as conn:
+            conn.execute(sa.text('DELETE FROM cfb_player_gamelogs WHERE game_id=:game'),
+                {'game':game_key})
+        engine.dispose()
+
+
 def test_dashboard_game_logs_expose_stats_and_reject_ambiguous_nfl_games():
     engine=sa.create_engine(os.environ['SPORTSBET_TEST_DATABASE_URL'])
     name='View '+uuid.uuid4().hex[:12]
@@ -274,6 +366,62 @@ def test_repeatable_stat_refresh_applies_corrections():
             finally:
                 transaction.rollback()
     finally:
+        engine.dispose()
+
+
+def test_nfl_refresh_preserves_first_stat_and_snap_receipts_until_correction():
+    from sportsbet.ingestion.player_stats import ingest_player_stats_seasons
+    from sportsbet.ingestion.snap_counts import ingest_snap_counts_seasons
+
+    engine=sa.create_engine(os.environ['SPORTSBET_TEST_DATABASE_URL'])
+    identity=uuid.uuid4().hex[:19]
+    neighbor=uuid.uuid4().hex[:19]
+    game=uuid.uuid4().hex[:19]
+    pfr=uuid.uuid4().hex[:18]
+    stat=dict(player_id=identity,player_display_name='Receipt fixture',
+        recent_team='HOM',season=2026,week=1,receiving_yards=25,receptions=3)
+    other=stat|dict(player_id=neighbor,receiving_yards=10,receptions=1)
+    snap=dict(game_id=game,season=2026,week=1,player='Receipt fixture',
+        pfr_player_id=pfr,position='WR',team='HOM',opponent='AWY',
+        offense_snaps=25,defense_snaps=0)
+    extra=snap|dict(pfr_player_id=uuid.uuid4().hex[:18],player='Other fixture')
+
+    def refresh(stats,snaps):
+        with patch('sportsbet.ingestion.player_stats.nfl.load_player_stats',
+                   return_value=pl.DataFrame(stats)), \
+             patch('sportsbet.ingestion.snap_counts.nfl.load_snap_counts',
+                   return_value=pl.DataFrame(snaps)):
+            ingest_player_stats_seasons([2026],engine)
+            ingest_snap_counts_seasons([2026],engine)
+
+    def receipts():
+        with engine.connect() as conn:
+            player=conn.execute(sa.text('''SELECT receiving_yards,source_observed_at,
+                source_sha256,source_record_sha256 FROM player_stats
+                WHERE player_id=:id'''),{'id':identity}).one()
+            participation=conn.execute(sa.text('''SELECT offense_snaps,source_observed_at,
+                source_sha256,source_record_sha256 FROM nfl_snap_counts
+                WHERE game_id=:game AND pfr_player_id=:pfr'''),{'game':game,'pfr':pfr}).one()
+            return tuple(player),tuple(participation)
+
+    try:
+        refresh([stat],[snap])
+        original_stat,original_snap=receipts()
+        refresh([stat,other],[snap,extra])  # Unrelated players change both batch hashes.
+        assert receipts()==(original_stat,original_snap)
+        refresh([stat|dict(receiving_yards=26),other],
+            [snap|dict(offense_snaps=26),extra])
+        changed_stat,changed_snap=receipts()
+        assert changed_stat[0]==changed_snap[0]==26
+        for before,after in ((original_stat,changed_stat),(original_snap,changed_snap)):
+            assert after[1]>before[1]
+            assert after[2]!=before[2] and after[3]!=before[3]
+    finally:
+        with engine.begin() as conn:
+            conn.execute(sa.text('DELETE FROM player_stats WHERE player_id IN (:a,:b)'),
+                {'a':identity,'b':neighbor})
+            conn.execute(sa.text('DELETE FROM nfl_snap_counts WHERE game_id=:game'),
+                {'game':game})
         engine.dispose()
 
 
@@ -592,7 +740,7 @@ def test_evidence_audit_snapshot_is_read_only_and_stable_across_concurrent_write
         with writer.connect() as db:
             db.execute('DELETE FROM api_usage WHERE risk_day=?',(key,))
 
-@pytest.mark.parametrize('changed',['none','outcome','conflicting_stat'])
+@pytest.mark.parametrize('changed',['none','outcome','conflicting_stat','forged_receipt'])
 def test_explicit_final_recovery_is_atomic_and_preserves_original_predictions(changed,monkeypatch):
     import json
     import psycopg
@@ -600,6 +748,9 @@ def test_explicit_final_recovery_is_atomic_and_preserves_original_predictions(ch
     from tests.test_nfl_final_evidence import bundle,prediction,NOW
     from sportsbet.ingestion.nfl_final_evidence import inspect_bundle,plan_recovery
     from sportsbet.quant.nfl_final_recovery import apply_plan,pending_rows
+    from sportsbet.ingestion.nfl_final_evidence import digest
+    from sportsbet.ingestion.provenance import row_sha256
+    from sportsbet.ledger import verified_settlement_evidence,VERIFIED_SETTLEMENT_SOURCE
     url=os.environ['SPORTSBET_TEST_DATABASE_URL'];ledger=Ledger(database_url=url)
     scan_id=uuid.uuid4().hex;keys=[]
     try:
@@ -616,6 +767,16 @@ def test_explicit_final_recovery_is_atomic_and_preserves_original_predictions(ch
         # the recovery path still checks outcome and final-stat conflicts.
         if changed=='conflicting_stat':
             monkeypatch.setattr('sportsbet.quant.nfl_final_recovery._actual',lambda *args:(Decimal(9),{}))
+        if changed=='forged_receipt':
+            update=plan['updates'][0];proof=update['evidence']
+            explicit=proof['explicit_final_source'];participation=explicit['participation']
+            participation['row']['offense_snaps']=0
+            participation['source_record_sha256']=row_sha256(participation['row'])
+            proof['stat_source_sha256']=digest(json.dumps(explicit,sort_keys=True,separators=(',',':')))
+            update['source_ref']=f"espn_schedule+espn:{proof['provider_event_id']}:sha256:{digest(json.dumps(proof,sort_keys=True,separators=(',',':')))}"
+            assert verified_settlement_evidence(update['payload'],update['outcome'],
+                VERIFIED_SETTLEMENT_SOURCE,update['source_ref'],update['observed_at'],
+                update['actual'],proof)
         with psycopg.connect(url.replace('postgresql+psycopg://','postgresql://')) as conn:
             conn.execute('SET LOCAL search_path TO analytics, public')
             if changed=='none':assert apply_plan(conn,plan)==2
@@ -761,6 +922,52 @@ def test_explicit_cfb_recovery_locks_forecast_and_preserves_source_payload():
             conn.execute('DELETE FROM analytics.predictions WHERE id=%s',(key,))
 
 
+@pytest.mark.serial
+def test_explicit_cfb_passing_rushing_recovery_writes_two_source_proofs_atomically():
+    import json
+    import psycopg
+    from tests.test_cfb_final_evidence import _bundle_with_passing,prediction,NOW
+    from sportsbet.ingestion.cfb_nonreceiving_evidence import inspect_bundle,plan_recovery
+    from sportsbet.quant.nfl_final_recovery import apply_plan
+    from sportsbet.ledger import verified_settlement_evidence,VERIFIED_SETTLEMENT_SOURCE
+
+    url=os.environ['SPORTSBET_TEST_DATABASE_URL'];ledger=Ledger(database_url=url)
+    scan='explicit-cfb-nonreceiving-'+uuid.uuid4().hex
+    keys=[]
+    for market,line,direction in (('pass_yds',254.5,'over'),('rush_yds',70.5,'under')):
+        payload=prediction(game_id=scan,prop_type=market,line=line,direction=direction)
+        payload.pop('prediction_id');payload.pop('outcome')
+        keys.append(ledger.record(scan,payload))
+    evidence=inspect_bundle(_bundle_with_passing(),now=NOW)
+    dsn=url.replace('postgresql+psycopg://','postgresql://',1)
+    try:
+        with psycopg.connect(dsn) as conn:
+            conn.execute('SET LOCAL search_path TO analytics, public')
+            original=conn.execute('SELECT id,payload FROM predictions WHERE id=ANY(%s)',
+                (keys,)).fetchall()
+            plan=plan_recovery([json.loads(payload)|dict(prediction_id=key,outcome=None)
+                for key,payload in original],evidence)
+            assert len(plan['updates'])==2
+            assert apply_plan(conn,plan,sport='cfb')==2
+            stored=conn.execute('SELECT id,payload,outcome,outcome_source,outcome_ref, '
+                'outcome_observed_at,actual_value,outcome_evidence FROM predictions '
+                'WHERE id=ANY(%s)',(keys,)).fetchall()
+            assert len(stored)==2
+            before=dict(original)
+            for key,payload,outcome,source,ref,observed,actual,proof in stored:
+                assert payload==before[key] and json.loads(outcome) is True
+                assert source==VERIFIED_SETTLEMENT_SOURCE
+                assert verified_settlement_evidence(json.loads(payload),True,source,ref,
+                    observed,actual,proof)
+        with psycopg.connect(dsn) as conn:
+            conn.execute('SET LOCAL search_path TO analytics, public')
+            with pytest.raises(ValueError,match='re-preview'):
+                apply_plan(conn,plan,sport='cfb')
+    finally:
+        with psycopg.connect(dsn) as conn:
+            conn.execute('DELETE FROM analytics.predictions WHERE id=ANY(%s)',(keys,))
+
+
 @pytest.mark.asyncio
 async def test_model_paper_batch_preserves_protocol_identity_and_database_receipts(monkeypatch):
     from sportsbet.quant import model_selection_paper as paper
@@ -796,4 +1003,60 @@ async def test_model_paper_batch_preserves_protocol_identity_and_database_receip
             await conn.execute('DELETE FROM analytics.paper_selections WHERE game_id=$1',identity)
             await conn.execute('DELETE FROM analytics.predictions WHERE scan_id=$1',identity)
             await conn.execute('DELETE FROM analytics.quotes WHERE identity=$1',ledger.quote_identity(payload))
+        await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_stat_only_event_capture_obeys_database_clock_and_event_boundary(monkeypatch):
+    from sportsbet.quant import nfl_stat_only_paper as paper
+
+    url=os.environ['SPORTSBET_TEST_DATABASE_URL'].replace(
+        'postgresql+psycopg://','postgresql://',1)
+    pool=await asyncpg.create_pool(url,min_size=1,max_size=1)
+    scan_id=uuid.uuid4().hex
+    games=[scan_id+suffix for suffix in ('a','b','c')]
+    prediction_ids=[uuid.uuid4().hex for _ in games]
+    try:
+        async with pool.acquire() as conn:
+            now=await conn.fetchval('SELECT clock_timestamp()')
+            payloads=[]
+            for game,captured,quoted in zip(games,
+                    (now-timedelta(seconds=1),now-timedelta(seconds=401),
+                     now+timedelta(seconds=15)),
+                    (now-timedelta(seconds=2),now-timedelta(seconds=402),
+                     now+timedelta(seconds=14))):
+                payloads.append(dict(sport='nfl',game_id=game,player_id='7',
+                    prop_type='receptions',captured_at=captured.isoformat(),
+                    quote_time=quoted.isoformat(),
+                    game_start_time=(now+timedelta(hours=1)).isoformat()))
+            for prediction_id,payload in zip(prediction_ids,payloads):
+                await conn.execute('INSERT INTO analytics.predictions(id,scan_id,payload) '
+                    'VALUES($1,$2,$3)',prediction_id,scan_id,paper.encode(payload))
+        # Exercise the SQL and server clock independently of the frozen model.
+        monkeypatch.setattr(paper.shadow,'FROZEN_AT',
+            (now-timedelta(minutes=1)).isoformat())
+        monkeypatch.setattr(paper.shadow,'shadow_record',
+            lambda _: {'status':'predicted'})
+        first=await paper.capture(pool,scan_id,event_id=games[0])
+        assert first['counts']=={'attempts':1,'predicted':1,'recorded':1}
+        again=await paper.capture(pool,scan_id,event_id=games[0])
+        assert again['counts']=={'attempts':1,'predicted':1,'late_or_existing':1}
+        expired=await paper.capture(pool,scan_id,event_id=games[1])
+        assert expired['counts']=={'attempts':1,'outside_pregame_window':1}
+        future=await paper.capture(pool,scan_id,event_id=games[2])
+        assert future['counts']=={'attempts':1,'predicted':1,'late_or_existing':1}
+        async with pool.acquire() as conn:
+            receipts=await conn.fetch('SELECT game_id,prediction_id,decision_at,valid_until, '
+                'recorded_at,payload,payload_sha256 FROM analytics.paper_selections '
+                'WHERE game_id=ANY($1::text[])',games)
+        assert len(receipts)==1
+        receipt=receipts[0]
+        assert receipt['game_id']==games[0] and receipt['prediction_id']==prediction_ids[0]
+        assert receipt['decision_at']<=receipt['recorded_at']<receipt['valid_until']
+        assert receipt['payload_sha256']==paper.digest(receipt['payload'])
+    finally:
+        async with pool.acquire() as conn:
+            await conn.execute('DELETE FROM analytics.paper_selections '
+                'WHERE game_id=ANY($1::text[])',games)
+            await conn.execute('DELETE FROM analytics.predictions WHERE scan_id=$1',scan_id)
         await pool.close()

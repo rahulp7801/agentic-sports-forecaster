@@ -11,6 +11,7 @@ from sportsbet.ledger import Ledger
 @pytest.mark.parametrize('sport',['nfl','nba'])
 @pytest.mark.parametrize('delay,start_after,availability_age,expected',[
     (301,7200,0,'stale_quote'),(61,60,0,'game_started'),
+    (10,3605,0,'game_locked'),
     (10,7200,3595,'availability_unavailable'),(10,7200,0,'accepted'),
 ])
 async def test_admission_rechecks_time_after_context_queries(tmp_path,monkeypatch,sport,delay,start_after,availability_age,expected):
@@ -66,7 +67,8 @@ async def test_admission_rechecks_time_after_context_queries(tmp_path,monkeypatc
 
 @pytest.mark.parametrize('phase',['lock','queries'])
 @pytest.mark.parametrize('delay,start_after,availability_age,expected',[
-    (301,7200,0,'stale_quote'),(61,60,0,'game_started'),
+    (301,7200,0,'stale_quote'),(3661,3660,0,'game_started'),
+    (301,3900,0,'game_locked'),
     (10,7200,3595,'availability_unavailable'),(10,7200,0,'accepted'),
 ])
 def test_reservation_rechecks_deadlines_after_database_waits(tmp_path,monkeypatch,phase,delay,start_after,availability_age,expected):
@@ -96,11 +98,12 @@ def test_reservation_rechecks_deadlines_after_database_waits(tmp_path,monkeypatc
 
 
 @pytest.mark.parametrize('quote_age,availability_age,start_after,expected',[
-    (300,3600,1,None),(301,0,1,'stale_quote'),(0,3601,1,'availability_unavailable'),
-    (-60,-60,1,None),(-61,0,1,'stale_quote'),(0,-61,1,'availability_unavailable'),
+    (300,3600,3601,None),(301,0,3601,'stale_quote'),(0,3601,3601,'availability_unavailable'),
+    (-60,-60,3601,None),(-61,0,3601,'stale_quote'),(0,-61,3601,'availability_unavailable'),
+    (0,0,3600,'game_locked'),
     (0,0,0,'game_started'),
 ])
-def test_admission_preserves_exact_existing_time_thresholds(quote_age,availability_age,start_after,expected):
+def test_admission_preserves_quote_and_availability_limits_with_board_lock(quote_age,availability_age,start_after,expected):
     from sportsbet.prop.admission import admission_timing_reason
     now=datetime(2026,9,30,12,tzinfo=timezone.utc)
     assert admission_timing_reason(now,game_start_time=now+timedelta(seconds=start_after),

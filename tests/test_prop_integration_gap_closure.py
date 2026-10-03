@@ -136,7 +136,7 @@ def test_context_agent_calls_write_player_prop_snapshot(requested_game, expected
                 agent = make_context_agent(
                     pool=mock_pool,
                     api_key="test-key",
-                    daily_credit_cap=500,
+                    daily_credit_cap=20,
                 )
                 asyncio.run(agent(initial_state))
 
