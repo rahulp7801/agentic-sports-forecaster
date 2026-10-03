@@ -94,3 +94,61 @@ invalid. Brier scores use only venue-verified contracts and are labeled as
 such; a partial subset is not presented as full-cohort performance. Distinct
 verified games and an equal-game score expose correlated lines. No sportsbook
 model is paired here, and ROI, CLV, alpha, and execution remain unclaimed.
+
+## Frozen NFL current-role shadow
+
+A separate private, outcome-blind forecast was frozen at **2026-10-03
+08:31:42 UTC**, before the first selected kickoff. It uses the predeclared
+20-game current-role prior strength, with at least two 2026 games for the
+quoted team, a unique GSIS/PFR crosswalk, and positive offensive snaps for
+every counted game. A missing stat row becomes zero only when offensive snaps
+prove participation. Other recorded offensive production without a matching
+snap receipt makes that player's prop unavailable. The two latest played games
+must match the quoted team. Recent target, carry, or attempt shares and the
+largest teammate share are recorded as context; they do not change the
+forecast. Current roster and availability are not independently verified.
+
+The six official nflverse parquet assets were all updated **before** the
+2026-10-02 18:43:24 UTC market capture. The pinned `stats_player` asset IDs
+are 513240737, 513243463, and 605933905 (2024–26); the pinned `snap_counts`
+IDs are 301000083, 585953424, and 605418286. Their exact SHA-256 values and
+update times are in `kalshi_role_shadow.SOURCES` and are checked on replay.
+The prequote crosswalk SHA-256 is
+`8fa1995e608405945c2f1a6289a3ac718f35c9b5845344b0c0d4334d480b8750`.
+These are free existing sources; this step made no paid odds request.
+
+The ignored private receipt is `.local/kalshi-role-shadow-20261003-final-v3.json`,
+SHA-256 `119331ba1764ee74f309384823c89035c81ac78ef7a5b0911156f6ccb760d627`.
+Its implementation hash is
+`c360a69d0d77d6f39e953bf1b657b28f05b1a0be51e1555ecebd0259c8b4f8f5`
+after normalizing CRLF to LF for Windows/Linux replay;
+its 289 forecast rows hash to
+`d82504dcdd27a0ac573b957db7e9d1f52994fa2403d1dcdbd3c2a043a4e4c9b2`.
+Coverage is **289/417 contracts, 146 players, 15 games**: 20 passing yards,
+54 rushing yards, 116 receiving yards, and 99 receptions. The other 128 are
+explicitly unavailable: 90 have fewer than 20 offensive games, 20 lack
+sufficient recent quoted-team role, and 18 lack a unique identity. This
+is a research shadow, with zero qualified picks and no established edge.
+
+The frozen market quote preceded model generation by about 13 hours, so
+their probability difference is a research hypothesis rather than an
+executable same-time price edge. `kalshi_role_shadow_eval` replays the full
+source and forecast receipts, then scores only the same exact contracts with
+venue-verified YES/NO outcomes. It reports paired model and market Brier and
+log loss, equal-game differences, missing result states, and full denominators; it never
+labels this result as ROI, CLV, or a consumer pick. The current cohort has
+only 15 games, so it cannot alone satisfy the previously frozen NFL role
+protocol's 50 independent-game evidence gate even if every contract settles.
+That protocol also requires favorable game- and player-clustered upper 95%
+confidence bounds for both scores against production and market baselines;
+this offline Kalshi comparison alone does not provide those tests. Further
+prospectively frozen cohorts and contemporaneous executable price captures
+are needed for an edge claim.
+
+After 2026-10-06 06:15 UTC, use the bounded read-only settlement collector
+above, then run the offline paired audit with `--market-archive`, `--cohort`,
+`--shadow .local/kalshi-role-shadow-20261003-final-v3.json`,
+`--source-dir .local/kalshi-source-20261003`, `--settlements`, and `--output`.
+Preserve the raw market archive, cohort, six parquet files, crosswalk and
+shadow receipt privately; the GitHub collection artifact expires in about a
+week. Do not re-freeze this cohort after outcomes are known.

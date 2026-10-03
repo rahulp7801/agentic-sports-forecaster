@@ -95,8 +95,9 @@ def _market_result(market: dict, row: dict, received: datetime) -> str:
     return market["result"]
 
 
-def audit(market_archive: dict, cohort: dict, settlement_archive: dict,
-          *, now: datetime | None = None) -> dict:
+def venue_results(market_archive: dict, cohort: dict, settlement_archive: dict,
+                  *, now: datetime | None = None) -> tuple[list[dict], dict[str, tuple[str, str | None]]]:
+    """Validate the full denominator once; return only exact final YES/NO labels."""
     rows = verify_cohort(market_archive, cohort)
     now = now or datetime.now(timezone.utc)
     if now.utcoffset() is None:
@@ -140,27 +141,40 @@ def audit(market_archive: dict, cohort: dict, settlement_archive: dict,
             returned[ticker] = (market, received)
     if requested != set(expected):
         raise ValueError("Settlement requests missed frozen contracts")
-    counts: Counter[str] = Counter()
-    brier: list[Decimal] = []
-    per_game: dict[str, list[Decimal]] = defaultdict(list)
+    states: dict[str, tuple[str, str | None]] = {}
     for ticker, row in expected.items():
         if ticker in failures:
-            counts["provider_unavailable"] += 1
+            states[ticker] = ("provider_unavailable", None)
             continue
         if ticker not in returned:
-            counts["not_returned"] += 1
+            states[ticker] = ("not_returned", None)
             continue
         market, received = returned[ticker]
         try:
             result = _market_result(market, row, received)
         except ValueError as exc:
-            counts[str(exc)] += 1
+            states[ticker] = (str(exc), None)
+            continue
+        states[ticker] = ("venue_verified", result)
+    if len(states) != len(rows):
+        raise AssertionError("Settlement denominator partition failed")
+    return rows, states
+
+
+def audit(market_archive: dict, cohort: dict, settlement_archive: dict,
+          *, now: datetime | None = None) -> dict:
+    rows, states = venue_results(market_archive, cohort, settlement_archive, now=now)
+    counts = Counter(state for state, _ in states.values())
+    brier: list[Decimal] = []
+    per_game: dict[str, list[Decimal]] = defaultdict(list)
+    for row in rows:
+        state, result = states[row["ticker"]]
+        if state != "venue_verified":
             continue
         probability = Decimal(row["market_midpoint"])
         score = (probability - (1 if result == "yes" else 0)) ** 2
         brier.append(score)
         per_game[row["milestone_id"]].append(score)
-        counts["venue_verified"] += 1
     total = len(rows)
     if sum(counts.values()) != total:
         raise AssertionError("Settlement denominator partition failed")
