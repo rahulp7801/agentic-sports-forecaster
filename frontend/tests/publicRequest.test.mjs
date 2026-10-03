@@ -24,19 +24,35 @@ test('ordinary API queries and a forged prefetch header still use the same bound
 
 test('identity-bound history requests pass the outer boundary and inner validation together',()=>{
   for(const [sport,id] of [['nfl','00-0000001'],['nba','1630639'],['cfb','201']]) {
-    const params=new URLSearchParams({sport,player_id:id,player:'Renamed Player',exact:'1',before:'2026-09-27',limit:'20'});
+    const params=new URLSearchParams({sport,player_id:id,player:'Renamed Player',exact:'1',before:'2026-09-27',
+      observed_before:'2026-09-26T23:00:00Z',limit:'20'});
     const req=request('/api/gamelogs?'+params);
     assert.equal(publicRequest(req),null);
     assert.equal(gameLogRequest(new URL(req.url).searchParams).playerId,id);
+    assert.equal(gameLogRequest(new URL(req.url).searchParams).observedBefore,'2026-09-26T23:00:00Z');
     assert.equal(publicRequest(request('/api/gamelogs?'+params+'&player_id='+id)),400);
   }
   assert.equal(publicRequest(request('/api/gamelogs?player_id='+ '1'.repeat(129))),400);
   assert.equal(publicRequest(request('/api/signals?player_id=201')),400);
   assert.throws(()=>gameLogRequest(new URLSearchParams({sport:'nfl',player_id:"1' OR 1=1"})));
+  const core=new URLSearchParams({sport:'nfl',player_id:'00-0000001',exact:'1',limit:'20',
+    before:'2026-09-27',observed_before:'2026-09-26T23:00:00Z',stat:'pass_yds'});
+  assert.equal(publicRequest(request('/api/gamelogs?'+core)),null);
+  assert.equal(gameLogRequest(core).stat,'pass_yds');
+  assert.throws(()=>gameLogRequest(new URLSearchParams({...Object.fromEntries(core),stat:'rec_yds'})));
 });
 
 
 test('player search passes the read boundary while duplicate and control input is rejected',()=>{
   assert.equal(publicRequest(request('/api/signals?player=Aaron%20Rodgers&sport=nfl&view=library')),null);
   for(const path of ['/api/signals?player=A&player=B','/api/signals?player=Bad%00Name']) assert.equal(publicRequest(request(path)),400);
+});
+
+test('only Auth.js callback paths permit cross-site navigation; waitlist requires same-origin consent submission',()=>{
+ assert.equal(publicRequest(request('/api/auth/callback/github?code=opaque&state=opaque','GET',{'sec-fetch-site':'cross-site'})),null);
+ assert.equal(publicRequest(request('/api/auth/signin/github','POST',{origin:'https://example.test'})),null);
+ assert.equal(publicRequest(request('/api/auth/signin/github','DELETE')),405);
+ assert.equal(publicRequest(request('/api/waitlist','POST',{origin:'https://example.test'})),null);
+ assert.equal(publicRequest(request('/api/waitlist','POST')),403);
+ assert.equal(publicRequest(request('/api/waitlist','GET')),405);
 });

@@ -1,0 +1,7 @@
+{
+  "commitment_sha256": "955398aec9b50fddf75209c5359c6a241ae650fea9b9ebba1547780bf196b5b1",
+  "first_selected_start_at": "2026-10-09T00:15:00+00:00",
+  "protocol": "kalshi-nfl-prospective-role-capped-prior-v1",
+  "recorded_at": "2026-10-08T17:00:50.765410+00:00",
+  "role_receipt_sha256": "8a5cb9d7b50a4a217c4a56867e9b225a0c2a59ce0ddba76826b9b81d1123910d"
+}

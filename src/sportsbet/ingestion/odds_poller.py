@@ -5,10 +5,9 @@ and player prop odds from The Odds API, BudgetExhaustedError for credit-cap
 enforcement, and is_stale() for staleness checking before odds reach the
 Arbitrage Agent.
 
-Budget persistence: _credits_remaining is in-memory only in v1. Counter resets
-on process restart — a WARNING is logged on first __aenter__ so operators are
-aware. Persistent budget tracking is deferred to Phase 5 per RESEARCH.md open
-question #3.
+Every paid request reserves its maximum specified-market cost in the same
+persistent ledger as scheduled scans. Provider remaining-credit headers add
+another guard; the local instance counter does not authorize requests.
 """
 from __future__ import annotations
 
@@ -17,6 +16,11 @@ from typing import TYPE_CHECKING, Literal
 
 import httpx
 import structlog
+
+from sportsbet.config import DEFAULT_DAILY_CREDIT_LIMIT, settings
+from sportsbet.ledger import Ledger
+from sportsbet.ingestion.odds_api_credential import require_safe_odds_api_key
+from sportsbet.model_contract import PROP_MARKETS
 
 if TYPE_CHECKING:
     pass
@@ -93,33 +97,29 @@ def is_stale(
 
 
 class OddsAPIPoller:
-    """Async context manager that polls The Odds API for NFL odds.
+    """Legacy NFL/NBA poller sharing the scheduled scan credit ledger.
 
     Usage:
-        async with OddsAPIPoller(api_key="...", daily_credit_cap=500) as poller:
+        async with OddsAPIPoller(api_key="...", daily_credit_cap=20) as poller:
             odds = await poller.fetch_nfl_odds()
 
-    Budget guard: if _credits_remaining is not None and < 1, fetch_nfl_odds()
-    raises BudgetExhaustedError without making any HTTP request.
-
-    Credit tracking: _credits_remaining is updated from the x-requests-remaining
-    response header after each successful fetch. It starts as None (unknown)
-    until the first successful response.
+    Each request reserves its maximum configured-market cost before network
+    I/O. The provider's remaining-credit header adds a second guard.
     """
 
     def __init__(self, api_key: str, daily_credit_cap: int) -> None:
+        require_safe_odds_api_key(api_key)
+        if (type(daily_credit_cap) is not int
+                or not 1 <= daily_credit_cap <= DEFAULT_DAILY_CREDIT_LIMIT):
+            raise ValueError('Legacy poller allowance must be at most 20 credits')
         self._api_key = api_key
         self._daily_credit_cap = daily_credit_cap
         self._credits_remaining: int | None = None
         self._client: httpx.AsyncClient | None = None
         self._client_cm: httpx.AsyncClient | None = None
+        self._ledger: Ledger | None = None
 
     async def __aenter__(self) -> "OddsAPIPoller":
-        if self._credits_remaining is None:
-            log.warning(
-                "odds_budget_counter_reset",
-                note="in-memory only; restarts reset counter",
-            )
         # Enter httpx.AsyncClient as context manager so mock patches work correctly.
         # self._client_cm is the context manager object; self._client is the active client.
         self._client_cm = httpx.AsyncClient(base_url=ODDS_API_BASE, timeout=10.0)
@@ -140,6 +140,30 @@ class OddsAPIPoller:
             )
         return self._client
 
+    def _reserve(self, cost: int, sport: Literal['nfl', 'nba']) -> None:
+        """Fail closed before I/O; leave two scheduled prop checks reserved."""
+        if not settings.analytics_database_url:
+            raise BudgetExhaustedError('Shared analytics credit ledger is required')
+        if settings.odds_rolling_credit_limit > 450:
+            raise BudgetExhaustedError('Rolling allowance exceeds the approved 450 credits')
+        width = len(PROP_MARKETS[sport])
+        holdback = 2 * width if self._daily_credit_cap >= 3 * width else 0
+        if self._ledger is None:
+            self._ledger = Ledger()
+        if (type(cost) is not int or cost < 1
+                or not self._ledger.reserve_api_credits(
+                    cost, self._daily_credit_cap, holdback=holdback)):
+            raise BudgetExhaustedError('Shared Odds API allowance or pregame reserve exhausted')
+
+    @staticmethod
+    def _game_cost(regions: str, markets: str) -> int:
+        """Bound legacy game odds to the one approved region and three markets."""
+        names = markets.split(',') if isinstance(markets, str) else []
+        if (regions != 'us' or not names or len(names) != len(set(names))
+                or not set(names) <= {'h2h', 'spreads', 'totals'}):
+            raise ValueError('Unsupported legacy game-odds request scope')
+        return len(names)
+
     async def fetch_nfl_odds(
         self,
         regions: str = "us",
@@ -148,14 +172,16 @@ class OddsAPIPoller:
         """Fetch current NFL odds from The Odds API.
 
         Raises:
-            BudgetExhaustedError: If _credits_remaining is not None and < 1.
+            BudgetExhaustedError: If the shared ledger or provider remaining
+                balance cannot cover the request and pregame reserve.
                 No HTTP call is made in this case.
             httpx.HTTPStatusError: If the API returns a non-2xx status.
 
         Returns:
             Parsed JSON list of event dicts from the Odds API.
         """
-        if self._credits_remaining is not None and self._credits_remaining < 1:
+        cost = self._game_cost(regions, markets)
+        if self._credits_remaining is not None and self._credits_remaining < cost:
             raise BudgetExhaustedError(
                 f"Odds API daily credit cap reached. "
                 f"credits_remaining={self._credits_remaining}, "
@@ -163,6 +189,7 @@ class OddsAPIPoller:
             )
 
         client = self._active_client()
+        self._reserve(cost, 'nfl')
 
         response = await client.get(
             f"/v4/sports/{NFL_SPORT_KEY}/odds",
@@ -195,14 +222,16 @@ class OddsAPIPoller:
         """Fetch current NBA game odds from The Odds API.
 
         Raises:
-            BudgetExhaustedError: If _credits_remaining is not None and < 1.
+            BudgetExhaustedError: If the shared ledger or provider remaining
+                balance cannot cover the request and pregame reserve.
                 No HTTP call is made in this case.
             httpx.HTTPStatusError: If the API returns a non-2xx status.
 
         Returns:
             Parsed JSON list of event dicts from the Odds API.
         """
-        if self._credits_remaining is not None and self._credits_remaining < 1:
+        cost = self._game_cost(regions, markets)
+        if self._credits_remaining is not None and self._credits_remaining < cost:
             raise BudgetExhaustedError(
                 f"Odds API daily credit cap reached. "
                 f"credits_remaining={self._credits_remaining}, "
@@ -210,6 +239,7 @@ class OddsAPIPoller:
             )
 
         client = self._active_client()
+        self._reserve(cost, 'nba')
 
         response = await client.get(
             f"/v4/sports/{NBA_SPORT_KEY}/odds",
@@ -242,26 +272,31 @@ class OddsAPIPoller:
 
         Step 1: GET /v4/sports/{sport_key}/events — retrieve list of live events.
         Step 2: For each event, GET /v4/sports/{sport_key}/events/{id}/odds with
-                prop markets. Budget guard fires before each per-event call.
+                prop markets. The ledger reserves up to seven credits before
+                each per-event call.
 
         Args:
             sport: "nfl" or "nba" — determines sport_key and prop market set.
 
         Raises:
-            BudgetExhaustedError: If _credits_remaining < 10 before any per-event
-                call. Threshold of 10 (not 1) ensures we always have headroom
-                for the events list call itself.
+            BudgetExhaustedError: If the shared ledger or provider remaining
+                balance cannot cover the event list or a seven-market call.
             httpx.HTTPStatusError: If any API call returns a non-2xx status.
 
         Returns:
             List of raw per-event prop response dicts (one dict per event).
         """
         client = self._active_client()
+        if sport not in ('nfl', 'nba'):
+            raise ValueError('Unsupported legacy prop sport')
 
         sport_key = NFL_SPORT_KEY if sport == "nfl" else NBA_SPORT_KEY
         prop_markets = NFL_PROP_MARKETS if sport == "nfl" else NBA_PROP_MARKETS
 
-        # Step 1: fetch event list
+        # Step 1: reserve one credit conservatively for the event list.
+        if self._credits_remaining is not None and self._credits_remaining < 1:
+            raise BudgetExhaustedError('Provider allowance exhausted')
+        self._reserve(1, sport)
         events_response = await client.get(
             f"/v4/sports/{sport_key}/events",
             params={"apiKey": self._api_key},
@@ -281,15 +316,17 @@ class OddsAPIPoller:
 
         # Step 2: per-event prop odds
         results: list[dict] = []  # type: ignore[type-arg]
+        cost = len(prop_markets.split(','))
         for event in events:
             # Budget guard before each per-event call
-            if self._credits_remaining is not None and self._credits_remaining < 10:
+            if self._credits_remaining is not None and self._credits_remaining < cost:
                 raise BudgetExhaustedError(
                     f"Odds API daily credit cap approaching. "
                     f"credits_remaining={self._credits_remaining}, "
                     f"daily_credit_cap={self._daily_credit_cap}"
                 )
 
+            self._reserve(cost, sport)
             event_id = event["id"]
             props_response = await client.get(
                 f"/v4/sports/{sport_key}/events/{event_id}/odds",

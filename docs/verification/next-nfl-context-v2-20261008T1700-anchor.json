@@ -1,0 +1,7 @@
+{
+  "commitment_sha256": "955398aec9b50fddf75209c5359c6a241ae650fea9b9ebba1547780bf196b5b1",
+  "implementation_sha256": "b26accf986674ac8db924883b53b77771af67cae65fe6e4b2681a4bde7823f0c",
+  "policy_sha256": "6166254862c42f31984edc3f764175ae8253125fb7207a85842699dd5606f54d",
+  "protocol": "kalshi-nfl-prospective-teammate-context-v2-anchor",
+  "receipt_sha256": "eed9cba5373734a44e549d2000b9f96ec8a2c32073f80422e6b2ac956e9f5d5d"
+}

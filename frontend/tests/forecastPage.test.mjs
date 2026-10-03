@@ -7,7 +7,7 @@ const base={id:'A',player:'A',team:'KC',opponent:'BUF',sport:'nfl',home_team:'Ka
   prop_type:'pass_yds',line:249.5,direction:'over',true_prob:.6,american_odds:100,push_probability:0,
   sportsbook:'draftkings',model_version:'empirical-jeffreys-v4-nfl-history-v1',history_policy_version:'nfl-explicit-receiving-v1',sample_size:40,mean_stat:260,
   confidence_interval:[.55,.65],kelly_fraction:.01,gated:false,forecast_cutoff:new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(now+3600000),trade_plan:[],injury_flags:{},market_type:'player_pass_yds',
-  snapped_at:stamp,game_start_time:new Date(now+3600000).toISOString(),
+  snapped_at:stamp,history_observed_before:stamp,captured_at:stamp,game_start_time:new Date(now+2*3600000).toISOString(),
   availability:{status:'observed',roster_confirmed:true,subject_status:'Not listed on injury report',probability_adjusted:false,
     captured_at:stamp,team:'KC',teammates:[],
     source_url:'https://site.api.espn.com/apis/site/v2/sports/football/nfl/injuries',source_sha256:'a'.repeat(64),
@@ -30,7 +30,8 @@ test('forecast requests accept the bounded CFB research library',()=>{
   assert.deepEqual(forecastRequest(new URL('https://example.test/api/signals?sport=cfb&view=library&offset=0&limit=36')),
     {sport:'cfb',view:'library',offset:0,limit:36,revision:null,player:''});
 });
-test('candidate view returns a bounded future watchlist without relabeling stale prices',async()=>{
+test('candidate view returns a bounded future watchlist without relabeling stale prices',async t=>{
+  t.mock.method(Date,'now',()=>now);
   const options=forecastRequest(new URL('https://example.test/api/signals?sport=nfl&view=candidates'));
   const stale={...base,snapped_at:new Date(now-6*60000).toISOString()};
   const started={...stale,id:'started',player:'Started',game_start_time:new Date(now-1).toISOString()};
@@ -176,6 +177,21 @@ test('paged forecasts cannot attach a same-name profile for another roster athle
 });
 
 
+test('research archive profile cannot postdate the forecast',()=>{
+  const original={...base,availability:{...base.availability,player_id:'123'}};
+  const profile=observed=>({player:'A',name:'A',team:'KC',player_id:'123',
+    image_url:'https://a.espncdn.com/i/headshots/nfl/players/full/123.png',
+    captured_at:observed,source_url:base.availability.roster_source_url,
+    source_sha256:'c'.repeat(64)});
+  const late=profile(new Date(now+30000).toISOString());
+  const data=input([{...original,player_profile:late}]);
+  data.profiles={'player-profiles:nfl':{profiles:[late]}};
+  const projected=forecastPage(data,request(),now).signals[0];
+  assert.equal(projected.player_profile,undefined);
+  assert.equal(projected.true_prob,base.true_prob);
+  data.profiles={'player-profiles:nfl':{profiles:[profile(stamp)]}};
+  assert.equal(forecastPage(data,request(),now).signals[0].player_profile?.captured_at,stamp);
+});
 test('player search is canonical, bounded, and excluded from qualification selection',()=>{
   const query=player=>'https://example.test/api/signals?'+new URLSearchParams({sport:'nfl',player});
   for(const player of ['Aaron Rodgers',"D'Andre Swift",'D\u2019Andre Swift','Jos\u00e9 Player']) {
@@ -207,4 +223,35 @@ test('searched pages preserve query identity through responses and continuation'
   await assert.rejects(fetchForecasts('nfl',undefined,'library',async()=>({ok:true,json:async()=>({search_player:'Other'})}),36,undefined,false,search),/search response/);
   const mismatched={...forecastPage(input([base]),request(),now),search_player:search};
   await assert.rejects(fetchForecasts('nfl',undefined,'library',async()=>({ok:true,json:async()=>mismatched}),36,undefined,false,search),/searched/);
+});
+
+test('invalid qualified rows cannot make a complete consumer shortlist',async()=>{
+  const options=forecastRequest(new URL('https://example.test/api/signals?sport=nfl&view=qualified'));
+  const malformed=forecastPage(input([{...base,player:undefined},base]),options,now);
+  assert.equal(malformed.invalid_signals,1);
+  assert.equal(malformed.pagination.complete,false);
+  assert.deepEqual(malformed.signals,[]);
+  const oldServer=forecastPage(input([base]),options,now);
+  oldServer.invalid_signals=1;
+  await assert.rejects(fetchForecasts('nfl',undefined,'qualified',async()=>({ok:true,json:async()=>oldServer})),/binding|coverage/);
+});
+test('a fresh accepted snapshot leaves the qualified API at the exact T-60 board lock',()=>{
+  const options=forecastRequest(new URL('https://example.test/api/signals?sport=nfl&view=qualified'));
+  const lock=Date.parse(base.game_start_time)-3_600_000;
+  const at=(time)=>({...base,snapped_at:new Date(time).toISOString(),history_observed_before:new Date(time).toISOString(),
+    captured_at:new Date(time).toISOString(),
+    availability:{...base.availability,captured_at:new Date(time).toISOString()}});
+  assert.equal(forecastPage(input([at(lock-1)]),options,lock-1).signals.length,1);
+  const result=forecastPage(input([at(lock)]),options,lock);
+  assert.deepEqual(result.signals,[]);
+  assert.equal(result.total_count,1);
+  assert.equal(result.pagination.complete,true);
+});
+
+test('qualified shortlist requires explicit full-window coverage',async()=>{
+  const options=forecastRequest(new URL('https://example.test/api/signals?sport=nfl&view=qualified'));
+  const legacy=forecastPage(input([base]),options,now);
+  delete legacy.pagination;
+  await assert.rejects(fetchForecasts('nfl',undefined,'qualified',
+    async()=>({ok:true,json:async()=>legacy})),/coverage/);
 });

@@ -10,6 +10,7 @@ const row={
   status:'active',occurrence_datetime:'2026-10-04T02:00:00Z',
   yes_bid_dollars:'0.4700',yes_bid_size_fp:'1.00',
   yes_ask_dollars:'0.5000',yes_ask_size_fp:'977.17',
+  no_bid_dollars:'0.5000',no_ask_dollars:'0.5300',
 };
 function fixture(data,calls) {
   return async url=>{calls.push(url.href);return Response.json(data);};
@@ -57,4 +58,45 @@ test('public request boundary only accepts one sport parameter',()=>{
   assert.equal(check('https://example.test/api/kalshi-research?sport=cfb'),null);
   assert.equal(check('https://example.test/api/kalshi-research?sport=nfl&target=https://evil.test'),400);
   assert.equal(check('https://example.test/api/kalshi-research?sport=nfl&sport=nba'),400);
+});
+test('inconsistent complementary quotes cannot be displayed',async()=>{
+  const calls=[];
+  const badAsk={...row,no_bid_dollars:'0.4000'};
+  const badBid={...row,ticker:EVENT+'-TOR',no_ask_dollars:'0.6200'};
+  const noComplement={...row,ticker:EVENT+'-OTHER',no_bid_dollars:undefined,
+    no_ask_dollars:undefined};
+  const data={cursor:'',events:[{event_ticker:EVENT,series_ticker:'KXNBAGAME',
+    title:'Miami vs Toronto',markets:[badAsk,badBid,noComplement]}]};
+  const result=await listKalshiResearch('nba',fixture(data,calls),NOW);
+  assert.deepEqual(result.events[0].markets.map(market=>market.ticker),
+    [EVENT+'-MIA',EVENT+'-TOR']);
+  assert.equal(result.events[0].markets[0].yes_bid,0.47);
+  assert.equal(result.events[0].markets[0].yes_ask,null);
+  assert.equal(result.events[0].markets[1].yes_bid,null);
+  assert.equal(result.events[0].markets[1].yes_ask,0.5);
+});
+test('a contract with a different occurrence time is not grouped under the game',async()=>{
+  const calls=[];
+  const later={...row,ticker:EVENT+'-TOR',occurrence_datetime:'2026-10-05T02:00:00Z'};
+  const data={cursor:'',events:[{event_ticker:EVENT,series_ticker:'KXNBAGAME',
+    title:'Miami vs Toronto',markets:[row,later]}]};
+  const result=await listKalshiResearch('nba',fixture(data,calls),NOW);
+  assert.equal(result.events[0].starts_at,'2026-10-04T02:00:00.000Z');
+  assert.deepEqual(result.events[0].markets.map(market=>market.ticker),[EVENT+'-MIA']);
+});
+test('CFB accepts a zero-priced opposite bid while hiding a zero-size YES ask',async()=>{
+  const calls=[];
+  const event='KXNCAAFGAME-26OCT03AKRCMU';
+  const market={...row,ticker:event+'-AKR',event_ticker:event,
+    occurrence_datetime:'2026-10-03T20:00:00Z',
+    yes_bid_dollars:'0.9900',yes_bid_size_fp:'46057.27',
+    yes_ask_dollars:'1.0000',yes_ask_size_fp:'0.00',
+    no_bid_dollars:'0.0000',no_ask_dollars:'0.0100'};
+  const data={cursor:'',events:[{event_ticker:event,series_ticker:'KXNCAAFGAME',
+    title:'Akron vs Central Michigan',markets:[market]}]};
+  const result=await listKalshiResearch('cfb',fixture(data,calls),NOW);
+  assert.equal(result.events.length,1);
+  assert.equal(result.events[0].markets[0].yes_bid,0.99);
+  assert.equal(result.events[0].markets[0].yes_ask,null);
+  assert.equal(result.events[0].markets[0].yes_ask_size,null);
 });

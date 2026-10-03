@@ -1,9 +1,18 @@
 import {publicSignalSnapshots,publicPlayerProfile} from './signalMetrics.ts';
+import {capturedPlayerProfile} from './pickContext.ts';
 import {bestPickOptions,recentCandidateOptions} from './bestPicks.ts';
+import {forecastDisplayAuthority} from './forecastDisplayProducer.ts';
+import {bindForecastDisplayPacket} from './forecastDisplayPacketProducer.ts';
+import {forecastDisplayJsonUsage} from './forecastDisplayPacket.ts';
+import type {ForecastDisplayView} from './forecastDisplayAuthority.ts';
 import type {Sport} from './types';
 
 export const FORECAST_PAGE_SIZE=100;
-const PAGE_BYTES=1024*1024;
+const RESPONSE_BYTES=1024*1024;
+// Reserve outer page/display fields and a future authenticated transport envelope.
+const PAGE_BYTES=RESPONSE_BYTES-4096;
+// Keep the existing transport/projection node bound, reserving page and binding fields.
+const PAGE_NODES=50_000-256;
 
 export function forecastRequest(url:URL) {
   const sport=url.searchParams.get('sport');
@@ -95,7 +104,7 @@ export function forecastPage(data:ForecastPageInput,request:ReturnType<typeof fo
   const metadata=publicSignalSnapshots(data.metadata ? [data.metadata] : [],now,request.sport ?? undefined);
   const signals:typeof metadata.signals=[];
   const games=new Map<string,typeof metadata.games[number]>();
-  let consumed=0,invalid=0,bytes=0;
+  let consumed=0,invalid=0,bytes=0,nodes=0;
   for(const row of shortlisted ? data.rows.slice(0,5000) : data.rows) {
     const result=publicSignalSnapshots([row.payload],now,request.sport ?? undefined);
     if(result.signals.length>1) throw new Error('Invalid forecast row');
@@ -104,13 +113,25 @@ export function forecastPage(data:ForecastPageInput,request:ReturnType<typeof fo
       if(request.player && !signal.player.toLowerCase().includes(request.player.toLowerCase())) throw new Error('Invalid searched forecast');
       const values=data.profiles?.['player-profiles:'+signal.sport]?.profiles;
       if(Array.isArray(values) && values.length<=500) {
-        const matches=values.map(value=>publicPlayerProfile(value,signal.sport,signal.player,now,signal.availability?.player_id)).filter(Boolean);
-        if(matches.length===1) signal={...signal,player_profile:matches[0]};
+        const captured=Date.parse(signal.captured_at ?? '');
+        const matches=Number.isFinite(captured) ? values.map(value=>
+          publicPlayerProfile(value,signal.sport,signal.player,captured,signal.availability?.player_id)).filter(Boolean) : [];
+        if(matches.length===1) {
+          const profile=capturedPlayerProfile({...signal,player_profile:matches[0]});
+          if(profile) signal={...signal,player_profile:profile};
+        }
       }
-      const size=new TextEncoder().encode(JSON.stringify(signal)).length;
-      if(request.view==='library' && bytes+size>PAGE_BYTES && consumed>0) break;
-      bytes+=size;signals.push(signal);
-      for(const game of result.games) if(game.game_id===signal.game_id && game.sport===signal.sport) {
+      const rowGames=result.games.filter(game=>game.game_id===signal.game_id&&game.sport===signal.sport);
+      const displayRow=request.view==='library' ? forecastDisplayAuthority([signal],'library',data.revision,false,0,now).rows[0] : null;
+      const displayBytes=displayRow ? new TextEncoder().encode(JSON.stringify(displayRow)).length : 0;
+      // Include metadata, multibyte context, games and array/index overhead before
+      // consuming a row, so the continuation cursor still names the next input.
+      const size=new TextEncoder().encode(JSON.stringify(signal)).length+displayBytes+8
+        +rowGames.reduce((sum,game)=>sum+new TextEncoder().encode(JSON.stringify(game)).length+1,0);
+      const rowNodes=displayRow ? forecastDisplayJsonUsage(JSON.parse(JSON.stringify([signal,displayRow,...rowGames]))).nodes-1 : 0;
+      if(request.view==='library' && (bytes+size>PAGE_BYTES||nodes+rowNodes>PAGE_NODES) && consumed>0) break;
+      bytes+=size;nodes+=rowNodes;signals.push(signal);
+      for(const game of rowGames) {
         games.set(game.sport+':'+game.game_id,game);
       }
     }
@@ -118,12 +139,16 @@ export function forecastPage(data:ForecastPageInput,request:ReturnType<typeof fo
   }
   const qualified=request.view==='qualified';
   const complete=request.offset+consumed>=data.total_count
-    && (!qualified || (data.total_count<=5000 && data.window_complete===true));
+    && (!qualified || (data.total_count<=5000 && data.window_complete===true && invalid===0));
   // An incomplete candidate inspection cannot advertise the strongest picks.
   const selected=qualified ? (complete ? bestPickOptions(signals,now) : [])
     : request.view==='candidates' ? recentCandidateOptions(signals,now) : signals;
-  return {search_player:request.player,generated_at:metadata.generated_at,games:shortlisted ? [] : [...games.values()],signals:selected,
+  const page={search_player:request.player,generated_at:metadata.generated_at,games:shortlisted ? [] : [...games.values()],signals:selected,
+    display:forecastDisplayAuthority(selected,request.view as ForecastDisplayView,data.revision,complete,invalid,now),
     invalid_signals:invalid,total_count:data.total_count,
     pagination:{offset:request.offset,next_offset:!shortlisted && !complete ? request.offset+consumed : null,
       revision:data.revision,complete},research_window:'Latest 100 published game snapshots'};
+  const packet=bindForecastDisplayPacket(page,{...request,view:request.view as ForecastDisplayView});
+  if(new TextEncoder().encode(JSON.stringify(packet)).length>PAGE_BYTES) throw new Error('Forecast display response exceeds byte bound');
+  return packet;
 }

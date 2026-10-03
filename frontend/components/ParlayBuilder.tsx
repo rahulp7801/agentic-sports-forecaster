@@ -2,9 +2,10 @@
 
 import {useEffect,useMemo,useState} from 'react';
 import {AlertTriangle,Check,Plus,RefreshCw,Sparkles,X} from 'lucide-react';
-import type {PickBoard,PickBoardRecord} from '@/lib/pickBoard';
-import {PROP_LABELS} from '@/lib/pickTerms';
-import {assistantReasons,assistedSlip,dependenceEnvelope,expectedSlipReturn,MAX_SLIP_LEGS,slipWarnings,type SlipMode} from '@/lib/slipBuilder';
+import type {PickBoard,PickBoardRecord} from '@/lib/pickBoardTypes';
+import {PROP_LABELS} from '@/lib/pickLabels';
+import {capturedPlayerProfile,capturedRosterTeam} from '@/lib/pickContext';
+import {assistantReasons,assistedSlip,dependenceEnvelope,eligibleBoardRecords,expectedSlipReturn,MAX_SLIP_LEGS,slipWarnings,type SlipMode} from '@/lib/slipBuilder';
 import type {Sport} from '@/lib/types';
 import PlayerPortrait from './PlayerPortrait';
 import styles from './ResearchViews.module.css';
@@ -22,6 +23,13 @@ export default function ParlayBuilder({sport}:{sport:Sport}) {
   const [mode,setMode]=useState<SlipMode>('balanced'),[payout,setPayout]=useState(''),[error,setError]=useState('');
   const [edited,setEdited]=useState(false);
   const [loading,setLoading]=useState(true),[revision,setRevision]=useState(0);
+  const [now,setNow]=useState(()=>Date.now());
+  useEffect(()=>{const tick=window.setInterval(()=>setNow(Date.now()),5_000);
+    const visible=()=>{if(document.visibilityState==='visible')setNow(Date.now());};
+    document.addEventListener('visibilitychange',visible);
+    window.addEventListener('focus',visible);
+    return()=>{window.clearInterval(tick);document.removeEventListener('visibilitychange',visible);
+      window.removeEventListener('focus',visible);};},[]);
 
   useEffect(()=>{
     const controller=new AbortController();
@@ -33,13 +41,13 @@ export default function ParlayBuilder({sport}:{sport:Sport}) {
       setBoard(value);
       setMode('balanced');
       setEdited(false);
-      setSelected(assistedSlip(value.current,'balanced').map(record=>record.id));
+      setSelected([]);
     }).catch(()=>{if(!controller.signal.aborted){setBoard(null);setError('The approved pick board could not be loaded.');}})
       .finally(()=>{if(!controller.signal.aborted)setLoading(false);});
     return()=>controller.abort();
   },[sport,revision]);
 
-  const candidates=board?.current ?? EMPTY_RECORDS;
+  const candidates=eligibleBoardRecords(board?.current ?? EMPTY_RECORDS,now);
   const legs=useMemo(()=>candidates.filter(record=>selected.includes(record.id)),[candidates,selected]);
   const envelope=dependenceEnvelope(legs),returns=expectedSlipReturn(envelope,Number(payout));
   const warnings=slipWarnings(legs),reasons=assistantReasons(legs,mode,edited);
@@ -49,23 +57,23 @@ export default function ParlayBuilder({sport}:{sport:Sport}) {
     : ids.length<MAX_SLIP_LEGS ? [...ids,record.id] : ids);};
 
   return <section className={styles.toolView} aria-labelledby="slip-title">
-    <header className={styles.toolHeader}><div><small>Evidence-grounded assistant</small><h2 id="slip-title">Slip builder</h2></div><p>Build from worker-approved pregame picks only. The assistant ranks existing evidence, checks shared exposure, and explains uncertainty. It cannot create picks or place orders.</p></header>
+    <header className={styles.toolHeader}><div><small>Recorded-pick research</small><h2 id="slip-title">Slip builder</h2></div><p>Build a research slip from previously approved pregame picks. Their prices and availability are recorded snapshots that need a fresh check. The assistant cannot create picks or place orders.</p></header>
 
     <section className={styles.assistantBar} aria-label="Slip assistant">
       <div className={styles.assistantIdentity}><Sparkles aria-hidden="true" /><div><strong>AI slip assistant</strong><span>Deterministic · no generated legs</span></div></div>
       <div className={styles.modePicker}>{modes.map(item=><button type="button" key={item.id} aria-pressed={mode===item.id} title={item.copy} onClick={()=>rebuild(item.id)}>{item.label}</button>)}</div>
-      <button type="button" className={styles.rebuildButton} disabled={!candidates.length} onClick={()=>rebuild(mode)}><RefreshCw size={15} />Build best slip</button>
+      <button type="button" className={styles.rebuildButton} disabled={!candidates.length} onClick={()=>rebuild(mode)}><RefreshCw size={15} />Build research slip</button>
     </section>
 
     {loading ? <SlipSkeleton /> : error ? <div className={styles.slipError} role="alert"><strong>Slip unavailable</strong><span>{error}</span><button type="button" onClick={()=>{setLoading(true);setError('');setRevision(value=>value+1);}}>Try again</button></div> :
       <div className={styles.slipGrid}>
         <section className={styles.pickPool} aria-labelledby="suggested-picks-title">
-          <div className={styles.slipSectionHeading}><div><span>Approved board</span><h3 id="suggested-picks-title">Suggested picks</h3></div><strong>{candidates.length} available</strong></div>
-          {!candidates.length ? <div className={styles.slipEmpty}><strong>No approved pregame picks</strong><p>The assistant will not fill an empty board with research forecasts. Check again after the next worker scan.</p></div> :
+          <div className={styles.slipSectionHeading}><div><span>Previously approved board</span><h3 id="suggested-picks-title">Recorded picks to reprice</h3></div><strong>{candidates.length} recorded</strong></div>
+          {!candidates.length ? <div className={styles.slipEmpty}><strong>No recorded pregame picks</strong><p>The assistant will not fill an empty board with research forecasts. Check again after the next worker scan.</p></div> :
             <div className={styles.slipCandidates}>{candidates.map(record=>{
-              const active=selected.includes(record.id),profile=record.player_profile;
+              const active=selected.includes(record.id),profile=capturedPlayerProfile(record);
               return <article className={active?styles.slipCandidateActive:styles.slipCandidate} key={record.id}>
-                <header><PlayerPortrait signal={record} /><div><strong>{record.player}</strong><small>{profile?.team ?? record.team}{profile?.jersey?` · #${profile.jersey}`:''}{profile?.position?` · ${profile.position}`:''}</small></div><span>{record.board_state==='locked'?'Locked T-60':'Recorded · reprice'}</span></header>
+                <header><PlayerPortrait signal={record} /><div><strong>{record.player}</strong><small>{capturedRosterTeam(record) ?? record.sport.toUpperCase()}{profile?.jersey?` · #${profile.jersey}`:''}{profile?.position?` · ${profile.position}`:''}</small></div><span>{record.board_state==='locked'?'Locked T-60':'Recorded · reprice'}</span></header>
                 <h4>{record.direction==='over'?'Over':'Under'} {record.line} {PROP_LABELS[record.prop_type]}</h4>
                 <p>{record.away_team} at {record.home_team} · {new Date(record.game_start_time ?? '').toLocaleString(undefined,{weekday:'short',hour:'numeric',minute:'2-digit'})}</p>
                 <dl><div><dt>Model</dt><dd>{pct(record.true_prob)}</dd></div><div><dt>Confidence floor</dt><dd>{record.confidence_interval?pct(record.confidence_interval[0]):'Unavailable'}</dd></div><div><dt>Recorded price</dt><dd>{record.sportsbook} {record.american_odds>0?'+':''}{record.american_odds}</dd></div></dl>
@@ -76,7 +84,7 @@ export default function ParlayBuilder({sport}:{sport:Sport}) {
 
         <aside className={styles.slipPanel} aria-labelledby="your-slip-title">
           <div className={styles.slipSectionHeading}><div><span>Read-only plan</span><h3 id="your-slip-title">Your slip</h3></div><strong>{legs.length}/{MAX_SLIP_LEGS} legs</strong></div>
-          {!legs.length ? <div className={styles.slipEmpty}><strong>Choose a suggested pick</strong><p>Use the assistant or add a board-approved leg. Nothing here is sent to a sportsbook.</p></div> : <>
+          {!legs.length ? <div className={styles.slipEmpty}><strong>Choose recorded picks to study</strong><p>Build a research slip or add a previously approved leg. Recheck every current line and price; nothing is sent to a sportsbook.</p></div> : <>
             <ol className={styles.selectedLegs}>{legs.map((record,index)=><li key={record.id}><span>{index+1}</span><div><strong>{record.player}</strong><small>{record.direction==='over'?'Over':'Under'} {record.line} {PROP_LABELS[record.prop_type]} · {pct(record.true_prob)}</small></div><button type="button" aria-label={`Remove ${record.player}`} onClick={()=>toggle(record)}><X size={15}/></button></li>)}</ol>
             <section className={styles.assistantReason}><header><Sparkles size={16}/><strong>{edited?'Edited slip':'Why this build'}</strong></header>{reasons.map(reason=><p key={reason}>{reason}</p>)}</section>
             {warnings.length>0&&<section className={styles.slipWarnings}><header><AlertTriangle size={16}/><strong>Checks before use</strong></header><ul>{warnings.map(warning=><li key={warning}>{warning}</li>)}</ul></section>}

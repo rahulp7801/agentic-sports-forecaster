@@ -1,9 +1,11 @@
+import {requireOwner} from '../../../lib/ownerAccess.ts';
 import {liveSchedule} from '../../../lib/liveSchedule.ts';
 import {scheduleSnapshot} from '../../../lib/scheduleStatus.ts';
 import {slateReadiness,settlementProgress} from '../../../lib/slateReadiness.ts';
-import {NO_STORE_HEADERS,PUBLIC_CACHE_HEADERS} from '../../../lib/publicCache.ts';
+import {NO_STORE_HEADERS,slateCacheHeadersUntil} from '../../../lib/publicCache.ts';
 export const dynamic='force-dynamic';
 export async function GET(request:Request) {
+  const denied=await requireOwner(request); if(denied) return denied;
   const sport=new URL(request.url).searchParams.get('sport') ?? 'nfl';
   if(sport!=='nba' && sport!=='nfl' && sport!=='cfb') return Response.json({error:'Unsupported sport.'},{status:400,headers:NO_STORE_HEADERS});
   const now=Date.now();
@@ -20,7 +22,7 @@ export async function GET(request:Request) {
   // from every page view when the stored slate is absent or stale.
   result ??=sport==='cfb' ? scheduleSnapshot(null,sport,now,6) : await liveSchedule(sport,now,6);
   if(result.status!==200) return Response.json(result.body,{status:503,headers:NO_STORE_HEADERS});
-  const games=slateReadiness(result.body.games,scan,now);
+  const games=slateReadiness(result.body.games,scan,now,result.body.captured_at);
   return Response.json({...result.body,games,coverage_available,
-    settlements:settlementProgress(reports,sport,now),window_days:7},{headers:PUBLIC_CACHE_HEADERS.status});
+    settlements:settlementProgress(reports,sport,now),window_days:7},{headers:slateCacheHeadersUntil(games,now)});
 }

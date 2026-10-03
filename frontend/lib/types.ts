@@ -17,9 +17,13 @@ export interface AvailabilityContextSplit {
   unit: 'offense' | 'defense';
   source: 'nflverse_snap_counts' | 'nba_final_box_scores';
   participation: 'recorded unit snaps' | 'recorded minutes';
-  evidence_version: 'recorded-participation-v2';
+  evidence_version: 'recorded-participation-v2' | 'recorded-participation-v3';
   unknown_games: number;
   sample_window?: {cutoff:string;active:ContextDateRange|null;absent:ContextDateRange|null;unknown:ContextDateRange|null};
+  recent_window?: {version:'participation-recent-30d-v1';since:string;cutoff:string;
+    active:{games:number;mean:number|null;hit_rate:number|null};
+    absent:{games:number;mean:number|null;hit_rate:number|null};unknown_games:number;
+    sample_window:NonNullable<AvailabilityContextSplit['sample_window']>};
   active: {games:number; mean:number|null; hit_rate:number|null};
   absent: {games:number; mean:number|null; hit_rate:number|null};
 }
@@ -35,6 +39,8 @@ export interface AvailabilityEvidence {
   roster_source_url?: string;
   roster_source_sha256?: string;
   team?: string;
+  opponent_team?: string;
+  opponent_injury_coverage?: 'observed' | 'unavailable';
   player_id?: string;
   player_image_url?: string;
   roster_player_name?: string;
@@ -53,6 +59,7 @@ export type NextGenMetric = 'avg_time_to_throw' | 'avg_completed_air_yards' |
 
 export interface NextGenStatsEvidence {
   status: 'observed';
+  evidence_version?: 'ngs-row-commitment-v2';
   stat_type: 'passing' | 'receiving' | 'rushing';
   sample_weeks: number;
   sample_periods?: Array<{season:number;week:number;team:string|null}>;
@@ -92,6 +99,9 @@ export interface EVSignal {
   data_source?: string;
   model_version?: string;
   history_policy_version?: string;
+  history_observed_before?: string;
+  history_source_admission_policy?: string;
+  history_source_verified?: boolean;
   game_start_time?: string;
   kelly_fraction: number;    // 0–0.25
   american_odds: number;

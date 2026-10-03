@@ -1,6 +1,6 @@
 const PARAMETERS:Record<string,string[]>={
   '/api/signals':['sport','view','offset','limit','revision','player'],
-  '/api/gamelogs':['sport','player','player_id','limit','before','exact','observed_before'],
+  '/api/gamelogs':['sport','player','player_id','limit','before','exact','observed_before','stat'],
   '/api/metrics':['sport','cohort'],
   '/api/markets':['sport'], '/api/prop-screens':['sport'],
   '/api/games':['sport'], '/api/slate':['sport'], '/api/benchmarks':['sport'],
@@ -13,10 +13,21 @@ const PARAMETERS:Record<string,string[]>={
 export function publicRequest(request:Pick<Request,'url'|'method'|'headers'>):number|null {
   const url=new URL(request.url);
   if(!url.pathname.startsWith('/api/')) return null;
+  if(request.url.length>2048) return 414;
+  // OAuth callbacks are cross-site navigations. Auth.js validates state, PKCE and CSRF.
+  if(url.pathname.startsWith('/api/auth/')) {
+    return ['GET','POST','HEAD'].includes(request.method) ? null : 405;
+  }
+  if(url.pathname==='/api/waitlist') {
+    if(request.method!=='POST') return 405;
+    if(url.search) return 400;
+    if(request.headers.get('origin')!==url.origin || request.headers.get('sec-fetch-site')==='cross-site' || request.headers.get('sec-fetch-site')==='same-site') return 403;
+    return null;
+  }
   if(!['GET','HEAD'].includes(request.method)) return request.method==='POST' && url.pathname==='/api/scan' ? 403 : 405;
   if(request.url.length>2048) return 414;
   // The dashboard only makes same-origin browser requests. Server clients omit
-  // Fetch Metadata and Origin, so they remain able to read the public API.
+  // Fetch Metadata and Origin, but must still carry a verified owner session.
   const fetchSite=request.headers.get('sec-fetch-site');
   if(fetchSite && fetchSite!=='same-origin' && fetchSite!=='none') return 403;
   const origin=request.headers.get('origin');

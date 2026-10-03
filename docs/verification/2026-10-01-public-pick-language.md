@@ -13,3 +13,20 @@ phrases without modifying the source row, receipt, price, probability,
 qualification, stake fraction, or settlement. No model or evaluation version,
 provider call, daily or rolling credit limit, or reserve rule changes.
 This is a wording correction, not evidence of a positive edge.
+
+## Recorded slip selections, October 4
+
+The read-only slip builder receives **recorded or locked** board selections,
+whose original prices and roster checks may have expired. Previously it
+selected a "best slip" automatically on load and titled these rows
+"Suggested picks," despite the separate live shortlist withholding expired
+quotes. It now starts empty, requires an explicit build or add action, and
+labels the pool and resulting slip as research using recorded picks that need
+current line, price and availability checks. Its underlying candidate
+identity, rank, probability, dependence warning, payout arithmetic and
+no-order boundary are unchanged. This does not refresh any market price,
+create a qualified pick or establish profit.
+
+The local frontend suite passed 318/318, TypeScript and changed-file ESLint
+passed, and the production Next build completed. Production behavior still
+requires the protected private release to pass hosted CI and deploy.

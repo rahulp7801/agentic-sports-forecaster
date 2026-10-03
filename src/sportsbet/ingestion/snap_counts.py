@@ -61,5 +61,6 @@ def ingest_snap_counts_seasons(seasons: list[int], engine: sa.Engine | None = No
         frame['source_observed_at'] = observed
         with engine.begin() as conn:
             frame.to_sql('nfl_snap_counts',conn,if_exists='append',index=False,chunksize=1000,
-                         method=upsert_rows(['game_id','pfr_player_id']))
+                         method=upsert_rows(['game_id','pfr_player_id'],
+                             preserve_observation_on_unchanged=True))
         log.info('snap_counts_load_done',season=season,rows=len(rows))

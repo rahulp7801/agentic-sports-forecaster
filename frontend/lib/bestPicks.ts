@@ -1,5 +1,6 @@
 import {publicSignals} from './signalMetrics.ts';
 import type {EVSignal} from './types';
+import {playerIdentity} from './playerIdentity.ts';
 
 export type PickGroup={pick:EVSignal;alternatives:EVSignal[]};
 
@@ -15,7 +16,7 @@ export function compareQuality(a:EVSignal,b:EVSignal) {
 }
 
 function marketKey(signal:EVSignal) {
-  return [signal.sport,signal.game_id ?? '',signal.player,signal.prop_type,signal.direction].join(':');
+  return [signal.game_id ?? '',playerIdentity(signal),signal.prop_type,signal.direction].join(':');
 }
 
 /** Collapse alternate thresholds for the same player market, preserving the supplied ranking. */
@@ -42,7 +43,7 @@ export function bestPickGroups(value:unknown,now=Date.now(),maximum=3):PickGroup
   const groups=groupAlternateLines(eligible(value,now));
   const players=new Set<string>();
   return groups.filter(group=>{
-    const key=`${group.pick.game_id}:${group.pick.player}`;
+    const key=`${group.pick.game_id}:${playerIdentity(group.pick)}`;
     if(players.has(key)) return false;
     players.add(key);return true;
   }).slice(0,maximum);
@@ -51,14 +52,15 @@ export function bestPickGroups(value:unknown,now=Date.now(),maximum=3):PickGroup
 /** Recent source-backed leans for an empty live board; every result remains explicitly gated. */
 export function recentCandidateGroups(value:unknown,now=Date.now(),maximum=3):PickGroup[] {
   const ranked=publicSignals(value,now).signals.filter(signal=>signal.gated
-    && Date.parse(signal.game_start_time ?? '')>now && Date.parse(signal.snapped_at)<=now+60000
+    && Date.parse(signal.game_start_time ?? '')>now+3_600_000
+    && Date.parse(signal.snapped_at)<=now+60000
     && signal.sample_size!==undefined && signal.sample_size>=20
     && signal.availability?.status==='observed' && signal.availability.roster_confirmed
     && conservativeMargin(signal)!==null && signal.expected_return!==null
     && (signal.expected_return ?? 0)>0 && signal.true_prob>signal.implied_prob).sort(compareQuality);
   const players=new Set<string>();
   return groupAlternateLines(ranked).filter(group=>{
-    const key=`${group.pick.game_id}:${group.pick.player}`;
+    const key=`${group.pick.game_id}:${playerIdentity(group.pick)}`;
     if(players.has(key)) return false;
     players.add(key);return true;
   }).slice(0,maximum);
@@ -82,7 +84,7 @@ export function bestPicks(value:unknown,now=Date.now()) {
 export function researchPlayerPreview(ranked:EVSignal[],maximum=4):EVSignal[] {
   const players=new Set<string>();
   return ranked.filter(signal=>{
-    const key=`${signal.sport}:${signal.player}`;
+    const key=playerIdentity(signal);
     if(players.has(key)) return false;
     players.add(key);return true;
   }).slice(0,maximum);

@@ -1,7 +1,7 @@
 'use client';
 import { useState, useEffect, useCallback } from 'react';
 import type { Sport } from '@/lib/types';
-import { expectedProfit } from '@/lib/signalMetrics';
+import { expectedProfit } from '@/lib/displayMath';
 import {fetchForecasts} from '@/lib/fetchForecasts';
 
 function fmt_odds(n: number) { return n > 0 ? '+' + n : String(n); }

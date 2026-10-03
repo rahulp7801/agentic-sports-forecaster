@@ -1,15 +1,8 @@
 import {publicPlayerProfile,publicSignal} from './signalMetrics.ts';
-import type {EVSignal,Sport} from './types';
-
-export type PickBoardRecord=EVSignal&{
-  prediction_id:string;captured_at:string;lock_at:string;
-  board_state:'recorded'|'locked'|'final';selection_policy_version:'pregame-t60-v1';
-  result?:'win'|'loss'|'push'|'void'|'pending';result_verified?:boolean;
-  actual_value?:number|null;settled_at?:string|null;
-};
-export type PickBoard={generated_at:string;lock_minutes:60;selection_policy_version:'pregame-t60-v1';
-  current:PickBoardRecord[];history:PickBoardRecord[];
-  summary:{current:number;settled:number;pending:number;wins:number;losses:number;pushes:number;verified_win_rate:number|null}};
+import {capturedPlayerProfile} from './pickContext.ts';
+import type {Sport} from './types';
+import type {PickBoard,PickBoardRecord} from './pickBoardTypes.ts';
+export type {PickBoard,PickBoardRecord} from './pickBoardTypes.ts';
 
 const stamp=(value:unknown)=>typeof value==='string' && /([zZ]|[+-]\d\d:\d\d)$/.test(value) && Number.isFinite(Date.parse(value));
 const count=(value:unknown)=>Number.isSafeInteger(value) && Number(value)>=0 && Number(value)<=500;
@@ -29,8 +22,8 @@ function record(value:unknown,sport:Sport,profileValues:unknown,now:number,histo
   if(!signal || signal.sport!==sport || signal.gated || signal.kelly_fraction<=0) return null;
   let playerProfile=signal.player_profile;
   if(Array.isArray(profileValues) && profileValues.length<=500) {
-    const matches=profileValues.map(item=>publicPlayerProfile(item,sport,signal.player,now,signal.availability?.player_id)).filter(Boolean);
-    if(matches.length===1) playerProfile=matches[0];
+    const matches=profileValues.map(item=>publicPlayerProfile(item,sport,signal.player,captured,signal.availability?.player_id)).filter(Boolean);
+    if(matches.length===1) playerProfile=capturedPlayerProfile({...signal,player_profile:matches[0]}) ?? playerProfile;
   }
   const result=raw.result;
   if(history) {
@@ -69,7 +62,7 @@ export function publicPickBoard(value:unknown,profiles:unknown,sport:Sport,now=D
   const current=board.current.map(item=>record(item,sport,profileValues,now,false,snapshotTime)).filter(Boolean) as PickBoardRecord[];
   const history=board.history.map(item=>record(item,sport,profileValues,now,true,snapshotTime)).filter(Boolean) as PickBoardRecord[];
   const identities=[...current,...history].map(item=>item.id);
-  const playerGames=[...current,...history].map(item=>`${item.game_id}\u0000${item.player}`);
+  const playerGames=[...current,...history].map(item=>`${item.game_id}\u0000${item.player_id || item.player}`);
   if(current.length!==board.current.length || history.length!==board.history.length
     || new Set(identities).size!==identities.length || new Set(playerGames).size!==playerGames.length
     || summary.current!==current.length || summary.settled!==history.filter(item=>item.result_verified).length

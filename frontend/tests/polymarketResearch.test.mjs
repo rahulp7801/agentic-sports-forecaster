@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {listPredictionMarkets,predictionMarketDetail} from '../lib/polymarketResearch.ts';
+import {listPredictionMarkets,predictionMarketDetail,MarketEventStartedError} from '../lib/polymarketResearch.ts';
 import {publicRequest} from '../lib/publicRequest.ts';
 
 const NOW=Date.parse('2026-10-01T18:00:00Z');
@@ -82,4 +82,10 @@ test('public API rejects unexpected and duplicate research parameters',()=>{
   assert.equal(check('https://example.test/api/polymarket?sport=nfl&event='+SLUG),null);
   assert.equal(check('https://example.test/api/polymarket?sport=nfl&target=https://evil.test'),400);
   assert.equal(check('https://example.test/api/polymarket?sport=nfl&sport=nba'),400);
+});
+test('a started event never triggers a redundant detail quote read',async()=>{
+  const calls=[];
+  await assert.rejects(predictionMarketDetail('nfl',SLUG,fixtureFetcher(calls),
+    Date.parse('2026-10-04T17:00:00Z')),MarketEventStartedError);
+  assert.equal(calls.length,2);
 });

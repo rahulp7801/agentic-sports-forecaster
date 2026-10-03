@@ -1,0 +1,6 @@
+{
+  "commitment_sha256": "955398aec9b50fddf75209c5359c6a241ae650fea9b9ebba1547780bf196b5b1",
+  "committed_at": "2026-10-08T17:00:56.369444+00:00",
+  "first_selected_start_at": "2026-10-09T00:15:00+00:00",
+  "protocol": "kalshi-nfl-stat-only-pregame-marker-v1"
+}

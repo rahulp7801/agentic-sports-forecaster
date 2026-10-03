@@ -1,7 +1,25 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {pickTerms,latestRecordedQuote} from '../lib/pickTerms.ts';
+import {pickTerms,latestRecordedQuote,PROP_LABELS as legacyLabels,sportsbookLabel as legacySportsbookLabel} from '../lib/pickTerms.ts';
+import {PROP_LABELS,sportsbookLabel} from '../lib/pickLabels.ts';
 import {base,now} from './fixtures/qualifiedSignal.mjs';
+
+test('public display labels preserve existing terms and provider naming',()=>{
+  assert.equal(legacyLabels,PROP_LABELS);
+  assert.equal(legacySportsbookLabel,sportsbookLabel);
+  assert.deepEqual(PROP_LABELS,{points:'points',rebounds:'rebounds',assists:'assists',
+    threes:'three-pointers',pra:'points + rebounds + assists',steals:'steals',blocks:'blocks',
+    pass_yds:'passing yards',pass_tds:'passing touchdowns',rush_yds:'rushing yards',
+    rec_yds:'receiving yards',receptions:'receptions'});
+  const providers={betonlineag:'BetOnline',draftkings:'DraftKings',fanduel:'FanDuel',
+    betmgm:'BetMGM',caesars:'Caesars',betrivers:'BetRivers',fanatics:'Fanatics'};
+  for(const [provider,label] of Object.entries(providers)) {
+    assert.equal(sportsbookLabel(provider),label);
+    assert.equal(sportsbookLabel(provider.toUpperCase()),label);
+  }
+  assert.equal(sportsbookLabel('Recorded Unknown Book'),'Recorded Unknown Book');
+  assert.equal(pickTerms(base,now).pick,`Over ${base.line} ${PROP_LABELS[base.prop_type]}`);
+});
 test('displayed bet returns equal an independent win/loss/refund payout calculation',()=>{
   let checked=0;
   for(const odds of [-200,-150,-110,100,120,200]) for(const push of [0,.1]) for(const direction of ['over','under']) {

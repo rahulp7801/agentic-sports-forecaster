@@ -20,7 +20,7 @@ MagicMock pool pattern (Phase 4 locked decision):
 asyncio_mode = "auto" in pyproject.toml — tests are bare async def, no decorator needed.
 """
 import pytest
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from unittest.mock import MagicMock, AsyncMock
 
@@ -215,3 +215,45 @@ async def test_no_opponent_stats_falls_back_to_league_avg():
     assert signals.opponent_def_rating == LEAGUE_AVG_DEF_RATING, (
         f"Expected LEAGUE_AVG_DEF_RATING={LEAGUE_AVG_DEF_RATING}, got {signals.opponent_def_rating}"
     )
+
+
+async def test_new_nba_context_uses_only_source_backed_pregame_rows():
+    cutoff = datetime(2026, 10, 4, 3, 10, tzinfo=timezone.utc)
+    pool = make_mock_pool([{"team_abbreviation": "LAL", "game_date": date(2026, 10, 3)}])
+    state = _make_state()
+    state["observed_before"] = cutoff
+    result = await make_nba_context_signals_producer(
+        pool, target_date=date(2026, 10, 4))(state)
+    assert result["nba_context_signals"].rest_days == 0
+    conn = pool.acquire.return_value.__aenter__.return_value
+    sql, player_id, game_date, observed_before = conn.fetchrow.await_args.args
+    assert (player_id, game_date, observed_before) == (2544, date(2026, 10, 4), cutoff)
+    for predicate in (
+        "source_provider IN ('nba','espn')",
+        "source_sha256 ~ '^[0-9a-f]{64}$'",
+        "source_record_sha256 ~ '^[0-9a-f]{64}$'",
+        'source_observed_at IS NOT NULL AND source_observed_at <= $3',
+        'game_date < $2',
+    ):
+        assert predicate in sql
+
+
+async def test_new_nba_context_does_not_infer_team_without_eligible_source():
+    cutoff = datetime(2026, 10, 4, 3, 10, tzinfo=timezone.utc)
+    pool = make_mock_pool([None])
+    state = _make_state()
+    state["observed_before"] = cutoff
+    result = await make_nba_context_signals_producer(
+        pool, target_date=date(2026, 10, 4))(state)
+    assert result["nba_context_signals"] is None
+    assert pool.acquire.return_value.__aenter__.return_value.fetchrow.await_count == 1
+
+
+async def test_original_nba_context_population_remains_on_original_version():
+    pool = make_mock_pool([{"team_abbreviation": "LAL", "game_date": date(2026, 10, 2)}])
+    state = _make_state()
+    state["observed_before"] = datetime(2026, 10, 4, 2, 59, tzinfo=timezone.utc)
+    await make_nba_context_signals_producer(pool, target_date=date(2026, 10, 4))(state)
+    args = pool.acquire.return_value.__aenter__.return_value.fetchrow.await_args.args
+    assert len(args) == 3
+    assert 'source_observed_at' not in args[0]

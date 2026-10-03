@@ -1,32 +1,17 @@
-import history from '../data/week-one-demo-history.json' with {type:'json'};
+import display from '../data/week-one-demo-display.json' with {type:'json'};
 
-/** Fixed public retrospective holdout records; never live offers or accepted picks. */
-export const WEEK_ONE_DEMO=[
-  {player:'Matthew Stafford',team:'LAR',opponent:'SF',athlete:'12483',event:'401872657',date:'2026-09-10',
-    threshold:200.5,probability:.720588,sample:33,actual:155,
-    source_sha256:'1cefdae759629bef7ec6345d4f9e87edcdee907a934f0c04503297c414ebff13'},
-  {player:'Brock Purdy',team:'SF',opponent:'LAR',athlete:'4361741',event:'401872657',date:'2026-09-10',
-    threshold:200.5,probability:.7,sample:24,actual:205,
-    source_sha256:'1cefdae759629bef7ec6345d4f9e87edcdee907a934f0c04503297c414ebff13'},
-  {player:'Aaron Rodgers',team:'PIT',opponent:'ATL',athlete:'8439',event:'401872658',date:'2026-09-13',
-    threshold:200.5,probability:.632353,sample:33,actual:221,
-    source_sha256:'d9809ccb7867c49f53a53ddd00b9249eba6cc9e21cb4af1ec8fcd1cc29b95a4d'},
-] as const;
+/** Reviewed, fixed retrospective display outputs; never live offers or accepted picks. */
+export const WEEK_ONE_DEMO=display.records;
+export const DEMO_HISTORY_CAPTURED_AT=display.history_captured_at;
 export const DEFAULT_DEMO_INDEX=1;
+/** Grade the three retained over forecasts against their final values. */
 export function demoResult(record:typeof WEEK_ONE_DEMO[number]) {
   return {outcome:record.actual>record.threshold ? 'Above threshold' : 'Below threshold',
-    correct:(record.probability>.5)===(record.actual>record.threshold),
+    correct:record.actual>record.threshold,
     recommendation:'Research only',historical_price:null,profit:null,execution_ready:false};
 }
 
-/** Same season floor, exclusive date cutoff and 40-game cap as the retained replay. */
+/** Select a retained descriptive summary without reconstructing a model. */
 export function demoHistory(record:typeof WEEK_ONE_DEMO[number]) {
-  const games=history.records[record.player].filter(game=>game.date<record.date).slice(0,40);
-  const above=games.filter(game=>game.yards>record.threshold).length;
-  const sorted=games.map(game=>game.yards).sort((a,b)=>a-b);
-  const recent=games.slice(0,5);
-  return {games,above,below:games.length-above,
-    median:(sorted[Math.floor((sorted.length-1)/2)]+sorted[Math.floor(sorted.length/2)])/2,
-    recent,recentAbove:recent.filter(game=>game.yards>record.threshold).length,
-    probability:(above+.5)/(games.length+1)};
+  return record.history;
 }

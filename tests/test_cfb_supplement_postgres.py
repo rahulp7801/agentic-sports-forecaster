@@ -61,6 +61,28 @@ def test_atomic_supplement_view_replay_and_source_refresh_invalidation():
             assert conn.execute("SELECT count(*) FROM public.dashboard_gamelogs_asof WHERE sport='cfb' "
                 "AND player_id=%s AND game_key=%s AND record_available_at<=%s",
                 (PLAYER,EVENT,available)).fetchone()[0]==1
+            # The public history query must show the original unknown fields at
+            # the old capture time, then the source-verified zero after insertion.
+            def displayed(cutoff):
+                return conn.execute("""SELECT payload FROM (
+                    SELECT DISTINCT ON (sport,COALESCE(player_id,player_name),game_key)
+                        payload,game_date,player_name,game_key
+                    FROM public.dashboard_gamelog_versions
+                    WHERE sport='cfb' AND player_id=%s AND game_key=%s
+                        AND (%s::timestamptz IS NULL OR record_available_at<=%s::timestamptz)
+                    ORDER BY sport,COALESCE(player_id,player_name),game_key,
+                        record_available_at DESC NULLS LAST
+                    ) latest ORDER BY game_date DESC,player_name,game_key LIMIT 20""",
+                    (PLAYER,EVENT,cutoff,cutoff)).fetchall()
+            assert conn.execute("SELECT count(*) FROM public.dashboard_gamelog_versions "
+                "WHERE sport='cfb' AND player_id=%s AND game_key=%s",
+                (PLAYER,EVENT)).fetchone()[0]==2
+            older=displayed(available-timedelta(microseconds=1))
+            assert len(older)==1 and older[0][0]['rec_yds'] is None
+            assert older[0][0]['receptions'] is None and older[0][0]['rush_yds']==68
+            assert len(displayed(available))==1 and displayed(available)[0][0]['rec_yds']==0
+            assert len(displayed(None))==1 and displayed(None)[0][0]['receptions']==0
+
             def sample(cutoff):
                 params=PropParams(game_id='future',player_id=PLAYER,season=2024,sport='cfb',
                     prop_type='rec_yds',line=Decimal('0.5'),filters={},as_of_date=date(2026,9,30),
@@ -87,6 +109,9 @@ def test_atomic_supplement_view_replay_and_source_refresh_invalidation():
             conn.execute('UPDATE public.cfb_player_gamelogs SET rushing_yards=69 WHERE athlete_id=%s AND game_id=%s',(int(PLAYER),EVENT))
             assert effective()[0:3]==(None,None,69)
             assert effective()[-1]=='primary-v1'
+            assert conn.execute("SELECT count(*) FROM public.dashboard_gamelog_versions "
+                "WHERE sport='cfb' AND player_id=%s AND game_key=%s",
+                (PLAYER,EVENT)).fetchone()[0]==1
             assert conn.execute('SELECT count(*) FROM public.cfb_receiving_supplements').fetchone()[0]==1
         finally:
             conn.rollback()

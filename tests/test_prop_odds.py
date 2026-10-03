@@ -50,13 +50,16 @@ _PROPS_FIXTURE: dict[str, Any] = {
 
 
 @pytest.mark.asyncio
-async def test_fetch_nfl_player_props() -> None:
+async def test_fetch_nfl_player_props(monkeypatch) -> None:
     """fetch_player_props('nfl') returns list[dict] with expected event structure.
 
     Mocks httpx.AsyncClient to return fixture events list on /events call and
     fixture props response on per-event /events/{id}/odds call.
     """
     from sportsbet.ingestion.odds_poller import OddsAPIPoller
+    from sportsbet.config import settings
+
+    monkeypatch.setattr(settings, 'analytics_database_url', 'postgresql://test-ledger')
 
     events_response = MagicMock()
     events_response.raise_for_status = MagicMock()
@@ -76,13 +79,19 @@ async def test_fetch_nfl_player_props() -> None:
     mock_cm.__aenter__ = AsyncMock(return_value=mock_client)
     mock_cm.__aexit__ = AsyncMock(return_value=None)
 
-    with patch("httpx.AsyncClient", return_value=mock_cm):
-        async with OddsAPIPoller(api_key="test_key", daily_credit_cap=500) as poller:
+    with patch("httpx.AsyncClient", return_value=mock_cm), \
+            patch("sportsbet.ingestion.odds_poller.Ledger") as mock_ledger_cls:
+        mock_ledger_cls.return_value.reserve_api_credits.return_value = True
+        async with OddsAPIPoller(api_key="test_key", daily_credit_cap=20) as poller:
             result = await poller.fetch_player_props("nfl")
 
     assert isinstance(result, list)
     assert len(result) == 1
     assert result[0]["id"] == "evt_abc123"
+    assert [call.args for call in mock_ledger_cls.return_value.reserve_api_credits.call_args_list] == [
+        (1, 20), (7, 20)]
+    assert all(call.kwargs == {'holdback': 8} for call in
+               mock_ledger_cls.return_value.reserve_api_credits.call_args_list)
 
 
 # ---------------------------------------------------------------------------

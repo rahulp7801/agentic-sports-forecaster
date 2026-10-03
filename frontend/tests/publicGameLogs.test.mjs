@@ -42,3 +42,12 @@ test('stable IDs are sport-bound public fields and bounded query parameters',()=
   assert.throws(()=>publicGameLogs([{...base,player_id:'00-0000001'}],'cfb'));
   assert.throws(()=>publicGameLogs([{...base,player_id:2544}],'nba'));
 });
+
+test('NFL core history requests require exact identity and both pregame cutoffs',()=>{
+  const valid={sport:'nfl',player_id:'00-0000001',player:'Player',exact:'1',
+    before:'2026-10-04',observed_before:'2026-10-04T19:00:00Z',stat:'rush_yds'};
+  assert.equal(gameLogRequest(new URLSearchParams(valid)).stat,'rush_yds');
+  for(const patch of [{stat:'rec_yds'},{sport:'cfb',player_id:'123'},
+    {exact:'0'},{player_id:''},{before:''},{observed_before:''}])
+    assert.throws(()=>gameLogRequest(new URLSearchParams({...valid,...patch})));
+});

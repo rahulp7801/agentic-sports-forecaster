@@ -30,18 +30,30 @@ PROP_STAT_TYPE = {
 }
 TEAM_ALIASES = {"LAR": "LA", "WSH": "WAS"}
 MAX_SAMPLE_WEEKS = 8
+EVIDENCE_VERSION = 'ngs-row-commitment-v2'
 
 _EVIDENCE_QUERY = """
-    WITH prior AS (
-        SELECT * FROM ngs_stats
-        WHERE player_gsis_id=$1 AND stat_type=$2
-          AND season >= $3-1
-          AND (season < $3 OR (season=$3 AND week < $4))
-          AND week >= 1
-        ORDER BY season DESC,week DESC
+    WITH selected AS (
+        SELECT DISTINCT ON (season,stat_type) * FROM public.ngs_partition_catalog
+        WHERE stat_type=$2 AND season BETWEEN $3-1 AND $3
+          AND source_observed_at <= $5 AND recorded_at <= $5
+          AND ($6::bigint[] IS NULL OR version_id=ANY($6::bigint[]))
+        ORDER BY season,stat_type,recorded_at DESC,version_id DESC
+    ), prior AS (
+        SELECT n.* FROM public.ngs_history_versions n
+        JOIN selected v ON n.partition_version_id=v.version_id
+        WHERE player_gsis_id=$1 AND n.stat_type=$2
+          AND (n.season < $3 OR (n.season=$3 AND week < $4))
+          AND week >= 1 AND n.source_observed_at <= $5
+        ORDER BY n.season DESC,week DESC
         LIMIT 8
     )
     SELECT COUNT(*) AS sample_weeks,
+           jsonb_agg(to_jsonb(prior) ORDER BY season DESC,week DESC) AS source_rows,
+           jsonb_agg(DISTINCT jsonb_build_object('version_id',partition_version_id,
+             'season',season,'stat_type',stat_type,'source_sha256',source_sha256,
+             'record_set_sha256',record_set_sha256,'recorded_at',partition_available_at,
+             'normalization_version',normalization_version,'row_count',partition_rows)) AS partition_refs,
            jsonb_agg(jsonb_build_object('season',season,'week',week,'team',team_abbr)
              ORDER BY season DESC,week DESC) AS sample_periods,
            AVG(avg_time_to_throw) AS avg_time_to_throw,
@@ -66,6 +78,84 @@ _EVIDENCE_QUERY = """
              OR source_sha256 IS NULL OR source_observed_at IS NULL) AS invalid_source_rows
     FROM prior
 """
+
+
+def verified_tracking_rows(value, count, player_id, stat_type, source_hash,
+                           observed_before, aggregate, periods, refs):
+    """Replay retained row commitments before publishing descriptive averages."""
+    from sportsbet.ingestion.ngs import METRIC_COLUMNS
+    from sportsbet.ingestion.provenance import row_sha256
+    rows=json.loads(value) if isinstance(value,str) else value
+    if not isinstance(rows,list) or len(rows)!=count:
+        raise ValueError('Tracking source rows must cover the full sample')
+    identities=set()
+    source_periods=[]
+    for row in rows:
+        if not isinstance(row,dict):
+            raise ValueError('Invalid tracking source row')
+        if (row['player_gsis_id']!=player_id or row['stat_type']!=stat_type
+                or row['source_provider']!='nflverse_ngs'
+                or row['source_sha256']!=source_hash
+                or row['source_url']!=aggregate['source_url']):
+            raise ValueError('Tracking source identity differs from sample')
+        observed=datetime.fromisoformat(row['source_observed_at'])
+        if (observed.utcoffset() is None or observed>aggregate['source_observed_at']
+                or (observed_before is not None and observed>observed_before)):
+            raise ValueError('Tracking row is outside its observation cutoff')
+        ref=next((r for r in refs if r['season']==row['season']),None)
+        if (ref is None or row['partition_version_id']!=ref['version_id']
+                or row['source_sha256']!=ref['source_sha256']
+                or row['record_set_sha256']!=ref['record_set_sha256']
+                or row['normalization_version']!=ref['normalization_version']
+                or row['partition_rows']!=ref['row_count']
+                or datetime.fromisoformat(row['partition_available_at'])!=datetime.fromisoformat(ref['recorded_at'])
+                or observed>datetime.fromisoformat(ref['recorded_at'])):
+            raise ValueError('Tracking row differs from its retained partition')
+        fields=('season','week','player_gsis_id','team_abbr','player_position','stat_type')+METRIC_COLUMNS[stat_type]
+        digest=row_sha256({name:row[name] for name in fields})
+        if digest!=row['source_record_sha256']:
+            raise ValueError('Tracking row commitment does not match retained metrics')
+        identity=(row['season'],row['week'])
+        if identity in identities:
+            raise ValueError('Duplicate tracking source period')
+        identities.add(identity)
+        source_periods.append({'season':row['season'],'week':row['week'],
+                               'team':TEAM_ALIASES.get(row['team_abbr'],row['team_abbr'])})
+    if sorted(source_periods,key=lambda p:(p['season'],p['week']),reverse=True)!=periods:
+        raise ValueError('Tracking source periods differ from displayed sample')
+    for metric in METRICS[stat_type]:
+        values=[float(row[metric]) for row in rows if row[metric] is not None]
+        reported=aggregate[metric]
+        if (not values and reported is not None) or (values and (
+                reported is None or not math.isfinite(float(reported))
+                or not math.isclose(float(reported),sum(values)/len(values),rel_tol=1e-12,abs_tol=1e-12))):
+            raise ValueError('Tracking average differs from committed rows')
+
+
+def partition_references(value, season, stat_type, cutoff):
+    """Validate private exact-version references retained with each forecast."""
+    rows=json.loads(value) if isinstance(value,str) else value
+    if not isinstance(rows,list) or not 1<=len(rows)<=2:
+        raise ValueError('Invalid tracking partition references')
+    result=[];seen=set()
+    fields={'version_id','season','stat_type','source_sha256','record_set_sha256',
+            'recorded_at','normalization_version','row_count'}
+    for row in rows:
+        if not isinstance(row,dict) or set(row)!=fields:
+            raise ValueError('Incomplete tracking partition reference')
+        if (type(row['version_id']) is not int or row['version_id']<=0
+                or type(row['season']) is not int or not season-1<=row['season']<=season
+                or row['season'] in seen or row['stat_type']!=stat_type
+                or type(row['row_count']) is not int or not 1<=row['row_count']<=10000
+                or row['normalization_version'] not in ('legacy-ngs-row-v1','ngs-db-precision-v2')
+                or any(not isinstance(row[k],str) or re.fullmatch('[0-9a-f]{64}',row[k]) is None
+                       for k in ('source_sha256','record_set_sha256'))):
+            raise ValueError('Contradictory tracking partition reference')
+        moment=datetime.fromisoformat(row['recorded_at'])
+        if moment.utcoffset() is None or moment>cutoff:
+            raise ValueError('Tracking partition exceeds its availability cutoff')
+        seen.add(row['season']);result.append(row|{'recorded_at':moment.isoformat()})
+    return sorted(result,key=lambda r:r['season'])
 
 
 def sample_periods(value, count, season, cutoff_week):
@@ -94,6 +184,7 @@ async def load_ngs_evidence(
     team: str,
     prop_type: str,
     observed_before: datetime | None = None,
+    partition_refs: list[dict] | None = None,
 ) -> dict | None:
     """Return prior weekly tracking context without modifying model probability."""
     if observed_before is not None and (not isinstance(observed_before, datetime)
@@ -126,12 +217,15 @@ async def load_ngs_evidence(
             return None
         if type(cutoff_week) is not int or not 1 <= cutoff_week <= 22:
             return None
-        query = _EVIDENCE_QUERY
-        if observed_before is not None:
-            query = query.replace('AND week >= 1', 'AND week >= 1 AND source_observed_at <= $5')
+        # Use the database clock for an unbounded live read. The app host and
+        # database can differ slightly; exact replay still uses retained IDs.
+        selected_before=observed_before or await conn.fetchval('SELECT clock_timestamp()')
+        if not isinstance(selected_before,datetime) or selected_before.utcoffset() is None:
+            return None
+        pinned=partition_references(partition_refs,season,stat_type,selected_before) if partition_refs is not None else None
         row = await conn.fetchrow(
-            query, player_gsis_id, stat_type, season, cutoff_week,
-            *([observed_before] if observed_before is not None else [])
+            _EVIDENCE_QUERY, player_gsis_id, stat_type, season, cutoff_week,
+            selected_before, [r['version_id'] for r in pinned] if pinned is not None else None,
         )
     if row is None or not row["sample_weeks"]:
         return None
@@ -155,7 +249,12 @@ async def load_ngs_evidence(
     ):
         return None
     try:
+        refs=partition_references(row['partition_refs'],season,stat_type,selected_before)
+        if pinned is not None and refs!=pinned:
+            return None
         periods=sample_periods(row['sample_periods'],row['sample_weeks'],season,cutoff_week)
+        verified_tracking_rows(row.get('source_rows'),row['sample_weeks'],player_gsis_id,
+            stat_type,row['source_sha256'],selected_before,row,periods,refs)
     except (KeyError,TypeError,ValueError):
         return None
     values = {
@@ -167,6 +266,7 @@ async def load_ngs_evidence(
         return None
     return {
         "status": "observed",
+        "evidence_version": EVIDENCE_VERSION,
         "stat_type": stat_type,
         "sample_weeks": int(row["sample_weeks"]),
         "cutoff_season": season,
@@ -180,5 +280,9 @@ async def load_ngs_evidence(
         "source_sha256": row["source_sha256"],
         "source_observed_at": row["source_observed_at"].isoformat(),
         "probability_adjusted": False,
+        # Private forecast evidence only. The consumer projection explicitly
+        # selects public fields and does not export these version references.
+        "partition_refs": refs,
+        "version_selected_before": selected_before.isoformat(),
         **({"observed_before": observed_before.isoformat()} if observed_before is not None else {}),
     }

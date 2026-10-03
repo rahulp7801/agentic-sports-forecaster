@@ -57,6 +57,35 @@ key; the provider still accepted it at its free metadata endpoint. **Provider re
 values or scanner reports are committed. GitHub reported no open secret or
 CodeQL alerts; that did not detect this custom-provider exposure.
 
+On 2026-10-04 at 16:42 UTC, a read-only GitHub Actions secret metadata check
+showed `ODDS_API_KEY` was last updated on **2026-09-10 23:06:57 UTC**, before
+this exposure was identified. The secret has therefore not been replaced in
+the private workflow since the audit. Its value was not read; metadata alone
+cannot prove whether the provider revoked the old key. Keep provider
+revocation and secret replacement as a production release gate. Do not buy
+credits, enter a card, raise limits, or trigger a quote read to test the key.
+The private release now checks a one-way SHA-256 fingerprint of the exact
+historically exposed key at every supported paid-source entrypoint, before
+opening the shared credit ledger or making an HTTP request. It refuses that
+credential without printing it. This prevents the application from continuing
+to use the known exposed value; it cannot revoke the provider credential or
+stop use by someone who already copied it. A newly issued free key can pass
+the guard, subject to the existing 20-credit daily, 450-credit rolling, and
+pregame reserve limits. Rotation and hosted-secret replacement are still
+required before production collection resumes.
+At 2026-10-04 17:54:33 UTC, the private repository variable
+`DATA_PIPELINE_ENABLED` was set to `false` and read back from GitHub. This
+disables the scheduled paid daily and pregame scan branches in `data.yml`
+while the old hosted secret remains configured. The separate
+`PUBLIC_DATA_PIPELINE_ENABLED` stayed `true`, and the 20-credit daily limit
+stayed unchanged. The unconditionally scheduled NFL history refresh does not
+inject `ODDS_API_KEY`. Manual workflow dispatch can still request a paid
+operation, so this flag does not revoke the credential or replace provider
+rotation. Keep automatic paid collection off until the exposed key is revoked,
+the hosted secret is replaced with a new free key, and the protected release
+with the exact-key guard has passed CI and deployment verification. Do not
+purchase credits, add a card, or raise the established daily or rolling caps.
+
 The live database review found Supabase's named `anon` and `authenticated`
 default grants, including SELECT on the owner-executed game-log view. Table RLS
 already restricted policies to the application roles, but the view's direct

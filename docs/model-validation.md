@@ -209,3 +209,14 @@ without changing consumer probabilities or stake decisions. It retains immutable
 input/model/offer commitments, skips unsupported inputs explicitly, and reports
 paired future outcomes against v4 and same-book no-vig market probabilities under
 the [frozen collection policy](verification/2026-09-23-history-shadow-protocol.md).
+
+### Frozen teammate target-share check (October 3)
+
+The [fixed teammate-share study](verification/2026-10-03-nfl-team-target-share-result.md)
+added prior-team target share and the top teammate share to the existing
+history/workload features. On 3,257 eligible late-2025 research examples across
+150 games, challenger-minus-baseline Brier was +0.000028 and both game- and
+player-cluster intervals crossed zero. The challenger did not establish an
+incremental predictive gain; no consumer probability or qualification change
+followed. The study uses synthetic lines and no archived matched prices, so it
+cannot establish market edge.

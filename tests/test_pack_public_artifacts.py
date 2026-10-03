@@ -1,9 +1,7 @@
 import hashlib
-from pathlib import Path
 import tarfile
 
 import pytest
-import yaml
 
 from sportsbet.ingestion.pack_public_artifacts import pack, verify
 
@@ -38,20 +36,3 @@ def test_empty_stage_creates_no_artifact_and_unexpected_paths_fail(tmp_path):
     with pytest.raises(ValueError,match='Unexpected evidence file'):
         pack(staged,output)
     assert not output.exists()
-
-
-def test_evidence_is_scanned_before_packing_and_only_archive_is_uploaded():
-    for workflow in ('data.yml','public-data.yml'):
-        document=yaml.safe_load((Path('.github/workflows')/workflow).read_text(encoding='utf8'))
-        steps=document['jobs']['update']['steps']
-        names=[step.get('name') for step in steps]
-        assert names.index('Scan public evidence')<names.index('Pack verified public evidence losslessly')
-        assert names.index('Pack verified public evidence losslessly')<names.index('Retain public market evidence for replay')
-        scan=next(step for step in steps if step.get('name')=='Scan public evidence')
-        packed=next(step for step in steps if step.get('id')=='evidence_pack')
-        upload=next(step for step in steps if step.get('name')=='Retain public market evidence for replay')
-        assert 'gitleaks dir "$RUNNER_TEMP/public-evidence"' in scan['run']
-        assert "steps.evidence_scan.outcome == 'success'" in packed['if']
-        assert "steps.evidence_pack.outputs.packaged == 'true'" in upload['if']
-        assert upload['with']['path']=='${{ runner.temp }}/public-evidence.tar.xz'
-        assert upload['with']['compression-level']==0

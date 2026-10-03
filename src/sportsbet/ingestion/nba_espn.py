@@ -19,6 +19,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sportsbet.db.models import NBAPlayerGameLog
 from sportsbet.ingestion.archive import write_archive
 from sportsbet.ingestion.provenance import stat_row_sha256
+from sportsbet.ingestion.nba_participation import prepare_participation, store_participation
 
 CROSSWALKS = 'https://github.com/sportsdataverse/sportsdataverse-data/releases/download/nba_crosswalk'
 ESPN = 'https://site.api.espn.com/apis/site/v2/sports/basketball/nba'
@@ -141,6 +142,7 @@ def store_rows(engine, rows: list[dict]) -> None:
     if not rows:
         return
     table=NBAPlayerGameLog.__table__
+    participation=prepare_participation(rows)
     statement=insert(table)
     statement=statement.on_conflict_do_update(index_elements=['player_id','game_id'],
         set_={key:statement.excluded[key] for key in rows[0] if key not in ('player_id','game_id')},
@@ -153,6 +155,7 @@ def store_rows(engine, rows: list[dict]) -> None:
         if not previous<=incoming:
             raise ValueError('Provider removed a previously recorded participant; official reconciliation required')
         conn.execute(statement,rows)
+        store_participation(conn,participation)
 
 
 def refresh_recent(season: int, today: date, engine) -> dict:

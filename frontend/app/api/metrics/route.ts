@@ -1,3 +1,4 @@
+import {requireOwner} from '../../../lib/ownerAccess.ts';
 import { hosted, snapshot } from '@/lib/database';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
@@ -8,6 +9,7 @@ import { publicMetrics } from '@/lib/publicMetrics';
 import {NO_STORE_HEADERS,PUBLIC_CACHE_HEADERS} from '@/lib/publicCache';
 export const dynamic = 'force-dynamic';
 export async function GET(request: Request) {
+  const denied=await requireOwner(request); if(denied) return denied;
   const cohort = metricCohort(request.url);
   const sport = metricSport(request.url);
   if (!cohort || !sport) return NextResponse.json({error: 'Invalid metric request.'}, {status:400,headers:NO_STORE_HEADERS});

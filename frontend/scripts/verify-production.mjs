@@ -26,6 +26,9 @@ export const publicPipelinePaths = [
   '/api/slate?sport=nba',
   '/api/slate?sport=cfb',
   '/api/gamelogs?sport=cfb&player_id=1&exact=1&limit=1',
+  '/api/gamelogs?sport=nfl&player_id=00-0000001&exact=1&limit=1&before=2026-10-02&observed_before=2026-10-01T23%3A00%3A00Z',
+  '/api/gamelogs?sport=nba&player_id=1&exact=1&limit=1&before=2026-10-02&observed_before=2026-10-01T23%3A00%3A00Z',
+  '/api/gamelogs?sport=cfb&player_id=1&exact=1&limit=1&before=2026-10-02&observed_before=2026-10-01T23%3A00%3A00Z',
   '/api/benchmarks?sport=cfb',
   '/api/markets?sport=nfl',
   '/api/markets?sport=nba',
@@ -45,33 +48,17 @@ export const requiredCssMarkers = [
   '__demo{',
 ];
 
-export const requiredHtmlMarkers = [
-  'id="results"',
-  'Compare with constant directions',
-  'Same-record direction comparison',
-  'Always Under',
-  'Always Over',
-  '85.0%',
-  '77.0%',
-  '84.5%',
-  '82.0%',
-  'prospective profitability remains unproven',
+export const requiredHtmlMarkers=['id="waitlist"','id="backtest-demo"','Illustrative preview','Sample layout','Private preview','Join the waitlist','Owner sign-in'];
+export const livePaths=[...new Set([...paidPipelinePaths,...publicPipelinePaths,
+  '/api/kalshi-research?sport=nfl','/api/polymarket?sport=nfl','/api/scan'])];
+export const publicSecurityProbes=[
+  {path:'/api/scan',statuses:[403],options:{method:'POST'}},
+  {path:'/api/scans',statuses:[403],options:{headers:{origin:'https://attacker.invalid'}}},
+  {path:'/api/signals?sport=nfl&sport=nba',statuses:[400]},
+  {path:'/api/waitlist',statuses:[405]},
+  {path:'/api/waitlist',statuses:[403],options:{method:'POST',headers:{origin:'https://attacker.invalid'}}},
 ];
-
-export const publicSecurityProbes = [
-  { path: '/api/scan', statuses: [403], options: { method: 'POST' } },
-  { path: '/api/scans', statuses: [403], options: { headers: { 'sec-fetch-site': 'same-site' } } },
-  { path: '/api/scans', statuses: [403], options: { headers: { origin: 'https://attacker.invalid' } } },
-  { path: '/api/signals?sport=nfl&offset=1000', statuses: [400] },
-  { path: '/api/gamelogs?sport=nfl&player=%25', statuses: [400] },
-  { path: '/api/picks?sport=mlb', statuses: [400] },
-];
-
-export function readinessStatuses(path, { paidEnabled, publicEnabled }) {
-  if (paidPipelinePaths.includes(path)) return paidEnabled ? [200] : [200, 503];
-  if (publicPipelinePaths.includes(path)) return paidEnabled || publicEnabled ? [200] : [200, 503];
-  throw new Error(`Unclassified readiness endpoint: ${path}`);
-}
+export function readinessStatuses() {return [401];}
 
 export function verifySecurityHeaders(headers) {
   const expected = {
@@ -104,102 +91,68 @@ export function verifySecurityHeaders(headers) {
   }
 }
 
-function expectedPublicCapture(path, report) {
-  if (!report) return undefined;
-  const url = new URL(path, 'https://readiness.invalid');
-  const sport = url.searchParams.get('sport');
-  if (url.pathname === '/api/markets') return report.markets?.[sport]?.captured_at;
-  if (url.pathname === '/api/games') return report.schedules?.[sport]?.captured_at;
-  return undefined;
-}
-
-export async function verifyProduction({
-  base = process.env.PRODUCTION_BASE_URL || 'https://agentic-ev-analytics-platform.vercel.app',
-  fetchImpl = fetch,
-  paidEnabled = process.env.DATA_PIPELINE_ENABLED === 'true',
-  publicEnabled = process.env.PUBLIC_DATA_PIPELINE_ENABLED === 'true',
-  expectedPublicReport,
-  captureAttempts = 1,
-  captureDelayMs = 5000,
-  captureWait = delay => new Promise(resolve => setTimeout(resolve, delay)),
-} = {}) {
-  if (!Number.isInteger(captureAttempts) || captureAttempts < 1 || captureAttempts > 37
-      || !Number.isInteger(captureDelayMs) || captureDelayMs < 0 || captureDelayMs > 5000) {
-    throw new Error('Invalid public capture retry bounds');
-  }
-  base = base.replace(/\/$/, '');
-  async function check(path, expected, options = {}) {
-    const response = await fetchImpl(base + path, {
-      ...options,
-      signal: AbortSignal.timeout(20000),
-      redirect: 'manual',
-    });
-    if (!expected.includes(response.status)) {
-      throw new Error(`${path}: unexpected HTTP ${response.status}`);
+/** Assert source publication through restricted DB reads; never export an owner cookie to CI. */
+export async function verifyPublishedCaptures(report,read) {
+  const entries=[];
+  for(const sport of ['nfl','nba','cfb']) for(const [category,prefix] of [['markets','markets'],['schedules','schedule']]) {
+    const captured=report?.[category]?.[sport]?.captured_at;
+    if(captured!==undefined) {
+      if(typeof captured!=='string' || !Number.isFinite(Date.parse(captured))) throw Error('Invalid capture receipt');
+      entries.push([prefix+':'+sport,captured]);
     }
+  }
+  if(!entries.length) throw Error('No capture receipts to verify');
+  for(const [key,captured] of entries) {
+    if((await read(key))?.captured_at!==captured) throw Error(key+': published capture does not match this run');
+  }
+}
+async function readPublishedSnapshot(key) {
+  const {Client}=await import('pg');
+  const {hosted_read_dsn}=await import('./verify-published-config.mjs');
+  const config=hosted_read_dsn(process.env.DATABASE_URL,process.env.DATABASE_SSL_CA);
+  const client=new Client({...config,connectionTimeoutMillis:5000,statement_timeout:5000,query_timeout:6000});
+  try {await client.connect();const result=await client.query('SELECT payload FROM public.dashboard_snapshots WHERE snapshot_key=$1',[key]);return result.rows[0]?.payload;}
+  catch {throw Error('Published snapshot read unavailable');}
+  finally {await client.end().catch(()=>{});}
+}
+export async function verifyProduction({base=process.env.PRODUCTION_BASE_URL || 'https://agentic-ev-analytics-platform.vercel.app',
+  fetchImpl=fetch,expectedPublicReport,readSnapshot=readPublishedSnapshot}={}) {
+  base=base.replace(/\/$/,'');
+  async function check(path,statuses,options={}) {
+    const response=await fetchImpl(base+path,{...options,redirect:'manual',cache:'no-store',signal:AbortSignal.timeout(20000)});
+    if(!statuses.includes(response.status)) throw Error(path+': unexpected HTTP '+response.status);
     return response;
   }
-
-  const cacheKey = encodeURIComponent(process.env.GITHUB_SHA || Date.now().toString());
-  const home = await check(`/?readiness=${cacheKey}`, [200], {
-    cache: 'no-store',
-    headers: { 'cache-control': 'no-cache' },
-  });
-  verifySecurityHeaders(home.headers);
-  const html = await home.text();
-  for (const marker of requiredHtmlMarkers) {
-    if (!html.includes(marker)) throw new Error(`Production landing evidence is stale or incomplete: ${marker}`);
-  }
-  const stylesheetUrls = [...html.matchAll(/href=["']([^"']+\.css(?:\?[^"']*)?)["']/gi)]
-    .map(match => new URL(match[1], base).toString());
-  if (!stylesheetUrls.length) throw new Error('Production stylesheets are missing');
-  const css = (await Promise.all(stylesheetUrls.map(async url => {
-    const response = await fetchImpl(url, { signal: AbortSignal.timeout(20000), redirect: 'manual' });
-    if (response.status !== 200) throw new Error(`Production stylesheet returned HTTP ${response.status}`);
-    return response.text();
-  }))).join('\n');
-  for (const marker of requiredCssMarkers) {
-    if (!css.includes(marker)) throw new Error(`Production stylesheet is stale or incomplete: ${marker}`);
-  }
-  for (const probe of publicSecurityProbes) {
-    const response = await check(probe.path, probe.statuses, probe.options);
-    if (!response.headers.get('cache-control')?.includes('no-store')) {
-      throw new Error(`${probe.path}: rejected request may be cached`);
+  function noStore(response,path) {
+    if(!response.headers.get('cache-control')?.includes('no-store'))throw Error(path+': response may be cached');
+    for(const header of ['cdn-cache-control','vercel-cdn-cache-control']) {
+      // Vercel consumes its internal CDN header; when present it must remain private.
+      const value=response.headers.get(header);if(value && value!=='no-store')throw Error(path+': shared cache header');
     }
   }
-  await check('/.env', [404]);
-  await check('/signals_cache.json', [404]);
-
-  let pendingCaptures = [];
-  const captureOptions = {cache: 'no-store', headers: {'cache-control': 'no-cache'}};
-  for (const path of [...paidPipelinePaths, ...publicPipelinePaths]) {
-    const response = await check(path, readinessStatuses(path, { paidEnabled, publicEnabled }), captureOptions);
-    if (response.status === 503) {
-      console.log(`::warning::${path} unavailable; its data pipeline is disabled`);
-    }
-    const capturedAt = expectedPublicCapture(path, expectedPublicReport);
-    if (capturedAt !== undefined) {
-      const body = await response.json();
-      if (body?.captured_at !== capturedAt) {
-        pendingCaptures.push({path, capturedAt});
-      }
-    }
+  const home=await check('/?readiness='+encodeURIComponent(process.env.GITHUB_SHA || Date.now()),[200]);
+  verifySecurityHeaders(home.headers);const html=await home.text();
+  for(const marker of requiredHtmlMarkers)if(!html.includes(marker))throw Error('Production landing is stale or incomplete: '+marker);
+  const styles=[...html.matchAll(/href=["']([^"']+\.css(?:\?[^"']*)?)["']/gi)].map(match=>new URL(match[1],base));
+  if(!styles.length)throw Error('Production stylesheets are missing');
+  const css=(await Promise.all(styles.map(async url=>{const response=await fetchImpl(url,{redirect:'manual',signal:AbortSignal.timeout(20000)});if(response.status!==200)throw Error('Production stylesheet unavailable');return response.text();}))).join('\n');
+  for(const marker of requiredCssMarkers)if(!css.includes(marker))throw Error('Production stylesheet is stale or incomplete: '+marker);
+  for(const path of livePaths) {
+    const response=await check(path,[401]);noStore(response,path);
+    const body=await response.json();if(body?.error!=='Owner authentication required.')throw Error(path+': unexpected authentication response');
   }
-  // CDN and server data caches can each serve one stale response while refreshing.
-  // Retry only unmatched public captures; retain the exact run identity requirement.
-  for (let attempt = 1; pendingCaptures.length && attempt < captureAttempts; attempt++) {
-    console.log(`::warning::${pendingCaptures.length} public capture(s) awaiting cache refresh (${attempt}/${captureAttempts})`);
-    await captureWait(captureDelayMs);
-    const results = await Promise.all(pendingCaptures.map(async capture => {
-      const response = await check(capture.path, [200], captureOptions);
-      const body = await response.json();
-      return body?.captured_at === capture.capturedAt ? null : capture;
-    }));
-    pendingCaptures = results.filter(Boolean);
+  for(const path of ['/terminal','/terminal?readiness=1','/terminal/nfl']) {
+    const response=await check(path,[307]);noStore(response,path);
+    if(new URL(response.headers.get('location') || '',base).pathname!=='/login')throw Error(path+': owner login redirect missing');
   }
-  if (pendingCaptures.length) {
-    throw new Error(`${pendingCaptures[0].path}: deployed capture does not match this collection run`);
-  }
+  const login=await check('/login',[200]);noStore(login,'/login');
+  if(!(await login.text()).includes('Owner access'))throw Error('Owner login page missing');
+  for(const probe of publicSecurityProbes)noStore(await check(probe.path,probe.statuses,probe.options),probe.path);
+  await check('/.env',[404]);noStore(await check('/signals_cache.json',[401]),'/signals_cache.json');
+  // This read-only probe never submits a real email or triggers outbound mail.
+  const csrf=await check('/api/auth/csrf',[200]);noStore(csrf,'/api/auth/csrf');
+  if(typeof (await csrf.json()).csrfToken!=='string')throw Error('Owner authentication configuration is not ready');
+  if(expectedPublicReport)await verifyPublishedCaptures(expectedPublicReport,readSnapshot);
 }
 
 export async function verifyProductionWithRetry(
@@ -235,7 +188,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   await verifyProductionWithRetry(
     { expectedPublicReport,
       captureAttempts: Number(process.env.PUBLIC_CAPTURE_VERIFY_ATTEMPTS || '1'),
-      captureDelayMs: Number(process.env.PUBLIC_CAPTURE_VERIFY_DELAY_MS || '5000') },
+      captureDelayMs: Number(process.env.PUBLIC_CAPTURE_VERIFY_DELAY_MS || '5000'),
+      transient503Attempts: Number(process.env.PUBLIC_READINESS_503_ATTEMPTS || '1'),
+      transient503DelayMs: Number(process.env.PUBLIC_READINESS_503_DELAY_MS || '5000') },
     { attempts: Number.isInteger(attempts) && attempts > 0 ? attempts : 1,
       delayMs: Number.isInteger(delayMs) && delayMs >= 0 ? delayMs : 0 },
   );
