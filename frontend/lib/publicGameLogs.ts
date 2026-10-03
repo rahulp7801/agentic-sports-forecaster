@@ -84,13 +84,17 @@ export function gameLogRequest(params:URLSearchParams) {
   const before=params.get('before');
   const playerId=params.get('player_id');
   const observedBefore=params.get('observed_before');
+  const stat=params.get('stat');
   if(!['nba','nfl','cfb'].includes(sport) || rawPlayer!==player || player.normalize('NFC')!==player
     || (player!=='' && !/^[\p{L}\p{M}.'’ -]{1,80}$/u.test(player))
     || !/^[0-9]{1,3}$/.test(limit) || Number(limit)<1 || Number(limit)>200 || !['0','1'].includes(exact)
     || (exact==='1' && !player && !playerId)
-    || (playerId!==null && !validPlayerId(playerId,sport as ModelSport))) throw new Error('Invalid game-log request');
+    || (playerId!==null && !validPlayerId(playerId,sport as ModelSport))
+    || (stat!==null && (sport!=='nfl' || !['pass_yds','rush_yds'].includes(stat)
+      || exact!=='1' || playerId===null || before===null || observedBefore===null)))
+    throw new Error('Invalid game-log request');
   return {sport:sport as ModelSport,player,limit:Number(limit),exact:exact==='1',
     before:before===null ? null : date(before),
     observedBefore:observedBefore===null ? null : observationCutoff(observedBefore),
-    ...(playerId!==null ? {playerId} : {})};
+    ...(playerId!==null ? {playerId} : {}),...(stat!==null ? {stat} : {})};
 }

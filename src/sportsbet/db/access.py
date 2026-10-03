@@ -24,6 +24,24 @@ APPEND_TABLES = ('odds_snapshots', 'player_prop_snapshots', 'cfb_history_source_
                'nfl_history_source_bundles', 'nfl_receiving_supplements')
 CACHE_TABLES = ('provider_response_cache',)
 ANALYTICS_TABLES = ('predictions', 'exposure', 'quotes', 'api_usage', 'paper_selections')
+PRIVATE_REPORT_TABLE = 'prospective_audit_reports'
+OPTIONAL_PRIVATE_TABLES = ('nfl_primary_revisions', 'ngs_partition_versions', 'ngs_partition_rows',
+                           'nba_participation_versions')
+OPTIONAL_WORKER_VIEWS = ('ngs_partition_catalog', 'ngs_history_versions')
+NGS_REPLACE_FUNCTION = 'public.replace_ngs_partition(integer,text,text,timestamp with time zone,jsonb)'
+OPTIONAL_DASHBOARD_VIEWS = ('dashboard_gamelogs_asof', 'dashboard_gamelog_versions',
+                            'dashboard_nfl_core_gamelogs_asof')
+
+
+def _revoke_private_columns(conn,table,grantees):
+    # PostgreSQL column grants survive a table-level REVOKE. Clear them before
+    # restoring the worker's explicit append columns and read permission.
+    columns=conn.execute('SELECT attname FROM pg_attribute WHERE attrelid=to_regclass(%s) '
+        'AND attnum>0 AND NOT attisdropped ORDER BY attnum',(f'public.{table}',)).fetchall()
+    if columns:
+        conn.execute(sql.SQL('REVOKE ALL ({}) ON {} FROM {}').format(
+            sql.SQL(', ').join(sql.Identifier(name) for (name,) in columns),
+            sql.Identifier('public',table),sql.SQL(', ').join(grantees)))
 
 
 def deny_browser_roles(conn):
@@ -31,7 +49,9 @@ def deny_browser_roles(conn):
     targets: list[sql.Composable] = [sql.Identifier('public', table) for table in
                                      (*READ_TABLES, *CACHE_TABLES, 'alembic_version',
                                       'ev_signals', 'dashboard_gamelogs', 'cfb_effective_gamelogs', 'nfl_effective_receiving_gamelogs')]
-    targets.extend(sql.Identifier('analytics', table) for table in ANALYTICS_TABLES)
+    targets.extend(sql.Identifier('public', table) for table in (*OPTIONAL_DASHBOARD_VIEWS, *OPTIONAL_PRIVATE_TABLES, *OPTIONAL_WORKER_VIEWS)
+                   if conn.execute('SELECT to_regclass(%s)', (f'public.{table}',)).fetchone()[0])
+    targets.extend(sql.Identifier('analytics', table) for table in (*ANALYTICS_TABLES, PRIVATE_REPORT_TABLE))
     grantees: list[sql.Composable] = [sql.SQL('PUBLIC')]
     for role in ('anon', 'authenticated'):
         if conn.execute('SELECT 1 FROM pg_roles WHERE rolname=%s', (role,)).fetchone():
@@ -43,6 +63,24 @@ def deny_browser_roles(conn):
                 sql.Identifier(schema), sql.SQL(kind), sql.SQL(', ').join(grantees)))
     conn.execute(sql.SQL('REVOKE ALL ON {} FROM {}').format(
         sql.SQL(', ').join(targets), sql.SQL(', ').join(grantees)))
+    conn.execute(sql.SQL('REVOKE ALL ON SEQUENCE analytics.prospective_audit_reports_report_id_seq FROM {}')
+                 .format(sql.SQL(', ').join(grantees)))
+    for table in OPTIONAL_PRIVATE_TABLES:
+        if conn.execute('SELECT to_regclass(%s)',(f'public.{table}',)).fetchone()[0]:
+            _revoke_private_columns(conn,table,grantees)
+            for (sequence,) in conn.execute("SELECT pg_get_serial_sequence(%s,column_name) "
+                    "FROM information_schema.columns WHERE table_schema='public' AND table_name=%s",
+                    (f'public.{table}',table)).fetchall():
+                if sequence:
+                    schema,name=sequence.split('.',1)
+                    conn.execute(sql.SQL('REVOKE ALL ON SEQUENCE {} FROM {}').format(
+                        sql.Identifier(schema,name),sql.SQL(', ').join(grantees)))
+    if conn.execute('SELECT to_regprocedure(%s)', (NGS_REPLACE_FUNCTION,)).fetchone()[0]:
+        conn.execute(sql.SQL('REVOKE ALL ON FUNCTION {} FROM {}').format(
+            sql.SQL(NGS_REPLACE_FUNCTION), sql.SQL(', ').join(grantees)))
+    if conn.execute("SELECT to_regprocedure('public.capture_nba_participation_version()')").fetchone()[0]:
+        conn.execute(sql.SQL('REVOKE ALL ON FUNCTION public.capture_nba_participation_version() FROM {}')
+            .format(sql.SQL(', ').join(grantees)))
 
 
 def _lock_policy_tables(conn):
@@ -50,13 +88,28 @@ def _lock_policy_tables(conn):
     targets = [sql.Identifier('public', 'alembic_version')]
     targets.extend(sql.Identifier('public', table) for table in READ_TABLES)
     targets.extend(sql.Identifier('public', table) for table in CACHE_TABLES)
-    targets.extend(sql.Identifier('analytics', table) for table in ANALYTICS_TABLES)
+    targets.extend(sql.Identifier('analytics', table) for table in (*ANALYTICS_TABLES, PRIVATE_REPORT_TABLE))
     conn.execute(sql.SQL('LOCK TABLE {} IN ACCESS EXCLUSIVE MODE').format(sql.SQL(', ').join(targets)))
 
 
 def apply_access(conn):
     """Explicit grants and role-specific RLS policies; no rights for anonymous users."""
     deny_browser_roles(conn)
+    for table in OPTIONAL_PRIVATE_TABLES:
+        if conn.execute('SELECT to_regclass(%s)', (f'public.{table}',)).fetchone()[0]:
+            for role in (READER, WORKER):
+                conn.execute(sql.SQL('REVOKE ALL ON {} FROM {}').format(
+                    sql.Identifier('public', table), sql.Identifier(role)))
+                _revoke_private_columns(conn,table,[sql.Identifier(role)])
+                for (sequence,) in conn.execute("SELECT pg_get_serial_sequence(%s,column_name) "
+                        "FROM information_schema.columns WHERE table_schema='public' AND table_name=%s",
+                        (f'public.{table}',table)).fetchall():
+                    if sequence:
+                        schema,name=sequence.split('.',1)
+                        conn.execute(sql.SQL('REVOKE ALL ON SEQUENCE {} FROM {}').format(
+                            sql.Identifier(schema,name), sql.Identifier(role)))
+    # Archive writes use fixed owner-executed functions/triggers. Participation
+    # later receives only explicit append columns, without receipt mutation.
     conn.execute(sql.SQL('GRANT SELECT ON public.alembic_version TO {}').format(sql.Identifier(WORKER)))
     conn.execute('DROP POLICY IF EXISTS sportsbet_worker_schema_readiness ON public.alembic_version')
     conn.execute(sql.SQL('CREATE POLICY sportsbet_worker_schema_readiness ON public.alembic_version '
@@ -64,6 +117,12 @@ def apply_access(conn):
     conn.execute(sql.SQL('GRANT USAGE ON SCHEMA public TO {}, {}').format(sql.Identifier(READER), sql.Identifier(WORKER)))
     conn.execute(sql.SQL('GRANT SELECT ON public.dashboard_snapshots TO {}').format(sql.Identifier(READER)))
     conn.execute(sql.SQL('GRANT SELECT ON public.dashboard_gamelogs TO {}').format(sql.Identifier(READER)))
+    # Role provisioning may happen after migrations; restore versioned-view
+    # grants in that order as well as when migrations run against existing roles.
+    for table in OPTIONAL_DASHBOARD_VIEWS:
+        if conn.execute('SELECT to_regclass(%s)', (f'public.{table}',)).fetchone()[0]:
+            conn.execute(sql.SQL('GRANT SELECT ON {} TO {}').format(
+                sql.Identifier('public', table), sql.Identifier(READER)))
     conn.execute(sql.SQL('GRANT SELECT ON public.cfb_effective_gamelogs TO {}').format(sql.Identifier(WORKER)))
     conn.execute(sql.SQL('GRANT SELECT ON public.nfl_effective_receiving_gamelogs TO {}').format(sql.Identifier(WORKER)))
     for table in READ_TABLES:
@@ -117,6 +176,21 @@ def apply_access(conn):
         conn.execute(sql.SQL('DROP POLICY IF EXISTS sportsbet_worker_access ON {}').format(target))
         conn.execute(sql.SQL('CREATE POLICY sportsbet_worker_access ON {} TO {} USING (true) WITH CHECK (true)').format(target, sql.Identifier(WORKER)))
     conn.execute(sql.SQL('REVOKE UPDATE, DELETE, TRUNCATE ON analytics.paper_selections FROM {}').format(sql.Identifier(WORKER)))
+    # Migrations may run before roles are first provisioned. Restore the
+    # private audit table's append-only ACL and RLS policies in either order.
+    conn.execute(sql.SQL('GRANT SELECT, INSERT ON analytics.prospective_audit_reports TO {}')
+                 .format(sql.Identifier(WORKER)))
+    conn.execute(sql.SQL('GRANT USAGE, SELECT ON SEQUENCE analytics.prospective_audit_reports_report_id_seq TO {}')
+                 .format(sql.Identifier(WORKER)))
+    conn.execute(sql.SQL('REVOKE UPDATE, DELETE, TRUNCATE ON analytics.prospective_audit_reports FROM {}')
+                 .format(sql.Identifier(WORKER)))
+    conn.execute('ALTER TABLE analytics.prospective_audit_reports ENABLE ROW LEVEL SECURITY')
+    for command in ('SELECT', 'INSERT'):
+        policy = sql.Identifier('worker_' + ('read' if command == 'SELECT' else 'insert') + '_prospective_reports')
+        conn.execute(sql.SQL('DROP POLICY IF EXISTS {} ON analytics.prospective_audit_reports').format(policy))
+        clause = sql.SQL('USING (true)' if command == 'SELECT' else 'WITH CHECK (true)')
+        conn.execute(sql.SQL('CREATE POLICY {} ON analytics.prospective_audit_reports FOR {} TO {} {}')
+                     .format(policy, sql.SQL(command), sql.Identifier(WORKER), clause))
     conn.execute(sql.SQL('GRANT UPDATE (outcome,outcome_source,outcome_ref,outcome_observed_at,actual_value,outcome_evidence) ON analytics.predictions TO {}').format(sql.Identifier(WORKER)))
     for table in ('exposure', 'api_usage'):
         conn.execute(sql.SQL('GRANT UPDATE ON {} TO {}').format(sql.Identifier('analytics', table), sql.Identifier(WORKER)))
@@ -128,6 +202,37 @@ def apply_access(conn):
             if sequence:
                 schema, name = sequence.split('.', 1)
                 conn.execute(sql.SQL('GRANT USAGE, SELECT ON SEQUENCE {} TO {}').format(sql.Identifier(schema, name), sql.Identifier(WORKER)))
+    # Keep the same narrow replacement boundary when roles are provisioned or
+    # repaired after the history migration. Readers never receive these views.
+    for table in OPTIONAL_WORKER_VIEWS:
+        if conn.execute('SELECT to_regclass(%s)', (f'public.{table}',)).fetchone()[0]:
+            conn.execute(sql.SQL('REVOKE ALL ON {} FROM {}').format(
+                sql.Identifier('public',table),sql.Identifier(READER)))
+            conn.execute(sql.SQL('GRANT SELECT ON {} TO {}').format(
+                sql.Identifier('public',table),sql.Identifier(WORKER)))
+    if conn.execute('SELECT to_regprocedure(%s)', (NGS_REPLACE_FUNCTION,)).fetchone()[0]:
+        conn.execute(sql.SQL('REVOKE ALL ON FUNCTION {} FROM {}').format(
+            sql.SQL(NGS_REPLACE_FUNCTION),sql.Identifier(READER)))
+        conn.execute(sql.SQL('GRANT EXECUTE ON FUNCTION {} TO {}').format(
+            sql.SQL(NGS_REPLACE_FUNCTION),sql.Identifier(WORKER)))
+        conn.execute(sql.SQL('REVOKE INSERT,UPDATE,DELETE,TRUNCATE ON public.ngs_stats FROM {}')
+            .format(sql.Identifier(WORKER)))
+    if conn.execute("SELECT to_regclass('public.nba_participation_versions')").fetchone()[0]:
+        conn.execute('ALTER TABLE public.nba_participation_versions ENABLE ROW LEVEL SECURITY')
+        conn.execute(sql.SQL('GRANT SELECT ON public.nba_participation_versions TO {}').format(sql.Identifier(WORKER)))
+        conn.execute(sql.SQL('GRANT INSERT (player_id,player_name,game_id,game_date,season,team_abbreviation,minutes,'
+            'source_provider,source_sha256,source_record_sha256,source_observed_at) '
+            'ON public.nba_participation_versions TO {}').format(sql.Identifier(WORKER)))
+        conn.execute(sql.SQL('GRANT USAGE ON SEQUENCE public.nba_participation_versions_version_id_seq TO {}')
+            .format(sql.Identifier(WORKER)))
+        for command in ('SELECT','INSERT'):
+            policy=sql.Identifier('sportsbet_worker_'+('read' if command=='SELECT' else 'insert'))
+            conn.execute(sql.SQL('DROP POLICY IF EXISTS {} ON public.nba_participation_versions').format(policy))
+            clause=sql.SQL('USING (true)' if command=='SELECT' else 'WITH CHECK (true)')
+            conn.execute(sql.SQL('CREATE POLICY {} ON public.nba_participation_versions FOR {} TO {} {}')
+                .format(policy,sql.SQL(command),sql.Identifier(WORKER),clause))
+        conn.execute(sql.SQL('REVOKE ALL ON FUNCTION public.capture_nba_participation_version() FROM {},{}')
+            .format(sql.Identifier(READER),sql.Identifier(WORKER)))
 
 
 def provision_roles(conn, passwords: dict[str, str]):

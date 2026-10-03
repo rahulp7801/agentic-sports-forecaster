@@ -127,6 +127,51 @@ async def test_reads_do_not_retry_permanent_errors_and_bound_transport_retries(m
 
 
 @pytest.mark.asyncio
+async def test_settlement_reader_requests_only_exact_public_tickers():
+    tickers=['KXNFLGAME-PLAYER1','KXNFLGAME-PLAYER2']
+    requests=[]
+    def handle(request):
+        requests.append(request)
+        assert request.method=='GET'
+        assert request.url.host=='external-api.kalshi.com'
+        assert request.url.path=='/trade-api/v2/markets'
+        assert request.url.params['tickers']==','.join(tickers)
+        assert request.url.params['status']=='settled'
+        assert request.url.params['limit']=='1000'
+        assert not any(name.upper().startswith('KALSHI-ACCESS-') for name in request.headers)
+        return httpx.Response(200,json={'markets':[],'cursor':''})
+    async with KalshiReader(transport=httpx.MockTransport(handle)) as reader:
+        assert await reader.settled_markets(tickers,historical=False)=={'markets':[],'cursor':''}
+        for invalid in ([],tickers+tickers[:1],['../api_keys']):
+            with pytest.raises(ValueError):
+                await reader.settled_markets(invalid,historical=False)
+    assert len(requests)==1
+
+
+@pytest.mark.asyncio
+async def test_exact_markout_reader_uses_only_unsigned_bounded_gets():
+    tickers=['KXNFLREC-26OCT04TEST-PLAYER1','KXNFLREC-26OCT04TEST-PLAYER2']
+    requests=[]
+    def handle(request):
+        requests.append(request)
+        assert request.method=='GET'
+        assert request.url.host=='external-api.kalshi.com'
+        assert request.url.path=='/trade-api/v2/markets'
+        assert request.url.params['tickers']==','.join(tickers)
+        assert request.url.params['limit']=='20'
+        assert 'status' not in request.url.params
+        assert not any(name.upper().startswith('KALSHI-ACCESS-') for name in request.headers)
+        return httpx.Response(200,json={'markets':[],'cursor':''})
+    async with KalshiReader(transport=httpx.MockTransport(handle)) as reader:
+        assert await reader.quoted_markets(tickers)=={'markets':[],'cursor':''}
+        for invalid in ([],tickers+tickers[:1],['../api_keys'],
+                        [f'KXNFLREC-TEST-{n}' for n in range(21)]):
+            with pytest.raises(ValueError):
+                await reader.quoted_markets(invalid)
+    assert len(requests)==1
+
+
+@pytest.mark.asyncio
 async def test_snapshot_preserves_evidence_and_observation_interval():
     def handle(request):
         if request.url.path.endswith('/orderbook'):

@@ -56,7 +56,7 @@ jobs:
       - run: uv sync --locked --extra dev
       - run: uv run --locked pytest -q
       - run: uv tool run pip-audit==2.10.1 --path .venv/lib/python3.12/site-packages --skip-editable
-      - run: uv tool run bandit==1.9.4 -r src -q -ll -ii
+      - run: uv tool run bandit==1.9.4 -r src ops/provision_waitlist.py -q -ll -ii
       - run: uv run --locked alembic upgrade head --sql > /tmp/migrations.sql
   frontend:
     runs-on: ubuntu-latest
@@ -95,6 +95,7 @@ jobs:
       DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/sportsbet
       DATABASE_URL_ASYNC: postgresql+asyncpg://postgres:postgres@localhost:5432/sportsbet
       SPORTSBET_TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/sportsbet
+      SPORTSBET_PRIVATE_ACCESS_TEST_URL: postgresql://postgres:postgres@localhost:5432/sportsbet
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -106,8 +107,10 @@ jobs:
       - run: uv sync --locked --extra dev
       - run: uv run --locked pytest tests/test_migrations.py -q
       - run: uv run --locked alembic upgrade head
-      - run: uv run --locked pytest tests/test_schema.py tests/test_hosted_storage.py tests/test_worker_postgres.py tests/test_cfb_supplement_postgres.py tests/test_cfb_revision_postgres.py tests/test_nfl_supplement_postgres.py tests/test_injury_context_postgres.py tests/test_db_access.py tests/test_forecast_pages_postgres.py -q
+      - run: uv run --locked pytest tests/test_schema.py tests/test_hosted_storage.py tests/test_worker_postgres.py tests/test_cfb_supplement_postgres.py tests/test_cfb_revision_postgres.py tests/test_nfl_supplement_postgres.py tests/test_nfl_primary_revision_postgres.py tests/test_ngs_partition_postgres.py tests/test_nba_participation_postgres.py tests/test_injury_context_postgres.py tests/test_db_access.py tests/test_forecast_pages_postgres.py tests/test_private_waitlist_postgres.py tests/test_waitlist_provision.py -q
       - name: Verify locked migration-only environment against local schema
+        env:
+          PSYCOPG_IMPL: python
         run: |
           UV_PROJECT_ENVIRONMENT="$RUNNER_TEMP/migrations-venv" uv sync --locked --only-group migrations
           "$RUNNER_TEMP/migrations-venv/bin/alembic" current --check-heads
@@ -157,6 +160,8 @@ jobs:
     environment: production
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      PSYCOPG_IMPL: python
+      PYTHONFAULTHANDLER: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -183,6 +188,13 @@ jobs:
         run: .venv/bin/python .github/scripts/production-transaction-preflight.py --require-schema
       - name: Verify pending hosted transaction-pool read path
         run: .venv/bin/python .github/scripts/production-transaction-preflight.py
+      - name: Provision and verify dedicated waitlist credential without rotation
+        env:
+          DATABASE_MIGRATION_URL: ${{ secrets.DATABASE_MIGRATION_URL }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+        run: .venv/bin/python ops/provision_waitlist.py
   release-plan:
     if: github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs: [secrets, backend, frontend, postgres, worker-image]
@@ -224,9 +236,13 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
-      - name: Verify live database reads or bounded region recovery
+      # production-schema already verifies the actual restricted transaction-pool read.
+      # Hold the live app closed throughout every reviewed production replacement.
+      - name: Attest auth settings and enforce private containment before deployment
         if: needs.release-plan.outputs.deploy == 'true'
-        run: node .github/scripts/production-db-preflight.mjs
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: node .github/scripts/private-dashboard-release.mjs preflight
       - if: needs.release-plan.outputs.deploy == 'true'
         run: npm install --global vercel@59.15.1
       # Only create a deployment when the live release differs or an operator
@@ -235,7 +251,21 @@ jobs:
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: vercel deploy --yes --prod --force --meta sportsbetCommit="$GITHUB_SHA" --token="$VERCEL_TOKEN"
-      - name: Verify deployed access controls and data readiness
+      - name: Transition reviewed deployment from containment to owner authentication
+        id: privacy_transition
+        if: needs.release-plan.outputs.deploy == 'true'
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          PRIVATE_RELEASE_RECEIPT: ${{ runner.temp }}/private-dashboard-transition.json
+        run: node .github/scripts/private-dashboard-release.mjs finish
+      - name: Recover privacy containment after interruption
+        if: ${{ (failure() || cancelled()) && steps.privacy_transition.outcome != '' && steps.privacy_transition.outcome != 'skipped' }}
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          PRIVATE_RELEASE_RECEIPT: ${{ runner.temp }}/private-dashboard-transition.json
+        run: node .github/scripts/private-dashboard-release.mjs recover
+      - name: Verify unchanged deployed access controls and data readiness
+        if: needs.release-plan.outputs.deploy != 'true'
         env:
           DATA_PIPELINE_ENABLED: ${{ vars.DATA_PIPELINE_ENABLED }}
           PUBLIC_DATA_PIPELINE_ENABLED: ${{ vars.PUBLIC_DATA_PIPELINE_ENABLED }}

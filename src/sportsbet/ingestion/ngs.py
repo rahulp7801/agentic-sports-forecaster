@@ -3,21 +3,22 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import math
 import re
 import time
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 
 import httpx
-import pandas as pd
 import polars as pl
 import sqlalchemy as sa
 import structlog
 
 from sportsbet.db.connection import get_sync_engine
+from sportsbet.db.models import NgsStats
 from sportsbet.ingestion.provenance import row_sha256
-from sportsbet.ingestion.upsert import upsert_rows
 
 log = structlog.get_logger()
 
@@ -59,6 +60,7 @@ PRIMARY_METRIC = {
     "rushing": "efficiency",
 }
 COUNT_COLUMNS = {"attempts", "targets", "receptions", "rush_attempts"}
+NORMALIZATION_VERSION = 'ngs-db-precision-v2'
 RATE_COLUMNS = {
     "aggressiveness", "catch_percentage", "percent_attempts_gte_eight_defenders",
 }
@@ -171,13 +173,23 @@ def _number(value: object, column: str) -> int | float | None:
     if not math.isfinite(numeric):
         raise ValueError("NGS evidence contains a non-finite or non-numeric value")
     if column in COUNT_COLUMNS:
-        if numeric < 0 or not numeric.is_integer():
+        if numeric < 0 or numeric > 32767 or not numeric.is_integer():
             raise ValueError("NGS evidence contains an invalid count")
         return int(numeric)
     result = numeric
     if column in RATE_COLUMNS and not 0 <= result <= 100:
         raise ValueError("NGS evidence contains an invalid percentage")
-    return result
+    # Commit the same numeric value PostgreSQL retains, rather than a higher
+    # precision source value that cannot be replayed from the stored row.
+    storage = NgsStats.__table__.c[column].type
+    try:
+        retained = Decimal(str(result)).quantize(
+            Decimal(1).scaleb(-storage.scale), rounding=ROUND_HALF_UP)
+    except InvalidOperation:
+        raise ValueError('NGS evidence exceeds database numeric precision') from None
+    if abs(retained) >= Decimal(10) ** (storage.precision-storage.scale):
+        raise ValueError('NGS evidence exceeds database numeric precision')
+    return float(retained)
 
 
 def normalize_asset(
@@ -273,6 +285,7 @@ def normalize_asset(
         "stat_type": stat_type,
         "rows": len(records),
         "skipped_unidentified": skipped_unidentified,
+        "normalization_version": NORMALIZATION_VERSION,
     }
 
 
@@ -298,36 +311,24 @@ def ingest_ngs_seasons(
             for season in sorted(seasons):
                 records, summary = normalize_asset(payload, season, stat_type, observed_at)
                 source_hash = summary["source_sha256"]
-                record_hashes = sorted(row["source_record_sha256"] for row in records)
                 with engine.begin() as conn:
-                    existing = conn.execute(sa.text("""SELECT source_sha256,
-                        source_record_sha256 FROM ngs_stats
-                        WHERE season=:season AND stat_type=:stat_type"""), {
+                    # The fixed database function archives the complete previous
+                    # partition and accepts the new version in this transaction.
+                    # The worker has no direct tracking write privileges.
+                    receipt = conn.execute(sa.text("""SELECT version_id, unchanged
+                        FROM public.replace_ngs_partition(:season,:stat_type,
+                            :source_hash,:observed_at,CAST(:payload AS jsonb))"""), {
                             "season": season,
                             "stat_type": stat_type,
-                        }).mappings().all()
-                    unchanged = (
-                        len(existing) == len(records)
-                        and all(row["source_sha256"] == source_hash for row in existing)
-                        and sorted(row["source_record_sha256"] for row in existing) == record_hashes
-                    )
-                    if not unchanged:
-                        # Replace this small season/type partition atomically so
-                        # provider removals cannot survive beside the new digest.
-                        conn.execute(sa.text(
-                            "DELETE FROM ngs_stats WHERE season=:season "
-                            "AND stat_type=:stat_type"
-                        ), {
-                            "season": season,
-                            "stat_type": stat_type,
-                        })
-                        pd.DataFrame.from_records(records).to_sql(
-                            "ngs_stats", conn, if_exists="append", index=False, chunksize=1000,
-                            method=upsert_rows(
-                                ["player_gsis_id", "season", "week", "stat_type"]
-                            ),
-                        )
-                coverage.append(summary | {"cache_hit": cache_hit, "unchanged": unchanged})
+                            "source_hash": source_hash,
+                            "observed_at": observed_at,
+                            "payload": json.dumps([row | {
+                                'source_observed_at': row['source_observed_at'].isoformat()
+                            } for row in records], allow_nan=False),
+                        }).mappings().one()
+                unchanged = receipt['unchanged']
+                coverage.append(summary | {"cache_hit": cache_hit, "unchanged": unchanged,
+                                           "partition_version_id": receipt['version_id']})
                 log.info("ngs_load_done", season=season, stat_type=stat_type,
                          rows=len(records), unchanged=unchanged)
     return {"provider": NGS_PROVIDER, "assets": coverage}

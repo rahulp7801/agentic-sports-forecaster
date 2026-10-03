@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 import gc
 from sportsbet.ingestion.provenance import stat_batch_sha256, stat_row_sha256
 from sportsbet.ingestion.upsert import upsert_rows
+from sportsbet.ingestion.nba_participation import prepare_participation, store_participation
 import sys
 import time
 from typing import Optional
@@ -160,7 +161,11 @@ def ingest_nba_gamelogs_season(
 
     # Append rows — UniqueConstraint on (player_id, game_id) handles re-runs.
     # NEVER use if_exists='replace' — drops and recreates the table.
-    df.to_sql("nba_player_gamelogs", engine, if_exists="append", index=False, chunksize=500, method=upsert_rows(["player_id", "game_id"]))
+    participation=prepare_participation(df.to_dict('records'))
+    with engine.begin() as conn:
+        df.to_sql("nba_player_gamelogs", conn, if_exists="append", index=False, chunksize=500,
+            method=upsert_rows(["player_id", "game_id"], preserve_observation_on_unchanged=True))
+        store_participation(conn,participation,complete_season=season)
 
     log.info(
         "nba_gamelogs_ingestion.season_complete",

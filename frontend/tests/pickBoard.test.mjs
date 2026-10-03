@@ -40,6 +40,31 @@ test('projects a source-bound recommendation and a verified final result',()=>{
   assert.equal(result.summary.verified_win_rate,1);
 });
 
+test('new NBA source cutoff survives an accepted board and client validation',()=>{
+  const viewed=Date.parse('2026-10-04T04:00:00Z');
+  const cutoff='2026-10-04T03:00:10Z';
+  const capture='2026-10-04T03:01:00Z';
+  const nba={...signal,id:'b'.repeat(64),prediction_id:'b'.repeat(64),
+    sport:'nba',player_id:'123',game_date:'2026-10-04',forecast_cutoff:'2026-10-04',
+    prop_type:'points',market_type:'player_points',
+    model_version:'empirical-jeffreys-v4-nba-source-asof-v1',
+    history_policy_version:'nba-source-asof-v1',history_observed_before:cutoff,
+    snapped_at:'2026-10-04T03:00:00Z',captured_at:capture,
+    game_start_time:'2026-10-04T08:00:00Z',lock_at:'2026-10-04T07:00:00Z',
+    availability:{...signal.availability,team:'BOS',captured_at:'2026-10-04T03:00:00Z',
+      source_url:'https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries',
+      roster_source_url:'https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/12/roster'}};
+  const envelope={...board([nba]),sport:'nba',generated_at:new Date(viewed).toISOString()};
+  const projected=publicPickBoard(envelope,null,'nba',viewed);
+  assert.equal(projected.current.length,1);
+  assert.equal(projected.current[0].history_observed_before,cutoff);
+  for(const changed of [{history_observed_before:undefined},
+    {history_observed_before:'2026-10-04T02:59:59Z'},
+    {history_policy_version:undefined}]) {
+    assert.throws(()=>publicPickBoard({...envelope,current:[{...nba,...changed}]},null,'nba',viewed));
+  }
+});
+
 test('rejects tampered identity, lock, totals and result evidence',()=>{
   const invalidRecords=[
     {...signal,prediction_id:'b'.repeat(64)},
@@ -59,6 +84,15 @@ test('rejects tampered identity, lock, totals and result evidence',()=>{
     settled_at:new Date(Date.parse(start)+4*3600000).toISOString()};
   assert.throws(()=>publicPickBoard(historyBoard(wrongGrade,summary({current:0,settled:1,losses:1,
     verified_win_rate:0})),null,'nfl',Date.parse(start)+5*3600000));
+});
+test('same-name athletes in one game use their stable player IDs for uniqueness',()=>{
+  const first={...signal,player_id:'00-0000001'};
+  const second={...signal,id:'b'.repeat(64),prediction_id:'b'.repeat(64),player_id:'00-0000002'};
+  const totals=summary({current:2});
+  const distinct=publicPickBoard(board([first,second],[],totals),null,'nfl',now);
+  assert.deepEqual(distinct.current.map(item=>item.player_id),['00-0000001','00-0000002']);
+  assert.throws(()=>publicPickBoard(board([first,{...second,player:'Another name',player_id:'00-0000001'}],
+    [],totals),null,'nfl',now));
 });
 
 
@@ -138,10 +172,31 @@ test('accepts the exact Python publisher contract including a verified zero resu
 });
 
 
+test('past picks never attach a profile observed after the forecast',()=>{
+  const viewed=Date.parse(start)+20*86400000;
+  const profile=observed=>({player:'Player',name:'Player',team:'KC',player_id:'123',
+    image_url:'https://a.espncdn.com/i/headshots/nfl/players/full/123.png',
+    captured_at:observed,source_url:signal.availability.roster_source_url,
+    source_sha256:'c'.repeat(64)});
+  const late=profile(new Date(Date.parse(captured)+30000).toISOString());
+  const earlier=profile(captured);
+  const final={...signal,availability:{...signal.availability,player_id:'123'},
+    board_state:'final',result:'win',result_verified:true,actual_value:220,
+    settled_at:new Date(Date.parse(start)+4*3600000).toISOString()};
+  const envelope={...board([],[{...final,player_profile:late}],summary({current:0,settled:1,wins:1,verified_win_rate:1})),
+    generated_at:new Date(viewed).toISOString()};
+  const exposed=publicPickBoard(envelope,{profiles:[late]},'nfl',viewed);
+  assert.equal(exposed.history.length,1);
+  assert.equal(exposed.history[0].player_profile,undefined);
+  assert.equal(exposed.history[0].result,'win');
+  const retained=publicPickBoard({...envelope,history:[{...final,player_profile:earlier}]},
+    {profiles:[late]},'nfl',viewed);
+  assert.equal(retained.history[0].player_profile?.captured_at,captured);
+});
 test('current roster profiles must match the forecast roster athlete, not just the name',()=>{
   const original={...signal,availability:{...signal.availability,player_id:'123'}};
   const profile=id=>({player:'Player',name:'Player',team:'KC',player_id:id,
-    image_url:`https://a.espncdn.com/i/headshots/nfl/players/full/${id}.png`,captured_at:new Date(now).toISOString(),
+    image_url:`https://a.espncdn.com/i/headshots/nfl/players/full/${id}.png`,captured_at:captured,
     source_url:signal.availability.roster_source_url,source_sha256:'c'.repeat(64)});
   for(const id of ['123','456']) {
     const projected=publicPickBoard(board([original]),{profiles:[profile(id)]},'nfl',now).current[0];
@@ -150,4 +205,25 @@ test('current roster profiles must match the forecast roster athlete, not just t
     assert.equal(projected.kelly_fraction,signal.kelly_fraction);
   }
   assert.equal(publicPickBoard(board(),{profiles:[profile('123')]},'nfl',now).current[0].player_profile,undefined);
+});
+
+
+test('signed football yardage means survive locked and authenticated final board replay',()=>{
+  const fixture=JSON.parse(readFileSync(new URL('../../tests/fixtures/pick_board_contract.json',import.meta.url),'utf8'));
+  const original=structuredClone(fixture);
+  const value=structuredClone(fixture.board);value.history[0].mean_stat=-1.25;
+  const final=publicPickBoard(value,null,'nfl',Date.parse(value.generated_at));
+  assert.equal(final.history[0].mean_stat,-1.25);
+  assert.equal(final.history[0].result,fixture.board.history[0].result);
+  assert.equal(final.history[0].true_prob,fixture.board.history[0].true_prob);
+  assert.equal(final.history[0].kelly_fraction,fixture.board.history[0].kelly_fraction);
+  assert.deepEqual(final.summary,fixture.board.summary);
+  assert.deepEqual(fixture,original);
+  const record=structuredClone(value.history[0]);
+  record.board_state='locked';delete record.result;delete record.result_verified;
+  delete record.actual_value;delete record.settled_at;
+  const now=Date.parse(record.lock_at)+1000;
+  const locked={...value,generated_at:new Date(now).toISOString(),current:[record],history:[],
+    summary:{current:1,settled:0,pending:0,wins:0,losses:0,pushes:0,verified_win_rate:null}};
+  assert.equal(publicPickBoard(locked,null,'nfl',now).current[0].mean_stat,-1.25);
 });

@@ -55,19 +55,21 @@ def test_browser_role_migration_closes_owner_view_and_preserves_data():
                 assert not conn.execute(sa.text("SELECT has_function_privilege(:role,"
                     "'analytics.stamp_prediction_record()','EXECUTE')"), {'role':role}).scalar_one()
                 for table in ('public.dashboard_snapshots', 'public.dashboard_gamelogs', 'public.dashboard_gamelogs_asof',
+                              'public.dashboard_nfl_core_gamelogs_asof',
+                              'public.dashboard_gamelog_versions',
                               'public.provider_response_cache', 'public.ngs_stats',
                               'public.cfb_history_source_bundles', 'public.cfb_receiving_supplements',
-                              'public.cfb_primary_revisions',
+                              'public.cfb_primary_revisions', 'public.nfl_primary_revisions',
                               'public.cfb_effective_gamelogs', 'public.nfl_history_source_bundles',
                               'public.nfl_receiving_supplements', 'public.nfl_effective_receiving_gamelogs',
                               'analytics.paper_selections', 'analytics.prospective_audit_reports'):
                     assert not conn.execute(sa.text("SELECT has_table_privilege(:role,:table,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE')"),
-                                            {'role': role, 'table': table}).scalar_one()
+                                            {'role': role, 'table': table}).scalar_one(), table
         for role in ('anon', 'authenticated'):
             with pytest.raises(sa.exc.ProgrammingError):
                 with engine.begin() as conn:
                     conn.execute(sa.text(f'SET LOCAL ROLE {role}'))
-                    conn.execute(sa.text('SELECT * FROM public.dashboard_gamelogs_asof LIMIT 1'))
+                    conn.execute(sa.text('SELECT * FROM public.dashboard_gamelog_versions LIMIT 1'))
         alembic.command.downgrade(cfg, '0023_worker_snapshot_append')
         with engine.connect() as conn:
             assert not conn.execute(sa.text("SELECT has_table_privilege('anon','public.dashboard_gamelogs','SELECT')")).scalar_one()
@@ -177,6 +179,57 @@ def test_ngs_migration_replaces_preexisting_worker_policy():
                  'payload':payload,'digest':digest}).one()
             assert inserted.recorded_at.year >= 2026
             assert conn.execute(sa.text('SELECT count(*) FROM analytics.prospective_audit_reports')).scalar_one()==1
+        priced={'protocol':{'version':'nfl-priced-prospective-checkpoint-v1'},
+                'observed_at':'2026-10-02T00:00:00+00:00',
+                'assessment':{'status':'insufficient_data'},
+                'promote':False,'target_verified':False}
+        priced_payload=json.dumps(priced,sort_keys=True,separators=(',',':'))
+        with engine.begin() as conn:
+            conn.execute(sa.text('SET LOCAL ROLE sportsbet_worker'))
+            conn.execute(sa.text('''INSERT INTO analytics.prospective_audit_reports
+                (protocol,observed_at,payload,payload_sha256)
+                VALUES (:protocol,:observed,:payload,:digest)'''),
+                {'protocol':'nfl-priced-prospective-checkpoint-v1',
+                 'observed':priced['observed_at'],'payload':priced_payload,
+                 'digest':hashlib.sha256(priced_payload.encode()).hexdigest()})
+            assert conn.execute(sa.text('SELECT count(*) FROM analytics.prospective_audit_reports')).scalar_one()==2
+        current={'protocol':{'version':'nfl-history-priced-prospective-v1'},
+                 'observed_at':'2026-10-02T00:00:00+00:00',
+                 'assessment':{'status':'insufficient_data'},
+                 'promote':False,'target_verified':False}
+        current_payload=json.dumps(current,sort_keys=True,separators=(',',':'))
+        with engine.begin() as conn:
+            conn.execute(sa.text('SET LOCAL ROLE sportsbet_worker'))
+            conn.execute(sa.text('''INSERT INTO analytics.prospective_audit_reports
+                (protocol,observed_at,payload,payload_sha256)
+                VALUES (:protocol,:observed,:payload,:digest)'''),
+                {'protocol':'nfl-history-priced-prospective-v1',
+                 'observed':current['observed_at'],'payload':current_payload,
+                 'digest':hashlib.sha256(current_payload.encode()).hexdigest()})
+            assert conn.execute(sa.text('SELECT count(*) FROM analytics.prospective_audit_reports')).scalar_one()==3
+        for expected_count, protocol in enumerate(
+                ('nba-cfb-priced-prospective-v1', 'cfb-history-priced-prospective-v1'), 4):
+            aggregate={'protocol':{'version':protocol},
+                'observed_at':'2026-10-03T00:00:00+00:00',
+                'assessment':{'status':'insufficient_data'},
+                'promote':False,'target_verified':False}
+            encoded=json.dumps(aggregate,sort_keys=True,separators=(',',':'))
+            with engine.begin() as conn:
+                conn.execute(sa.text('SET LOCAL ROLE sportsbet_worker'))
+                conn.execute(sa.text('''INSERT INTO analytics.prospective_audit_reports
+                    (protocol,observed_at,payload,payload_sha256)
+                    VALUES (:protocol,:observed,:payload,:digest)'''),
+                    {'protocol':protocol,'observed':aggregate['observed_at'],
+                     'payload':encoded,'digest':hashlib.sha256(encoded.encode()).hexdigest()})
+                assert conn.execute(sa.text('SELECT count(*) FROM analytics.prospective_audit_reports')).scalar_one()==expected_count
+        # The downgrade must refuse retained priced reports; this disposable test
+        # removes its own row with the owner role before the ordinary teardown.
+        with engine.begin() as conn:
+            conn.execute(sa.text("DELETE FROM analytics.prospective_audit_reports "
+                                 "WHERE protocol IN ('nfl-priced-prospective-checkpoint-v1',"
+                                 "'nfl-history-priced-prospective-v1',"
+                                 "'nba-cfb-priced-prospective-v1',"
+                                 "'cfb-history-priced-prospective-v1')"))
     finally:
         alembic.command.downgrade(cfg, 'base')
         if created_role:
@@ -469,7 +522,11 @@ def test_verified_settlement_evidence_constraint_preserves_legacy_rows() -> None
 def test_gamelog_identity_view_preserves_rows_and_security_on_upgrade_and_downgrade():
     url=os.environ['SPORTSBET_TEST_DATABASE_URL'];cfg=get_alembic_cfg(url)
     alembic.command.upgrade(cfg,'0029_ngs_evidence');engine=sa.create_engine(url)
+    created_dashboard_role=False
     with engine.begin() as conn:
+        if not conn.execute(sa.text("SELECT 1 FROM pg_roles WHERE rolname='sportsbet_dashboard'")).first():
+            conn.execute(sa.text('CREATE ROLE sportsbet_dashboard NOLOGIN'))
+            created_dashboard_role=True
         for player,points in [(101,9),(102,30)]:
             conn.execute(sa.text("""INSERT INTO nba_player_gamelogs
                 (player_id,game_id,season,game_date,player_name,team_abbreviation,opponent_team,points,
@@ -477,9 +534,11 @@ def test_gamelog_identity_view_preserves_rows_and_security_on_upgrade_and_downgr
                 VALUES (:player,'same-game',2025,'2026-01-01','Same Name','BOS','NYK',:points,
                     'nba',repeat('a',64),repeat('b',64),NOW())"""),dict(player=player,points=points))
         conn.execute(sa.text("INSERT INTO games(game_id,season,week,home_team,away_team,game_date) VALUES ('id-game',2026,1,'BUF','NYJ','2026-09-10')"))
-        conn.execute(sa.text("""INSERT INTO player_stats(player_id,player_name,season,week,team,receptions,
+        conn.execute(sa.text("""INSERT INTO player_stats(player_id,player_name,season,week,team,
+            passing_yards,rushing_yards,receptions,
             source_provider,source_sha256,source_record_sha256,source_observed_at)
-            VALUES ('00-0000001','NFL Player',2026,1,'BUF',4,'nflverse',repeat('a',64),repeat('b',64),NOW())"""))
+            VALUES ('00-0000001','NFL Player',2026,1,'BUF',260,35,4,
+                'nflverse',repeat('a',64),repeat('b',64),NOW())"""))
         conn.execute(sa.text("""INSERT INTO cfb_player_gamelogs(athlete_id,game_id,season,week,game_date,
             player_name,team_id,team_name,team_abbreviation,opponent_id,opponent_name,opponent_abbreviation,
             is_home,receiving_yards,source_provider,source_sha256,source_player_sha256,source_schedule_sha256,
@@ -495,6 +554,18 @@ def test_gamelog_identity_view_preserves_rows_and_security_on_upgrade_and_downgr
             assert conn.execute(sa.text("SELECT payload->>'points' FROM dashboard_gamelogs WHERE sport='nba' AND player_id='101'")).scalar_one()=='9'
             assert conn.execute(sa.text("SELECT reloptions FROM pg_class WHERE oid='public.dashboard_gamelogs'::regclass")).scalar_one()==['security_barrier=true']
             assert not conn.execute(sa.text("SELECT EXISTS(SELECT 1 FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a WHERE c.oid='public.dashboard_gamelogs'::regclass AND a.grantee=0)")).scalar_one()
+            core=conn.execute(sa.text("""SELECT payload,source_row,record_available_at
+                FROM dashboard_nfl_core_gamelogs_asof WHERE player_id='00-0000001'""")).one()
+            assert core.payload['pass_yds']==260 and core.payload['rush_yds']==35
+            assert core.payload['rec_yds'] is None and core.payload['receptions'] is None
+            assert core.source_row['passing_yards']==260
+            assert core.source_row['rushing_yards']==35
+            assert core.source_row['source_record_sha256']=='b'*64
+            assert core.record_available_at is not None
+            assert conn.execute(sa.text("SELECT reloptions FROM pg_class WHERE oid='public.dashboard_nfl_core_gamelogs_asof'::regclass")).scalar_one()==['security_barrier=true']
+            assert not conn.execute(sa.text("SELECT EXISTS(SELECT 1 FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a WHERE c.oid='public.dashboard_nfl_core_gamelogs_asof'::regclass AND a.grantee=0)")).scalar_one()
+            assert conn.execute(sa.text("SELECT has_table_privilege('sportsbet_dashboard','public.dashboard_nfl_core_gamelogs_asof','SELECT')")).scalar_one()
+            assert not conn.execute(sa.text("SELECT has_table_privilege('sportsbet_dashboard','public.dashboard_nfl_core_gamelogs_asof','INSERT,UPDATE,DELETE,TRUNCATE')")).scalar_one()
         alembic.command.downgrade(cfg,'0029_ngs_evidence')
         with engine.connect() as conn:
             assert conn.execute(sa.text('SELECT count(*) FROM dashboard_gamelogs')).scalar_one()==4
@@ -505,6 +576,9 @@ def test_gamelog_identity_view_preserves_rows_and_security_on_upgrade_and_downgr
             assert conn.execute(sa.text('SELECT count(*) FROM dashboard_gamelogs WHERE player_id IS NOT NULL')).scalar_one()==4
     finally:
         engine.dispose();alembic.command.downgrade(cfg,'base')
+        if created_dashboard_role:
+            with sa.create_engine(url).begin() as conn:
+                conn.execute(sa.text('DROP ROLE sportsbet_dashboard'))
 
 
 @pytest.mark.serial

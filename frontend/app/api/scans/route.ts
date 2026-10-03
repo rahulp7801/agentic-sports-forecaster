@@ -1,10 +1,12 @@
+import {requireOwner} from '../../../lib/ownerAccess.ts';
 import { NextResponse } from 'next/server';
 import { snapshots } from '@/lib/database';
 import { scanStatus } from '@/lib/scanStatus';
 import {NO_STORE_HEADERS,PUBLIC_CACHE_HEADERS} from '@/lib/publicCache';
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
+export async function GET(request:Request) {
+  const denied=await requireOwner(request); if(denied) return denied;
   try {
     const data=await snapshots(['scan:nfl','scan:nba','scan:cfb']);
     return NextResponse.json({nfl:scanStatus(data['scan:nfl']),nba:scanStatus(data['scan:nba']),

@@ -1,6 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { GET } from '../app/api/games/route.ts';
+import {randomBytes} from 'node:crypto';
+import {encode} from 'next-auth/jwt';
+import {OWNER_GITHUB_ID,PRODUCTION_ORIGIN} from '../lib/ownerPolicy.ts';
+Object.assign(process.env,{NEXTAUTH_URL:PRODUCTION_ORIGIN,NEXTAUTH_SECRET:randomBytes(32).toString('hex'),GITHUB_CLIENT_ID:'fixture-client',GITHUB_CLIENT_SECRET:'fixture-secret'});
+const cookie=await encode({secret:process.env.NEXTAUTH_SECRET,token:{sub:OWNER_GITHUB_ID,ownerId:OWNER_GITHUB_ID,ownerIssuedAt:Date.now()},maxAge:3600});
+const ownerRequest=url=>new Request(url,{headers:{cookie:'__Secure-next-auth.session-token='+cookie}});
+
 
 test('NFL schedule requests use football endpoint and numeric dates', async t => {
   const requested=[];
@@ -13,7 +20,7 @@ test('NFL schedule requests use football endpoint and numeric dates', async t =>
       {homeAway:'away',team:{abbreviation:'A',displayName:'Away'}}
     ]}]}]});
   });
-  const response=await GET(new Request('http://localhost/api/games?sport=nfl'));
+  const response=await GET(ownerRequest('http://localhost/api/games?sport=nfl'));
   assert.equal(response.status,200);
   assert.equal((await response.json()).games.length,3);
   assert.ok(requested.every(url => /cdn\.espn\.com\/core\/nfl\/scoreboard\?xhr=1&limit=100&dates=\d{8}$/.test(url)));
@@ -21,7 +28,7 @@ test('NFL schedule requests use football endpoint and numeric dates', async t =>
 
 test('CDN scoreboard envelopes are validated before fixtures are exposed', async t => {
   t.mock.method(globalThis,'fetch',async ()=>Response.json({content:{sbData:{events:[]}}}));
-  const response=await GET(new Request('http://localhost/api/games?sport=nfl'));
+  const response=await GET(ownerRequest('http://localhost/api/games?sport=nfl'));
   assert.equal(response.status,200);
   assert.deepEqual((await response.json()).games,[]);
 });
@@ -30,7 +37,7 @@ test('hosted snapshot lookup failures recover from validated public scoreboard r
   const previous=process.env.VERCEL;process.env.VERCEL='1';
   t.after(()=>{if(previous===undefined)delete process.env.VERCEL;else process.env.VERCEL=previous;});
   t.mock.method(globalThis,'fetch',async ()=>Response.json({events:[]}));
-  const response=await GET(new Request('http://localhost/api/games?sport=nfl'));
+  const response=await GET(ownerRequest('http://localhost/api/games?sport=nfl'));
   assert.equal(response.status,200);
   assert.equal((await response.json()).partial,false);
 });
@@ -38,7 +45,7 @@ test('hosted snapshot lookup failures recover from validated public scoreboard r
 test('one unavailable date remains partial and all requested dates are needed for complete coverage',async t=>{
   let calls=0;
   t.mock.method(globalThis,'fetch',async ()=>++calls===1 ? new Response('',{status:503}) : Response.json({events:[]}));
-  const response=await GET(new Request('http://localhost/api/games?sport=nfl'));
+  const response=await GET(ownerRequest('http://localhost/api/games?sport=nfl'));
   assert.equal(response.status,200);
   assert.equal((await response.json()).partial,true);
   assert.equal(calls,3);
@@ -48,15 +55,20 @@ test('malformed, redirected, or oversized provider data cannot become healthy co
   for(const response of [Response.json({events:[{}]}),Response.json({events:'missing'}),new Response('',{status:302}),
     new Response('{"events":[]}',{headers:{'content-length':String(3*1024*1024)}})]) {
     t.mock.method(globalThis,'fetch',async ()=>response.clone());
-    assert.equal((await GET(new Request('http://localhost/api/games?sport=nfl'))).status,503);
+    assert.equal((await GET(ownerRequest('http://localhost/api/games?sport=nfl'))).status,503);
     t.mock.restoreAll();
   }
 });
 
 test('upstream failures cannot masquerade as an empty valid schedule', async t => {
   t.mock.method(globalThis,'fetch',async () => new Response('',{status:503}));
-  const response=await GET(new Request('http://localhost/api/games?sport=nfl'));
+  const response=await GET(ownerRequest('http://localhost/api/games?sport=nfl'));
   assert.equal(response.status,503);
   assert.equal((await response.json()).partial,true);
-  assert.equal((await GET(new Request('http://localhost/api/games?sport=bad'))).status,400);
+  assert.equal((await GET(ownerRequest('http://localhost/api/games?sport=bad'))).status,400);
+});
+
+test('an anonymous scoreboard request opens no provider request',async t=>{
+ let calls=0;t.mock.method(globalThis,'fetch',async()=>{calls++;return Response.json({events:[]});});
+ assert.equal((await GET(new Request('http://localhost/api/games?sport=nfl'))).status,401);assert.equal(calls,0);
 });

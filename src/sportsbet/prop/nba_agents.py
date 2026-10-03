@@ -41,6 +41,7 @@ import structlog
 from sportsbet.config import settings
 from sportsbet.graph.models import NBAContextSignals, PropParams, PropResult
 from sportsbet.graph.state import GraphState
+from sportsbet.nba_source_asof import NBA_MODEL_VERSION, model_version_for
 from sportsbet.prop.nba_executor import (
     HOME_BOOST,
     LEAGUE_AVG_DEF_RATING,
@@ -220,6 +221,10 @@ def make_nba_quant_agent(
                 home_away=home_away_param,  # type: ignore[arg-type]
                 last_n_games=state.get("last_n_games"),
                 as_of_date=state.get("as_of_date") or target_date or date.today(),
+                observed_before=(state.get("observed_before")
+                    if state.get("observed_before") is not None
+                    and model_version_for("nba", state["observed_before"]) == NBA_MODEL_VERSION
+                    else None),
             )
         except (ValueError, TypeError, KeyError, AttributeError, DecimalException) as exc:
             # Validation text can echo input; clear any estimate retained by a checkpoint.

@@ -1,4 +1,5 @@
 import {publicSignalSnapshots,publicPlayerProfile} from './signalMetrics.ts';
+import {capturedPlayerProfile} from './pickContext.ts';
 import {bestPickOptions,recentCandidateOptions} from './bestPicks.ts';
 import type {Sport} from './types';
 
@@ -104,8 +105,13 @@ export function forecastPage(data:ForecastPageInput,request:ReturnType<typeof fo
       if(request.player && !signal.player.toLowerCase().includes(request.player.toLowerCase())) throw new Error('Invalid searched forecast');
       const values=data.profiles?.['player-profiles:'+signal.sport]?.profiles;
       if(Array.isArray(values) && values.length<=500) {
-        const matches=values.map(value=>publicPlayerProfile(value,signal.sport,signal.player,now,signal.availability?.player_id)).filter(Boolean);
-        if(matches.length===1) signal={...signal,player_profile:matches[0]};
+        const captured=Date.parse(signal.captured_at ?? '');
+        const matches=Number.isFinite(captured) ? values.map(value=>
+          publicPlayerProfile(value,signal.sport,signal.player,captured,signal.availability?.player_id)).filter(Boolean) : [];
+        if(matches.length===1) {
+          const profile=capturedPlayerProfile({...signal,player_profile:matches[0]});
+          if(profile) signal={...signal,player_profile:profile};
+        }
       }
       const size=new TextEncoder().encode(JSON.stringify(signal)).length;
       if(request.view==='library' && bytes+size>PAGE_BYTES && consumed>0) break;
@@ -118,7 +124,7 @@ export function forecastPage(data:ForecastPageInput,request:ReturnType<typeof fo
   }
   const qualified=request.view==='qualified';
   const complete=request.offset+consumed>=data.total_count
-    && (!qualified || (data.total_count<=5000 && data.window_complete===true));
+    && (!qualified || (data.total_count<=5000 && data.window_complete===true && invalid===0));
   // An incomplete candidate inspection cannot advertise the strongest picks.
   const selected=qualified ? (complete ? bestPickOptions(signals,now) : [])
     : request.view==='candidates' ? recentCandidateOptions(signals,now) : signals;

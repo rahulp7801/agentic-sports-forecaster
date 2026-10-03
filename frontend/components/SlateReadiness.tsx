@@ -33,7 +33,8 @@ export default function SlateReadiness({sport,onOpenPlayers}:{sport:Sport;onOpen
       <small>{new Date(game.game_time).toLocaleString(undefined,{weekday:'long',month:'short',day:'numeric',hour:'numeric',minute:'2-digit',timeZoneName:'short'})}</small>
       <h3>{game.away_abbr} <span>at</span> {game.home_abbr}</h3><p>{game.away_name} · {game.home_name}</p>
       <strong>{game.state}</strong>
-      {game.model_estimates!==null && <p>{game.model_estimates} of {game.selections} selections modeled{game.accepted_at_capture!==null ? ` · ${game.accepted_at_capture} accepted at capture` : ''}. Freshness is rechecked for the shortlist.</p>}
+      {game.model_estimates!==null && <p>{game.model_estimates} of {game.selections} selections modeled{game.accepted_at_capture!==null ? ` · ${game.accepted_at_capture} accepted at capture` : ''}. {game.locked ? 'Recorded scan context; no new pick can qualify.' : 'Freshness is rechecked for the shortlist.'}</p>}
+      {game.nfl_core_source_proof && <p>NFL passing/rushing source proof: {game.nfl_core_source_proof.verified} of {game.nfl_core_source_proof.checked} evaluated market selections verified by forecast time. Unverified selections cannot qualify.</p>}
       {game.checked_at && <p>Last game check: <time dateTime={game.checked_at}>{new Date(game.checked_at).toLocaleString()}</time>.</p>}
       {game.overdue_at ? <p>Quote check was due <time dateTime={game.overdue_at}>{new Date(game.overdue_at).toLocaleString()}</time>; no newer game check is recorded.</p>
         : game.next_refresh_at && <p>Next quote check due: <time dateTime={game.next_refresh_at}>{new Date(game.next_refresh_at).toLocaleString()}</time>. Collection depends on scheduler timing and available credits.</p>}

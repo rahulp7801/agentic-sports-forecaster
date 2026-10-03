@@ -1,21 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-
-import {NO_STORE_HEADERS,PUBLIC_CACHE_HEADERS,signalCacheHeaders} from '../lib/publicCache.ts';
-
-test('public data stays out of browser caches while Vercel absorbs repeat reads',()=>{
-  for(const headers of Object.values(PUBLIC_CACHE_HEADERS)) {
-    assert.equal(headers['Cache-Control'],'no-store');
-    assert.match(headers['Vercel-CDN-Cache-Control'],/^public, s-maxage=\d+, stale-while-revalidate=\d+$/);
-  }
-  for(const key of ['Cache-Control','CDN-Cache-Control','Vercel-CDN-Cache-Control']) assert.equal(NO_STORE_HEADERS[key],'no-store');
-});
-
-test('actionable forecasts use the shortest cache lifetime',()=>{
-  assert.equal(signalCacheHeaders('qualified'),PUBLIC_CACHE_HEADERS.live);
-  assert.equal(signalCacheHeaders('candidates'),PUBLIC_CACHE_HEADERS.research);
-  assert.equal(signalCacheHeaders('library'),PUBLIC_CACHE_HEADERS.research);
-  const live=Number(PUBLIC_CACHE_HEADERS.live['Vercel-CDN-Cache-Control'].match(/s-maxage=(\d+)/)?.[1]);
-  const research=Number(PUBLIC_CACHE_HEADERS.research['Vercel-CDN-Cache-Control'].match(/s-maxage=(\d+)/)?.[1]);
-  assert.ok(live>0 && live<research && research<=300);
+import {NO_STORE_HEADERS,PUBLIC_CACHE_HEADERS,liveCacheHeadersUntil,slateCacheHeadersUntil,gameLogCacheHeaders,signalCacheHeaders} from '../lib/publicCache.ts';
+test('owner data never enters browser or shared CDN caches, including historical research',()=>{
+  const now=Date.parse('2026-10-04T17:00:00Z');
+  const headers=[...Object.values(PUBLIC_CACHE_HEADERS),liveCacheHeadersUntil([now+120000],now),
+    slateCacheHeadersUntil([{game_time:new Date(now+3600000).toISOString()}],now),
+    gameLogCacheHeaders(null,now),gameLogCacheHeaders('2026-10-03T00:00:00Z',now),
+    ...['qualified','library','candidates'].map(signalCacheHeaders)];
+  for(const h of headers) for(const key of Object.keys(NO_STORE_HEADERS)) assert.equal(h[key],'no-store');
 });

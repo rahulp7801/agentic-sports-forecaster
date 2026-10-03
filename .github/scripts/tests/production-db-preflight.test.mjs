@@ -62,3 +62,9 @@ test('database failure or timeout blocks deployment without exposing response bo
       && !error.message.includes('private host'));
   }
 });
+
+test('private owner boundary is accepted only with the exact no-store authentication response',async()=>{
+ const privateResponse=()=>({status:401,headers:new Headers({'cache-control':'no-store'}),json:async()=>({error:'Owner authentication required.'})});
+ assert.equal((await preflight({fetcher:async()=>privateResponse(),sleep:async()=>{},rounds:1})).reads,3);
+ for(const response of [{status:401,headers:new Headers(),json:async()=>({error:'Owner authentication required.'})},{status:401,headers:new Headers({'cache-control':'no-store'}),json:async()=>({error:'Database unavailable'})}])await assert.rejects(preflight({fetcher:async()=>response,sleep:async()=>{},rounds:1}));
+});

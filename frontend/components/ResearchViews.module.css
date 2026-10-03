@@ -457,3 +457,4 @@
   .predictionContracts { grid-template-columns:1fr; }
   .predictionContract:nth-child(odd) { border-right:0; }
 }
+.metricScope { margin: 0 0 10px; color: var(--text-secondary); font-size: 10px; line-height: 1.5; }

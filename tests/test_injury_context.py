@@ -94,42 +94,71 @@ def test_nba_reports_treat_teammates_and_opponents_as_relevant_lineup_context():
         ('Guard','teammate','offense'),('Center','opponent','defense')]
 
 
+@pytest.mark.parametrize('sport,position',[('nba','WR'),('nfl','ATH'),('cfb','ATH')])
+def test_unknown_acute_teammate_unit_stays_a_blocker_without_invented_role(sport,position):
+    raw=[dict(player='Unmapped teammate',position=position,status='Out',
+              reported_at='2026-10-08T17:00:00Z')]
+    context={'status':'observed','teams':[{'abbreviation':'HOM','reports':raw}]}
+    rows=screened_availability_reports(context,'HOM','Target',sport,raw)
+    assert len(rows)==1 and rows[0]['player']=='Unmapped teammate'
+    assert 'unit' not in rows[0] and 'relationship' not in rows[0]
+    assert blocks_unadjusted_teammate_context(rows[0])
+
+
+@pytest.mark.parametrize('sport,position',[('nba',' pg '),('nfl',' wr '),('cfb',' wr ')])
+def test_position_whitespace_does_not_erase_an_acute_teammate(sport,position):
+    raw=[dict(player='Teammate',position=position,status='Doubtful',
+              reported_at='2026-10-08T17:00:00Z')]
+    context={'status':'observed','teams':[{'abbreviation':'HOM','reports':raw}]}
+    rows=screened_availability_reports(context,'HOM','Target',sport,raw)
+    assert len(rows)==1 and rows[0]['unit']=='offense'
+    assert rows[0]['relationship']=='teammate' and rows[0]['position']==position.strip().upper()
+    assert blocks_unadjusted_teammate_context(rows[0])
+
+
+@pytest.mark.parametrize('position',['QB','WR','CB'])
+def test_nba_cannot_classify_football_positions_as_basketball_units(position):
+    context={'status':'observed','teams':[{'abbreviation':'AWY','reports':[
+        dict(player='Wrong-sport report',position=position,status='Out')]}]}
+    assert relevant_availability_reports(context,'HOM','Target','nba')==[]
+
+
+@pytest.mark.parametrize('position',['K','P','LS','CB'])
+def test_known_nfl_nonoffensive_roles_keep_existing_admission(position):
+    raw=[dict(player='Nonoffensive teammate',position=position,status='Out',
+              reported_at='2026-10-08T17:00:00Z')]
+    context={'status':'observed','teams':[{'abbreviation':'HOM','reports':raw}]}
+    assert screened_availability_reports(context,'HOM','Target','nfl',raw)==[]
+
+
 @pytest.mark.asyncio
 async def test_nfl_split_requires_tenure_source_coverage_and_strips_internal_id():
-    class Connection:
-        async def fetchrow(self,sql,*args):
-            self.sql,self.args=sql,args
-            return {'active_games':8,'active_mean':241.25,'active_hits':5,
-                    'absent_games':0,'absent_mean':None,'absent_hits':0,'unknown_games':2}
-    conn=Connection()
-    result=await _nfl_split(conn,'target',2024,date(2026,9,20),'pass_yds',225.5,'over',
-        {'player':'Defender','status':'Out','position':'CB','team':'WSH','stat_team':'WAS',
-         'relationship':'opponent','unit':'defense','participant_id':'DefeDa00'})
-    assert 'MIN(season*100+week)' in conn.sql and 'CASE WHEN COUNT(*)=1' in conn.sql
-    assert 'defense_snaps>0' in conn.sql and conn.args[-2:]==('WAS','DefeDa00')
-    assert result['active']=={'games':8,'mean':241.25,'hit_rate':.625}
+    from tests.test_nfl_participation_evidence import Connection, CANDIDATE, NOW, snapshot
+    conn=Connection(snapshot())
+    result=await _nfl_split(conn,'target',2024,date(2026,9,30),'pass_yds',15.5,'over',CANDIDATE,NOW)
+    assert 'MIN(season*100+week)' in conn.query and 'offense_snaps>0' in conn.query
+    assert conn.args[-3:]==('NE','PartFi00',NOW)
+    assert result['active']=={'games':2,'mean':17.5,'hit_rate':.5}
     assert result['absent']=={'games':0,'mean':None,'hit_rate':None}
-    assert result['unknown_games']==2 and result['evidence_version']=='recorded-participation-v2'
-    assert 'participant_id' not in result and result['team']=='WSH'
+    assert result['unknown_games']==1 and result['evidence_version']=='recorded-participation-v3'
+    assert 'participant_id' not in result and result['team']=='NE'
+
 
 
 @pytest.mark.asyncio
 async def test_nba_split_uses_canonical_team_and_integer_subject_identity():
-    class Connection:
-        async def fetch(self,sql,*args):
-            assert args==('Injured Teammate','LAC')
-            return [{'player_id':321}]
-        async def fetchrow(self,sql,*args):
-            self.sql,self.args=sql,args
-            return {'active_games':10,'active_mean':25,'active_hits':7,
-                    'absent_games':5,'absent_mean':29,'absent_hits':4,'unknown_games':3}
-    conn=Connection()
-    result=await _nba_split(conn,'123',2024,date(2026,9,20),'points',22.5,'over',
-        {'player':'Injured Teammate','status':'Out','position':'SG','team':'LA',
-         'stat_team':'LAC','relationship':'teammate','unit':'offense'})
-    assert conn.args[0] == 123 and conn.args[-2:] == ('LAC',321)
-    assert result['absent']=={'games':5,'mean':29.0,'hit_rate':.8}
+    from tests.test_nba_participation import CANDIDATE, EvidenceConnection, NOW
+    conn=EvidenceConnection()
+    result=await _nba_split(conn,'123',2024,date(2026,9,20),'points',5.5,'over',CANDIDATE,NOW)
+    identity_sql,identity_args=conn.calls[0]
+    target_sql,target_args=conn.calls[1]
+    assert identity_args==('Injured Teammate','LAC',date(2026,9,20),NOW,2024)
+    assert 'recorded_at<=$4' in identity_sql and 'LIMIT 1001' in identity_sql
+    assert target_args[:2]==(123,2024) and target_args[3:6]==('LAC',321,NOW)
+    assert 'recorded_at<=$6' in target_sql and 'LIMIT 40' in target_sql
+    assert result['active']=={'games':1,'mean':10.0,'hit_rate':1.0}
     assert 'stat_team' not in result
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('split,prop', [(_nfl_split,'pass_yds'),(_nfl_split,'rush_yds'),(_nfl_split,'receptions'),(_nba_split,'points')])

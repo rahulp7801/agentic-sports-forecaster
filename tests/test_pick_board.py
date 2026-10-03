@@ -208,14 +208,35 @@ def test_cfb_activation_retains_history_and_requires_new_policy(monkeypatch):
     start=datetime(2026,9,30,20,tzinfo=timezone.utc)
     old=row('a',old_start-timedelta(hours=2),old_start)|{'sport':'cfb','game_id':'old'}
     new=row('b',start-timedelta(hours=2),start)|{'sport':'cfb','model_version':CFB_MODEL_VERSION,
-        'history_policy_version':CFB_HISTORY_POLICY}
+        'history_policy_version':CFB_HISTORY_POLICY,
+        'history_observed_before':(start-timedelta(hours=2,minutes=1)).isoformat()}
     now=start-timedelta(minutes=90)
     board=build_pick_board([old,new],'cfb',now)
     assert len(board['history'])==len(board['current'])==1
     assert board['current'][0]['history_policy_version']==CFB_HISTORY_POLICY
+    assert board['current'][0]['history_observed_before']==new['history_observed_before']
     assert board['history'][0]['model_version']=='empirical-jeffreys-v4'
+    assert 'history_observed_before' not in board['history'][0]
     assert build_pick_board([new|{'history_policy_version':None}],'cfb',now)['current']==[]
     assert len(build_pick_board([new|{'model_version':'empirical-jeffreys-v4'}],'cfb',now)['current'])==1
+
+
+def test_new_nfl_board_retains_selection_cutoff_without_relabeling_v4(monkeypatch):
+    from sportsbet.model_contract import NFL_MODEL_VERSION, NFL_HISTORY_POLICY
+
+    monkeypatch.setattr('sportsbet.picks.quote_evidence_valid', lambda value: True)
+    monkeypatch.setattr('sportsbet.picks.settlement_identity_valid', lambda value: True)
+    start = datetime(2026, 10, 4, 20, tzinfo=timezone.utc)
+    captured = start-timedelta(hours=2)
+    source = (captured-timedelta(minutes=1)).isoformat()
+    new = row('a', captured, start) | {
+        'model_version': NFL_MODEL_VERSION, 'history_policy_version': NFL_HISTORY_POLICY,
+        'history_observed_before': source}
+    board = build_pick_board([new], 'nfl', start-timedelta(minutes=90))
+    assert board['current'][0]['history_observed_before'] == source
+    legacy = row('b', captured, start) | {'history_observed_before': source}
+    old_board = build_pick_board([legacy], 'nfl', start-timedelta(minutes=90))
+    assert 'history_observed_before' not in old_board['current'][0]
 
 
 def test_board_clarifies_legacy_plan_without_changing_receipt(monkeypatch):
@@ -236,3 +257,93 @@ def test_board_clarifies_legacy_plan_without_changing_receipt(monkeypatch):
         'Availability: Active.',
     ]
     assert retained['trade_plan'] == original
+
+
+def test_signed_yardage_mean_preserves_valid_quote_contract_without_changing_decision():
+    import json
+    from copy import deepcopy
+    from pathlib import Path
+    from sportsbet.nba_source_asof import quote_evidence_valid
+    fixture=json.loads(Path('tests/fixtures/pick_board_contract.json').read_text(encoding='utf8'))
+    original=fixture['record'];negative=deepcopy(original)|dict(model_mean_stat=-1.25)
+    captured=datetime.fromisoformat(original['captured_at'])
+    start=datetime.fromisoformat(original['game_start_time'])
+    assert quote_evidence_valid(original) and quote_evidence_valid(negative)
+    positive=build_pick_board([original],'nfl',start-timedelta(minutes=90))
+    expected=deepcopy(positive);expected['current'][0]['mean_stat']=-1.25
+    actual=build_pick_board([negative],'nfl',start-timedelta(minutes=90))
+    assert actual==expected
+    assert negative['captured_at']==original['captured_at']
+    assert negative['model_probability']==original['model_probability']
+    assert negative['stake_fraction']==original['stake_fraction']
+    assert original==fixture['record']
+    # Locked and final replay use the same recorded mean and original proof.
+    assert build_pick_board([negative],'nfl',start-timedelta(minutes=30))['current'][0]['mean_stat']==-1.25
+    final=build_pick_board([negative],'nfl',datetime.fromisoformat(fixture['board']['generated_at']))
+    expected_final=deepcopy(fixture['board']);expected_final['history'][0]['mean_stat']=-1.25
+    assert final==expected_final
+
+
+@pytest.mark.parametrize('sport,prop,allowed',[
+    ('nfl','pass_yds',True),('nfl','rush_yds',True),('nfl','rec_yds',True),
+    ('cfb','pass_yds',True),('cfb','rush_yds',True),('cfb','rec_yds',True),
+    ('nfl','receptions',False),('nfl','pass_tds',False),
+    ('cfb','receptions',False),('cfb','pass_tds',False),
+    ('nba','points',False),('nba','rebounds',False),('nba','assists',False),
+])
+def test_negative_mean_domain_is_limited_to_signed_football_yards(monkeypatch,sport,prop,allowed):
+    start=datetime(2026,9,20,20,tzinfo=timezone.utc)
+    value=row('a',start-timedelta(hours=2),start)|dict(sport=sport,prop_type=prop,model_mean_stat=-1.25)
+    # This matrix isolates metric-domain validation; the unmocked contract fixture test
+    # above independently exercises the unmocked quote/schedule checks.
+    monkeypatch.setattr('sportsbet.picks.quote_evidence_valid',lambda value:True)
+    monkeypatch.setattr('sportsbet.picks.settlement_identity_valid',lambda value:True)
+    assert bool(build_pick_board([value],sport,start-timedelta(minutes=90))['current']) is allowed
+
+
+@pytest.mark.parametrize('mean',[-10000.01,float('nan'),float('inf'),float('-inf'),'not a number'])
+def test_signed_mean_does_not_disable_numeric_bounds_or_hide_valid_neighbor(monkeypatch,mean):
+    start=datetime(2026,9,20,20,tzinfo=timezone.utc)
+    invalid=row('b',start-timedelta(hours=2),start)|dict(model_mean_stat=mean,game_id='other')
+    valid=row('a',start-timedelta(hours=2),start)
+    monkeypatch.setattr('sportsbet.picks.quote_evidence_valid',lambda value:True)
+    monkeypatch.setattr('sportsbet.picks.settlement_identity_valid',lambda value:True)
+    result=build_pick_board([invalid,valid],'nfl',start-timedelta(minutes=90))
+    assert [item['prediction_id'] for item in result['current']]==['a'*64]
+
+
+def test_recent_context_survives_immutable_ledger_and_board_without_later_retrofit(tmp_path):
+    import json
+    from copy import deepcopy
+    from datetime import date
+    from pathlib import Path
+    from sportsbet.ledger import Ledger
+    from sportsbet.prop.recent_participation import recent_participation
+    fixture=json.loads(Path('tests/fixtures/pick_board_contract.json').read_text(encoding='utf8'))
+    record=deepcopy(fixture['record']);original=deepcopy(record)
+    cutoff=date.fromisoformat(record['forecast_cutoff'])
+    capture=record['availability']['captured_at'];team=record['availability']['team']
+    recent=recent_participation(dict(active=[(cutoff-timedelta(days=60),3),(cutoff-timedelta(days=10),0)],
+        absent=[],unknown=[(cutoff-timedelta(days=5),10)]),cutoff,record['line'],record['direction'])
+    report=dict(player='Context fixture',position='WR',status='Questionable',team=team,relationship='teammate',
+        unit='offense',reported_at=capture,source_url=record['availability']['source_url'],source_sha256=record['availability']['source_sha256'])
+    # Controlled context fixture exercises serialization, not real injury or
+    # participation-source authentication. The original quote contract is valid.
+    split=report|dict(source='nflverse_snap_counts',participation='recorded unit snaps',
+        evidence_version='recorded-participation-v3',active=dict(games=2,mean=1.5,hit_rate=.5),
+        absent=dict(games=0,mean=None,hit_rate=None),unknown_games=1,recent_window=recent,
+        sample_window=dict(cutoff=cutoff.isoformat(),active=dict(oldest=(cutoff-timedelta(days=60)).isoformat(),newest=(cutoff-timedelta(days=10)).isoformat()),
+            absent=None,unknown=dict(oldest=(cutoff-timedelta(days=5)).isoformat(),newest=(cutoff-timedelta(days=5)).isoformat())),
+        source_rows=[dict(private='fixture proof')],tenure_rows=[dict(private='fixture proof')])
+    record['availability'].update(teammates=[report],context_splits=[split])
+    ledger=Ledger(tmp_path/'context.sqlite');identity=ledger.record('recent-context',record)
+    retained=ledger.predictions();assert retained[0]['prediction_id']==identity
+    assert retained[0]['availability']['context_splits'][0]==split
+    start=datetime.fromisoformat(record['game_start_time'])
+    board=build_pick_board(retained,'nfl',start-timedelta(minutes=30))
+    assert board['current'][0]['availability']['context_splits'][0]==split
+    assert board['current'][0]['true_prob']==original['model_probability']
+    changed=deepcopy(record);changed['availability']['context_splits'][0]['recent_window']['active']['mean']=99
+    with pytest.raises(ValueError,match='immutable evidence'):ledger.record('recent-context',changed)
+    assert ledger.predictions()==retained
+    assert fixture['record']==original

@@ -44,3 +44,6 @@
 
 .scanPlan { grid-column:1 / -1; min-width:0; display:grid; gap:4px; white-space:normal; overflow-wrap:anywhere; color:var(--text-secondary); font-size:11px; line-height:1.6; }
 .scanRail[data-single-league] .scanPlan { grid-row:3; }
+
+.signOut{padding:7px 10px;border:1px solid var(--border);border-radius:8px;background:transparent;color:inherit;font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}.signOut:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+@media(max-width:420px){.deskHeader{flex-wrap:wrap;gap:8px}.headerControls{flex:0 0 100%;justify-content:space-between;gap:6px}}

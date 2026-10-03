@@ -43,6 +43,10 @@ export async function preflight({fetcher=fetch,sleep=ms=>new Promise(resolve=>se
         throw new Error('Production database preflight failed: '+url.pathname+' request unavailable');
       }
       if(response.status===200) continue;
+      if(response.status===401 && response.headers.get('cache-control')?.includes('no-store')) {
+        const body=await response.json().catch(()=>null);
+        if(body?.error==='Owner authentication required.') continue;
+      }
       // CI's production-schema dependency has already proved a read through
       // the pending 6543 connection. Permit only the old iad1 release's DB
       // routes to be unhealthy while moving this exact release to pdx1.
