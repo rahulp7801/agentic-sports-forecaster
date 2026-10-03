@@ -54,14 +54,17 @@ def repository_bytes(repository: str, token: str, opener=urlopen) -> int:
     raise ValueError("Artifact inventory pagination limit reached")
 
 
-def may_upload(used: int, candidate: int) -> bool:
+def may_upload(used: int, candidate: int, reserved: int = 0) -> bool:
     return (0 <= used <= LIMIT_BYTES and 0 < candidate <= MAX_CANDIDATE_BYTES
-            and used + candidate + WRAP_MARGIN_BYTES <= LIMIT_BYTES)
+            and 0 <= reserved <= MAX_CANDIDATE_BYTES
+            and used + candidate + reserved + WRAP_MARGIN_BYTES <= LIMIT_BYTES)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--candidate", type=Path, required=True)
+    parser.add_argument("--reserve-bytes", type=int, default=0,
+                        help="Account for another candidate upload in this run")
     args = parser.parse_args()
     retain = False
     reason = "inventory unavailable"
@@ -69,8 +72,9 @@ def main() -> None:
         candidate = args.candidate.stat().st_size
         used = repository_bytes(os.environ.get("GITHUB_REPOSITORY", ""),
                                 os.environ.get("GITHUB_TOKEN", ""))
-        retain = may_upload(used, candidate)
-        reason = f"repo_bytes={used} candidate_bytes={candidate} cap_bytes={LIMIT_BYTES}"
+        retain = may_upload(used, candidate, args.reserve_bytes)
+        reason = (f"repo_bytes={used} candidate_bytes={candidate} "
+                  f"reserved_bytes={args.reserve_bytes} cap_bytes={LIMIT_BYTES}")
     except (OSError, ValueError, TypeError, KeyError) as error:
         # Do not print API bodies, credentials, or file contents.
         reason = f"storage check failed ({type(error).__name__})"

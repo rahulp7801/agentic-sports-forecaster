@@ -19,7 +19,7 @@ from sportsbet.ingestion.kalshi import KalshiReader
 from sportsbet.ingestion.kalshi_history import SERIES as KALSHI_PROP_SERIES
 from sportsbet.ingestion.prizepicks import PrizePicksUnavailable, capture as capture_projections
 from sportsbet.ledger import Ledger
-from sportsbet.scan import SPORT_KEYS, timestamp
+from sportsbet.scan import SPORT_KEYS, prop_credit_holdback, timestamp
 from sportsbet.schedules import publish_slate
 from sportsbet.quant.vig import american_to_raw_prob
 from sportsbet.arbitrage.kalshi_fees import fee_terms, taker_buy_cost, taker_depth_cost
@@ -88,8 +88,17 @@ async def kalshi_prop_fee_contexts(reader: KalshiReader, supported: dict,
 
 async def sportsbooks(sport: str, daily_credit_limit: int, credit_holdback: int = 0,
                       cadence_hours: int = 0) -> dict:
+    if (sport not in SPORT_KEYS or type(daily_credit_limit) is not int
+            or not 1 <= daily_credit_limit <= DEFAULT_DAILY_CREDIT_LIMIT
+            or type(credit_holdback) is not int or credit_holdback < 0
+            or settings.odds_rolling_credit_limit > 450):
+        raise ValueError('Invalid sportsbook credit allowance')
     if not settings.odds_api_key:
         raise ValueError('Provider not configured')
+    if not settings.analytics_database_url:
+        raise ValueError('Shared analytics credit ledger is required')
+    # Direct watch calls must protect the same two future prop checks as daily.
+    credit_holdback = max(credit_holdback, prop_credit_holdback(list(SPORT_KEYS), daily_credit_limit))
     now=datetime.now(timezone.utc)
     marker='collection:sportsbook:'+sport
     if cadence_hours:
@@ -712,7 +721,7 @@ async def publish_cfb_slate(now: datetime) -> str:
 
 
 async def run(sport: str, daily_credit_limit: int, game_limit: int, publish: bool, provider: str='all', *, credit_holdback: int = 0, sportsbook_cadence_hours: int = 0):
-    if sport not in ('nba','nfl','cfb') or provider not in ('all','public','sportsbook','kalshi','prizepicks') or type(game_limit) is not int or not 1<=game_limit<=MAX_GAME_LIMIT or daily_credit_limit<1 or type(credit_holdback) is not int or credit_holdback<0:
+    if sport not in ('nba','nfl','cfb') or provider not in ('all','public','sportsbook','kalshi','prizepicks') or type(game_limit) is not int or not 1<=game_limit<=MAX_GAME_LIMIT or type(daily_credit_limit) is not int or daily_credit_limit<1 or type(credit_holdback) is not int or credit_holdback<0:
         raise ValueError('Invalid market collection request')
     if sport=='cfb' and provider not in ('all','sportsbook'):
         raise ValueError('CFB currently supports sportsbook game markets only')

@@ -131,7 +131,7 @@ async def test_nba_context_agent_fetches_nba_odds() -> None:
         patch("sportsbet.ingestion.scraper.InjuryWeatherScraper.fetch_team_injuries", new_callable=AsyncMock, return_value=[]),
         patch("sportsbet.ingestion.scraper.InjuryWeatherScraper.write_injury_reports", new_callable=AsyncMock, return_value=0),
     ):
-        agent = make_context_agent(mock_pool, api_key="test-key", daily_credit_cap=500)
+        agent = make_context_agent(mock_pool, api_key="test-key", daily_credit_cap=20)
         result = await agent(state)  # type: ignore[arg-type]
 
     mock_nba.assert_called_once()
@@ -189,7 +189,7 @@ async def test_nfl_default_still_calls_fetch_nfl_odds() -> None:
         patch("sportsbet.ingestion.scraper.InjuryWeatherScraper.fetch_team_injuries", new_callable=AsyncMock, return_value=[]),
         patch("sportsbet.ingestion.scraper.InjuryWeatherScraper.write_injury_reports", new_callable=AsyncMock, return_value=0),
     ):
-        agent = make_context_agent(mock_pool, api_key="test-key", daily_credit_cap=500)
+        agent = make_context_agent(mock_pool, api_key="test-key", daily_credit_cap=20)
         result = await agent(state)  # type: ignore[arg-type]
 
     mock_nfl.assert_called_once()
@@ -277,7 +277,7 @@ async def test_make_context_agent_reads_vig_method_from_settings() -> None:
         patch("sportsbet.ingestion.scraper.InjuryWeatherScraper.write_injury_reports", new_callable=AsyncMock, return_value=0),
         patch("sportsbet.graph.agents._extract_odds_snapshot", wraps=_extract_odds_snapshot) as mock_extract,
     ):
-        agent = make_context_agent(mock_pool, api_key="test-key", daily_credit_cap=500, vig_method="pinnacle")
+        agent = make_context_agent(mock_pool, api_key="test-key", daily_credit_cap=20, vig_method="pinnacle")
         await agent(state)  # type: ignore[arg-type]
 
     # Confirm _extract_odds_snapshot was called with vig_method="pinnacle"
@@ -317,7 +317,7 @@ async def test_fetch_player_props_called_with_nba_when_sport_is_nba() -> None:
         patch("sportsbet.ingestion.scraper.InjuryWeatherScraper.fetch_team_injuries", new_callable=AsyncMock, return_value=[]),
         patch("sportsbet.ingestion.scraper.InjuryWeatherScraper.write_injury_reports", new_callable=AsyncMock, return_value=0),
     ):
-        agent = make_context_agent(mock_pool, api_key="test-key", daily_credit_cap=500)
+        agent = make_context_agent(mock_pool, api_key="test-key", daily_credit_cap=20)
         await agent(state)  # type: ignore[arg-type]
 
     mock_props.assert_called_once_with("nba")
@@ -342,7 +342,7 @@ async def test_fetch_player_props_called_with_nfl_when_sport_absent() -> None:
         patch("sportsbet.ingestion.scraper.InjuryWeatherScraper.fetch_team_injuries", new_callable=AsyncMock, return_value=[]),
         patch("sportsbet.ingestion.scraper.InjuryWeatherScraper.write_injury_reports", new_callable=AsyncMock, return_value=0),
     ):
-        agent = make_context_agent(mock_pool, api_key="test-key", daily_credit_cap=500)
+        agent = make_context_agent(mock_pool, api_key="test-key", daily_credit_cap=20)
         await agent(state)  # type: ignore[arg-type]
 
     mock_props.assert_called_once_with("nfl")
@@ -364,7 +364,7 @@ async def test_unavailable_priced_props_fail_closed_without_public_projection_fa
         patch("sportsbet.ingestion.scraper.InjuryWeatherScraper.write_injury_reports",
             new_callable=AsyncMock,return_value=0),
     ):
-        result=await make_context_agent(mock_pool,api_key="test-key",daily_credit_cap=500)(state)
+        result=await make_context_agent(mock_pool,api_key="test-key",daily_credit_cap=20)(state)
     mock_props.assert_called_once_with("nba")
     write_prop.assert_not_called()
     create_engine.assert_not_called()
@@ -387,7 +387,7 @@ async def test_unavailable_h2h_odds_fail_closed_without_unverified_fallbacks() -
         patch("sportsbet.ingestion.scraper.InjuryWeatherScraper.write_injury_reports",
             new_callable=AsyncMock,return_value=0),
     ):
-        result=await make_context_agent(mock_pool,api_key="test-key",daily_credit_cap=500)(state)
+        result=await make_context_agent(mock_pool,api_key="test-key",daily_credit_cap=20)(state)
     write_odds.assert_not_called()
     create_engine.assert_not_called()
     assert result["context_signals"].odds_snapshot is None

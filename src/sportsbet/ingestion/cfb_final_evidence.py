@@ -85,12 +85,12 @@ def inspect_bundle(bundle: dict, *, now=None) -> list[dict]:
             if f['value']!=value:raise ValueError('Wrong game-log scope')
         result=dict(player_id=identity,game=game,status='unavailable',reason='explicit_game_stats_missing')
         entries=[e for s in data['seasonTypes'] for c in s['categories'] if c['type']=='event'
-                 for e in c['events'] if e['eventId']==event]
+                 for e in c.get('events', ()) if e['eventId']==event]
         if not entries:
             results.append(result);continue
         entry,=entries
         if any(e['eventId']==event and c.get('splitType')!='2'
-                for s in data['seasonTypes'] for c in s['categories'] if c['type']=='event' for e in c['events']):
+                for s in data['seasonTypes'] for c in s['categories'] if c['type']=='event' for e in c.get('events', ())):
             raise ValueError('Wrong game-log season type')
         names=data['names']
         if (any(type(c['count']) is not int or not 0<=c['count']<=100 for c in data['categories'])

@@ -17,8 +17,10 @@ import platform
 if platform.system() == "Windows":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 from decimal import Decimal
+import re
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -34,8 +36,11 @@ from sportsbet.prop.nba_context_producer import make_nba_context_signals_produce
 from sportsbet.prop.arbitrage import make_prop_arbitrage_agent
 from sportsbet.ingestion.prop_odds import PlayerPropSnapshotCreate, parse_event_quotes
 from sportsbet.quant.vig import american_to_raw_prob
-from sportsbet.config import settings
+from sportsbet.config import settings, DEFAULT_DAILY_CREDIT_LIMIT
 from sportsbet.ledger import Ledger
+from sportsbet.picks import LOCK_BEFORE_START
+from sportsbet.scan import event_credit_holdback, timestamp, validate_event_listing, validate_provider_event
+from sportsbet.prop.nba_context_producer import nba_team_abbreviation
 from sportsbet.arbitrage.ev import compute_expected_return, quote_terms
 from sportsbet.arbitrage.kelly import fractional_kelly
 from sportsbet.model_contract import MODEL_VERSION
@@ -180,81 +185,111 @@ _ODDS_API_PLAYER_MARKETS = ",".join([
     "player_blocks",
 ])
 
+_LOCAL_PROP_COST = len(_ODDS_API_PLAYER_MARKETS.split(","))
+_LOCAL_PREGAME_RESERVE = 2 * _LOCAL_PROP_COST
+_ESPN_TEAM_ALIASES = {"GS": "GSW", "NO": "NOP", "NY": "NYK", "SA": "SAS",
+                      "UTAH": "UTA", "WSH": "WAS"}
 
-async def _fetch_odds_api_snapshots(sport: str = "nba") -> list[PlayerPropSnapshotCreate]:
-    """Fetch player prop lines from The Odds API (keyed, paid source — most reliable).
 
-    Uses the per-event /events/{id}/odds endpoint because the top-level /odds
-    endpoint does not support player prop markets.  Consumes one API credit per requested market and region per event.
-    Use sportsbet.scan for persistent daily credit budgeting.
-    """
-    if not settings.odds_api_key:
-        print("  [!] odds_api_key not set — skipping Odds API source.")
+def _exact_target_event(events: list[dict], home_team: str, away_team: str,
+                        target_date: date, now: datetime) -> dict | None:
+    """Match the ESPN matchup to one unlocked provider event on the Eastern game date."""
+    try:
+        expected_home = nba_team_abbreviation(_ESPN_TEAM_ALIASES.get(home_team.upper(), home_team.upper()))
+        expected_away = nba_team_abbreviation(_ESPN_TEAM_ALIASES.get(away_team.upper(), away_team.upper()))
+        matches = [event for event in events
+                   if nba_team_abbreviation(event['home_team']) == expected_home
+                   and nba_team_abbreviation(event['away_team']) == expected_away
+                   and timestamp(event['commence_time']).astimezone(ZoneInfo('America/New_York')).date() == target_date
+                   and timestamp(event['commence_time']) - now > LOCK_BEFORE_START]
+    except (KeyError, ValueError, TypeError, AttributeError):
+        return None
+    return matches[0] if len(matches) == 1 else None
+
+
+async def _fetch_odds_api_snapshots(sport: str = "nba", *, home_team: str,
+                                     away_team: str, target_date: date) -> list[PlayerPropSnapshotCreate]:
+    """Fetch only the ESPN-confirmed NBA game through the shared credit ledger."""
+    if sport != "nba" or not isinstance(target_date, date):
+        return []
+    if not settings.odds_api_key or not settings.analytics_database_url:
+        print("  [!] Shared Odds API key and analytics ledger are required.")
+        return []
+    if settings.odds_rolling_credit_limit > 450:
+        print("  [!] Rolling credit allowance exceeds the approved 450-credit cap.")
         return []
 
-    sport_key = "basketball_nba" if sport == "nba" else sport
-    base = "https://api.the-odds-api.com/v4"
+    try:
+        ledger = Ledger()
+    except Exception:
+        print("  [!] Shared credit ledger unavailable; Odds API request skipped.")
+        return []
 
+    base = "https://api.the-odds-api.com/v4"
     async with httpx.AsyncClient(timeout=15.0) as client:
-        # Step 1: list upcoming events (free, no credits)
+        # The provider documents /events as free; reserve only the priced event odds call.
         try:
             resp = await client.get(
-                f"{base}/sports/{sport_key}/events",
+                f"{base}/sports/basketball_nba/events",
                 params={"apiKey": settings.odds_api_key},
             )
             resp.raise_for_status()
-        except httpx.HTTPError as exc:
-            print(f"  [!] Odds API events list unreachable: {type(exc).__name__}")
-            return []
-
-        events = resp.json()
-        remaining = resp.headers.get("x-requests-remaining", "?")
-        print(f"  Odds API: {len(events)} upcoming events  [{remaining} credits remaining]")
-
-        if not events:
-            return []
-
-        # Step 2: fetch player props for each event (charged per requested market/region)
-        async def fetch_event_props(event: dict) -> list[dict]:
-            eid = event.get("id", "")
-            try:
-                r = await client.get(
-                    f"{base}/sports/{sport_key}/events/{eid}/odds",
-                    params={
-                        "apiKey": settings.odds_api_key,
-                        "regions": "us",
-                        "markets": _ODDS_API_PLAYER_MARKETS,
-                        "oddsFormat": "american",
-                    },
-                )
-                r.raise_for_status()
-                data = r.json()
-                # Return as a normalised event dict (already Odds API format)
-                return [data] if data.get("bookmakers") else []
-            except httpx.HTTPError:
+            events = validate_event_listing(resp.json())
+            remaining = int(resp.headers["x-requests-remaining"])
+            if remaining < _LOCAL_PROP_COST:
+                print("  [!] Provider allowance cannot cover this game's prop markets.")
                 return []
+        except (httpx.HTTPError, KeyError, ValueError, TypeError):
+            print("  [!] Odds API event listing or remaining credits invalid.")
+            return []
 
-        tasks = [fetch_event_props(e) for e in events]
-        results = await asyncio.gather(*tasks)
-        raw_events = [evt for group in results for evt in group]
+        event = _exact_target_event(events, home_team, away_team, target_date,
+                                    datetime.now(timezone.utc))
+        if event is None or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", event["id"]):
+            print("  [!] No unique unlocked Odds API event matches the ESPN matchup.")
+            return []
+        if timestamp(event["commence_time"]) - datetime.now(timezone.utc) <= LOCK_BEFORE_START:
+            return []
+        try:
+            reserved, reason = ledger.reserve_api_credits_with_reason(
+                _LOCAL_PROP_COST, DEFAULT_DAILY_CREDIT_LIMIT,
+                holdback=event_credit_holdback(event, _LOCAL_PREGAME_RESERVE,
+                                               datetime.now(timezone.utc)))
+        except Exception:
+            print("  [!] Shared credit ledger unavailable; prop request skipped.")
+            return []
+        if not reserved:
+            print(f"  [!] Odds API prop request skipped: {reason}.")
+            return []
+        try:
+            resp = await client.get(
+                f"{base}/sports/basketball_nba/events/{event['id']}/odds",
+                params={"apiKey": settings.odds_api_key, "regions": "us",
+                        "markets": _ODDS_API_PLAYER_MARKETS, "oddsFormat": "american"},
+            )
+            resp.raise_for_status()
+            quoted = validate_provider_event(resp.json(), event)
+        except (httpx.HTTPError, KeyError, ValueError, TypeError, AttributeError):
+            print("  [!] Odds API prop response unavailable or mismatched.")
+            return []
 
-    if not raw_events:
-        print("  [!] Odds API returned 0 prop events (slate not yet posted or no markets).")
+    if not quoted.get("bookmakers"):
+        print("  [!] Odds API returned 0 props for the target game.")
         return []
-
-    snapshots = _normalize_raw_events(raw_events, sport)
-    print(f"  Odds API: {len(snapshots)} prop outcomes across {len(raw_events)} events")
+    snapshots = _normalize_raw_events([quoted], sport)
+    print(f"  Odds API: {len(snapshots)} prop outcomes for the target game")
     return snapshots
 
 
-async def fetch_all_snapshots(sport: str = "nba") -> list[PlayerPropSnapshotCreate]:
+async def fetch_all_snapshots(sport: str = "nba", *, home_team: str,
+                              away_team: str, target_date: date) -> list[PlayerPropSnapshotCreate]:
     """Read actual sportsbook quotes; projection tiers are not single-pick odds."""
-    snapshots = await _fetch_odds_api_snapshots(sport)
+    snapshots = await _fetch_odds_api_snapshots(
+        sport, home_team=home_team, away_team=away_team, target_date=target_date)
     if snapshots:
         return snapshots
     print("  [!] No priced prop quotes are available; unpriced public projections are excluded.")
     return []
-
 
 async def load_signals_from_db(pool, game_id: str) -> list[dict]:
     """Return cached signal dicts from ev_signals table for a given game_id, or []."""
@@ -505,10 +540,11 @@ async def main():
     _game_id = f"{home_team.lower()}_{away_team.lower()}_{TARGET_DATE}"
     # Always evaluate current quotes; historical recommendations are audit records.
 
-    # 3. Fetch props slate (Odds API → PrizePicks cascade)
-    _write_progress(3, "Fetching prop slate (Odds API → PrizePicks → ESPN)...")
+    # 3. Fetch priced props for the ESPN-confirmed game.
+    _write_progress(3, "Fetching priced props for confirmed game...")
     print(f"\n[3/4] Fetching NBA prop slate...")
-    all_snapshots = await fetch_all_snapshots("nba")
+    all_snapshots = await fetch_all_snapshots(
+        "nba", home_team=home_team, away_team=away_team, target_date=TARGET_DATE_OBJ)
 
     def _write_no_slate_cache(reason: str) -> None:
         """Write a signals_cache.json with a human-readable reason so the frontend
@@ -527,8 +563,8 @@ async def main():
 
     if not all_snapshots:
         msg = (
-            f"No props available for {away_team} @ {home_team} on {TARGET_DATE}. "
-            "Odds API, PrizePicks, and ESPN all returned 0 results — the slate may not be posted yet. "
+            f"No verified priced props available for {away_team} @ {home_team} on {TARGET_DATE}. "
+            "The Odds API request may be unavailable, budget-gated, or missing this game's markets. "
             "Check back closer to game time."
         )
         print(f"\n  [!] {msg}")

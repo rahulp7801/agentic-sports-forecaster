@@ -12,6 +12,7 @@ export type KalshiContract={ticker:string;title:string;url:string;
 export type KalshiEvent={ticker:string;title:string;starts_at:string;markets:KalshiContract[]};
 export type KalshiResearch={sport:Sport;source:'Kalshi';observed_at:string;
   scope:string;events:KalshiEvent[]};
+type TimedContract={quote:KalshiContract;starts_at:string};
 
 function object(value:unknown):Row {
   if(value===null || typeof value!=='object' || Array.isArray(value)) throw new Error('Invalid provider data');
@@ -32,6 +33,15 @@ function decimal(value:unknown,max=1):number|null {
   if((typeof value!=='string' && typeof value!=='number') || value==='') return null;
   const number=Number(value);
   return Number.isFinite(number) && number>0 && number<=max ? number : null;
+}
+function probability(value:unknown):number|null {
+  if((typeof value!=='string' && typeof value!=='number') || value==='') return null;
+  const number=Number(value);
+  return Number.isFinite(number) && number>=0 && number<=1 ? number : null;
+}
+function complementary(yes:number|null,no:unknown):boolean {
+  const opposite=probability(no);
+  return yes!==null && opposite!==null && Math.abs(yes+opposite-1)<=0.0001;
 }
 async function providerJson(path:string,fetcher:Fetcher):Promise<unknown> {
   const url=new URL(path,ORIGIN);
@@ -61,18 +71,22 @@ async function providerJson(path:string,fetcher:Fetcher):Promise<unknown> {
   }
   return JSON.parse(body) as unknown;
 }
-function contract(value:unknown,eventTicker:string):KalshiContract|null {
+function contract(value:unknown,eventTicker:string):TimedContract|null {
   const item=object(value);
   const ticker=label(item.ticker,120);
   if(item.status!=='active' || item.event_ticker!==eventTicker
     || !ticker.startsWith(eventTicker+'-') || !/^[A-Z0-9-]+$/.test(ticker)) return null;
   const bidSize=decimal(item.yes_bid_size_fp,1_000_000_000);
   const askSize=decimal(item.yes_ask_size_fp,1_000_000_000);
-  const yes_bid=bidSize===null ? null : decimal(item.yes_bid_dollars);
-  const yes_ask=askSize===null ? null : decimal(item.yes_ask_dollars);
+  const rawBid=bidSize===null ? null : decimal(item.yes_bid_dollars);
+  const rawAsk=askSize===null ? null : decimal(item.yes_ask_dollars);
+  const yes_bid=complementary(rawBid,item.no_ask_dollars) ? rawBid : null;
+  const yes_ask=complementary(rawAsk,item.no_bid_dollars) ? rawAsk : null;
   if(yes_bid!==null && yes_ask!==null && yes_bid>yes_ask) return null;
-  return {ticker,title:label(item.title,180),yes_bid,yes_ask,yes_ask_size:yes_ask===null ? null : askSize,
-    url:'https://kalshi.com/markets_by_ticker/'+ticker};
+  if(yes_bid===null && yes_ask===null) return null;
+  return {starts_at:time(item.occurrence_datetime),quote:{ticker,title:label(item.title,180),
+    yes_bid,yes_ask,yes_ask_size:yes_ask===null ? null : askSize,
+    url:'https://kalshi.com/markets_by_ticker/'+ticker}};
 }
 export async function listKalshiResearch(sport:Sport,fetcher:Fetcher=fetch,now=Date.now()):Promise<KalshiResearch> {
   const series=SERIES[sport];
@@ -88,15 +102,15 @@ export async function listKalshiResearch(sport:Sport,fetcher:Fetcher=fetch,now=D
       if(event.series_ticker!==series || !ticker.startsWith(series+'-')
         || !/^[A-Z0-9-]+$/.test(ticker) || !Array.isArray(event.markets)
         || event.markets.length>10) continue;
-      const markets=event.markets.map(value=>{
+      const timed=event.markets.map(value=>{
         try{return contract(value,ticker);}catch{return null;}
-      }).filter((value):value is KalshiContract=>value!==null);
-      if(!markets.length) continue;
-      const starts_at=time(object(event.markets.find(value=>
-        value && typeof value==='object' && !Array.isArray(value)
-        && (value as Row).ticker===markets[0].ticker)).occurrence_datetime);
+      }).filter((value):value is TimedContract=>value!==null);
+      if(!timed.length) continue;
+      const starts_at=timed[0].starts_at;
       if(Date.parse(starts_at)<now-300_000) continue;
-      events.push({ticker,title:label(event.title),starts_at,markets:markets.slice(0,6)});
+      const markets=timed.filter(value=>value.starts_at===starts_at)
+        .slice(0,6).map(value=>value.quote);
+      events.push({ticker,title:label(event.title),starts_at,markets});
     } catch { /* Skip malformed event without inventing a quote. */ }
   }
   events.sort((a,b)=>Date.parse(a.starts_at)-Date.parse(b.starts_at));

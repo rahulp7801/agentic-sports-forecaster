@@ -2,10 +2,11 @@
 import Image from 'next/image';
 import {useState} from 'react';
 import type {EVSignal} from '@/lib/types';
+import {capturedPlayerProfile} from '@/lib/pickContext';
 import styles from './ResearchViews.module.css';
 
 export default function PlayerPortrait({signal}:{signal:EVSignal}) {
-  const url=signal.player_profile?.image_url ?? signal.availability?.player_image_url;
+  const url=capturedPlayerProfile(signal)?.image_url ?? signal.availability?.player_image_url;
   const [failed,setFailed]=useState<string>();
   const initials=signal.player.split(/\s+/).map(word=>word[0]).slice(0,2).join('');
   return <span className={styles.playerPortrait} aria-hidden="true">{initials}

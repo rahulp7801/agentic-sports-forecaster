@@ -20,6 +20,7 @@
 .resultsIntro { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(320px, .85fr); gap: 8vw; align-items: end; }
 .resultsIntro > div:first-child > span { color: var(--landing-purple); font-size: 12px; font-weight: 650; }
 .resultsIntro h2 { margin-top: 18px; font-size: clamp(64px, 9vw, 138px); line-height: .84; letter-spacing: -.078em; font-weight: 600; }
+.resultsIntro h2 small { display: inline-block; margin-right: .45em; font-size: .2em; letter-spacing: 0; vertical-align: middle; }
 .resultsSummary { padding-bottom: 9px; }
 .resultsSummary > div { display: inline-flex; align-items: center; gap: 9px; min-height: 38px; padding: 0 14px; border-radius: 999px; background: #ecebff; color: #4039b8; font-size: 12px; }
 .resultsSummary > div svg { flex: 0 0 auto; }

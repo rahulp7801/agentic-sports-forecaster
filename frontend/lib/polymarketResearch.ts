@@ -16,6 +16,7 @@ export type ResearchListing={sport:Sport;source:'Polymarket';observed_at:string;
 export type ResearchDetail={sport:Sport;source:'Polymarket';observed_at:string;
   event:{slug:string;title:string;starts_at:string;url:string};markets:ResearchMarket[]};
 type ResearchResult=ResearchListing|ResearchDetail;
+export class MarketEventStartedError extends Error {}
 
 function object(value:unknown):Row {
   if(value===null || typeof value!=='object' || Array.isArray(value)) throw new Error('Invalid provider data');
@@ -135,6 +136,7 @@ export async function predictionMarketDetail(sport:Sport,slug:string,fetcher:Fet
   const listing=await listPredictionMarkets(sport,fetcher,now);
   const selected=listing.events.find(event=>event.slug===slug);
   if(!selected) throw new Error('Event unavailable');
+  if(Date.parse(selected.starts_at)<=now) throw new MarketEventStartedError('Event already started');
   const data=await providerJson('/events/slug/'+slug,fetcher,1536*1024);
   return detail(data,selected,sport,new Date(now).toISOString());
 }
@@ -146,6 +148,7 @@ export function cachedPredictionMarkets(sport:Sport,slug?:string):Promise<Resear
     if(!('events' in listing)) throw new Error('League listing unavailable');
     const selected=listing.events.find(event=>event.slug===slug);
     if(!selected) throw new Error('Event unavailable');
+    if(Date.parse(selected.starts_at)<=Date.now()) throw new MarketEventStartedError('Event already started');
     const data=await providerJson('/events/slug/'+slug,fetch,1536*1024);
     return detail(data,selected,sport,new Date().toISOString());
   });
