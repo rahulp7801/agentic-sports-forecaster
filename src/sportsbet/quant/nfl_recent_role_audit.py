@@ -14,7 +14,10 @@ from sportsbet.ledger import utc_timestamp
 from sportsbet.quant.nfl_recent_role_params import BASELINE_VERSION
 from sportsbet.quant.audit_storage import ReadOnlyLedger,audit_database_url
 from sportsbet.quant.nfl_recent_role_shadow import (ARTIFACT_SHA256,FROZEN_AT,MARKETS,POLICY,VERSION,
-    implementation_sha256,verified_recorded_shadow_probability as verified_shadow_probability)
+    implementation_sha256)
+from sportsbet.quant import nfl_recent_role_portable_proof as portable_proof
+from sportsbet.quant.nfl_recent_role_portable_proof import (
+    AUDIT_PROTOCOL, verified_recorded_shadow_probability as verified_shadow_probability)
 from sportsbet.quant.history_tuning import Example,compare,score
 from sportsbet.quant.market_baseline import verified_recorded_market_baseline
 from sportsbet.quant.priced_market_audit import _eligible,_verified_outcome
@@ -26,14 +29,14 @@ from sportsbet.quant.nfl_recent_role_shadow import REASONS as UNAVAILABLE_REASON
 def evaluator_sha256():
     from sportsbet.quant import history_tuning, market_baseline, priced_market_audit
     modules=[history_tuning,market_baseline,priced_market_audit]
-    paths=[Path(__file__),*(Path(module.__file__) for module in modules)]
+    paths=[Path(__file__),Path(portable_proof.__file__),*(Path(module.__file__) for module in modules)]
     return {p.name:hashlib.sha256(p.read_text(encoding='utf-8-sig').encode()).hexdigest() for p in paths}
 
 
 def report_role_history_shadow(rows: list[dict], sport: str) -> dict:
     if sport not in ('nba','nfl','cfb'):
         raise ValueError('Invalid shadow sport')
-    report=dict(model_version=VERSION,policy_version=POLICY,artifact_sha256=ARTIFACT_SHA256,
+    report=dict(audit_protocol=AUDIT_PROTOCOL,model_version=VERSION,policy_version=POLICY,artifact_sha256=ARTIFACT_SHA256,
         implementation_sha256=implementation_sha256(),evaluator_sha256=evaluator_sha256(),frozen_at=FROZEN_AT,sport=sport,
         generated_at=datetime.now(timezone.utc).isoformat(),status='collecting',promote=False,
         scope='Untraded prospective probability comparison; no candidate acceptance policy or ROI.',

@@ -344,7 +344,7 @@ async def create_graph_with_sqlite(
     db_path: str = ".checkpoints/sportsbet.sqlite",
     pool: Any = None,
     api_key: str | None = None,
-    daily_credit_cap: int = 500,
+    daily_credit_cap: int = 20,
     bankroll_usd: float = 10000.0,
     daily_drawdown_limit: float = 0.05,
     target_date: Any = None,
@@ -387,7 +387,8 @@ async def create_graph_with_sqlite(
         agent into graph. If None, the corresponding route fails closed.
     daily_credit_cap:
         Maximum Odds API credits allowed per day. Passed to make_context_agent.
-        Defaults to 500.
+        Defaults to the shared 20-credit daily allowance. The poller enforces
+        this ceiling and the shared rolling allowance before each request.
     bankroll_usd:
         Total bankroll in USD for Aggregator daily drawdown gate. Defaults to 10000.0.
         Pass Settings().bankroll_usd for production use.

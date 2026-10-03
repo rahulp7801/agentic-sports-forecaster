@@ -1,0 +1,94 @@
+{
+  "baseline_version": "empirical-jeffreys-v4-nfl-history-v1",
+  "frozen_at": "2026-10-04T00:00:00+00:00",
+  "minimum_paired_games": 50,
+  "model_version": "nfl-stat-only-shadow-v1",
+  "models": {
+    "rec_yds": {
+      "coefficients": [
+        -0.7682827434799564,
+        0.38774112814323064,
+        -0.12140281948795789,
+        0.01573212890086482,
+        0.2657440109529112,
+        0.0,
+        -0.0654399315638298,
+        -0.09128191222712051
+      ],
+      "feature_names": [
+        "base_logit",
+        "recent5_logit_delta",
+        "recent10_logit_delta",
+        "recent_mean_delta",
+        "workload_log_ratio",
+        "log_days_since_game",
+        "other_team_history_share"
+      ],
+      "means": [
+        -2.703404555251046,
+        1.0146930032765025,
+        0.5721845602970389,
+        0.003231621941670765,
+        0.0,
+        2.1631328188351886,
+        0.14582468195356146
+      ],
+      "minimum_offer_line": 19.5,
+      "scales": [
+        1.8052389108706686,
+        0.8632990216299101,
+        0.5150610557013213,
+        0.27196167095102847,
+        1e-06,
+        0.3220000863229106,
+        0.2801242382312844
+      ],
+      "selected": "logistic_l2_0.01"
+    },
+    "receptions": {
+      "coefficients": [
+        -0.35884638716218026,
+        0.12700821414752017,
+        -0.027821949262629597,
+        -0.013625096727491296,
+        0.1900891738782198,
+        0.0,
+        -0.04409486667984872,
+        -0.0657584750930636
+      ],
+      "feature_names": [
+        "base_logit",
+        "recent5_logit_delta",
+        "recent10_logit_delta",
+        "recent_mean_delta",
+        "workload_log_ratio",
+        "log_days_since_game",
+        "other_team_history_share"
+      ],
+      "means": [
+        -2.7812256714919097,
+        0.9921472713152603,
+        0.5456673412379164,
+        -0.0021231107409974154,
+        0.0,
+        2.163132818835207,
+        0.14582468195356096
+      ],
+      "minimum_offer_line": 2.5,
+      "scales": [
+        1.7030451266849427,
+        0.9164075384697848,
+        0.572711152931839,
+        0.2845445680937166,
+        1e-06,
+        0.32200008632291,
+        0.28012423823128685
+      ],
+      "selected": "logistic_l2_0.1"
+    }
+  },
+  "policy_version": "complete-receiving-stat-only-transfer-v1",
+  "research_report_sha256": "c44edb356c163113140863d22d0a1b62440be8bff11df6edae0e39ca7eb69557",
+  "research_transfer_sha256": "a72ff20d2b86f65f35c12e91467c8057a37e5744b1e159c7394f2a6731a0f396",
+  "role_version": "nfl-recent-role-shadow-v2"
+}

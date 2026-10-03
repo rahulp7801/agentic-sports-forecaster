@@ -11,6 +11,9 @@ test('the shortlist cannot manufacture picks from stale, uncertain, injured or b
   for(const patch of [{confidence_interval:null},{confidence_interval:[.49,.8]},
     {confidence_interval:[.7,.8]},{push_probability:.1,confidence_interval:[.52,.95]},{gated:true},
     {true_prob:.8},{snapped_at:new Date(now-300001).toISOString()},{sample_size:19},
+    {captured_at:undefined},
+    {availability:{...base.availability,teammates:[{player:'T',status:'Questionable',position:'WR',
+      reported_at:new Date(now+30000).toISOString()}]}},
     {availability:{...base.availability,teammates:[{player:'T',status:'Out',position:'WR',reported_at:new Date(now).toISOString()}]}}]) {
     assert.deepEqual(bestPicks([{...base,...patch}],now),[]);
   }
@@ -60,10 +63,21 @@ test('empty-board fallback keeps only bounded upcoming source-backed leans',()=>
     {...candidate,id:'second',player:'Second player'},
     {...candidate,id:'negative',player:'Negative',true_prob:.4},
     {...candidate,id:'extreme',player:'Extreme',true_prob:.8},
+    {...candidate,id:'locked',player:'Locked',game_start_time:new Date(now+3_600_000).toISOString()},
     {...candidate,id:'started',player:'Started',game_start_time:new Date(now-1).toISOString()},
     {...candidate,id:'unknown',player:'Unknown',availability:undefined},
   ],now);
   assert.deepEqual(groups.map(group=>group.pick.id),[base.id,'second']);
   assert.deepEqual(groups[0].alternatives.map(signal=>signal.id),['alt']);
   assert.ok(groups.every(group=>group.pick.gated));
+});
+
+test('same-name athletes with different stable IDs remain separate shortlist choices',()=>{
+  const first={...base,id:'first',player:'Shared Name',player_id:'00-0000001'};
+  const second={...base,id:'second',player:'Shared Name',player_id:'00-0000002'};
+  assert.deepEqual(bestPicks([first,second],now).map(pick=>pick.id),['first','second']);
+  assert.deepEqual(groupAlternateLines([first,second]).map(group=>group.pick.id),['first','second']);
+  const alias={...first,id:'alias',player:'New Display Name',line:240.5};
+  assert.deepEqual(groupAlternateLines([first,alias]).map(group=>[group.pick.id,...group.alternatives.map(row=>row.id)]),[['first','alias']]);
+  assert.deepEqual(bestPicks([first,alias],now).map(pick=>pick.id),['alias']);
 });

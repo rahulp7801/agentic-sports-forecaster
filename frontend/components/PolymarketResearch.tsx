@@ -1,6 +1,7 @@
 'use client';
 import {useEffect,useState} from 'react';
 import type {Sport} from '@/lib/types';
+import {upcomingMarketEvents} from '@/lib/marketResearchWindow';
 import styles from './ResearchViews.module.css';
 
 type Event={slug:string;title:string;starts_at:string};
@@ -16,6 +17,13 @@ export default function PolymarketResearch({sport}:{sport:Sport}) {
   const [detail,setDetail]=useState<Detail|null>(null);
   const [error,setError]=useState('');
   const [detailError,setDetailError]=useState('');
+  const [now,setNow]=useState(0);
+  useEffect(()=>{
+    const update=()=>setNow(Date.now());
+    update();const timer=setInterval(update,5000);
+    document.addEventListener('visibilitychange',update);window.addEventListener('focus',update);
+    return ()=>{clearInterval(timer);document.removeEventListener('visibilitychange',update);window.removeEventListener('focus',update);};
+  },[]);
   useEffect(()=>{
     const controller=new AbortController();
     setListing(null);setSelected('');setDetail(null);setError('');
@@ -51,6 +59,10 @@ export default function PolymarketResearch({sport}:{sport:Sport}) {
     void load();
     return ()=>controller.abort();
   },[sport,selected]);
+  const events=listing && now ? upcomingMarketEvents(listing.events,now) : [];
+  const selectedUpcoming=events.some(event=>event.slug===selected);
+  const activeDetail=detail && selectedUpcoming && detail.event.slug===selected
+    && Date.parse(detail.event.starts_at)>now ? detail : null;
   return <section className={styles.predictionResearch} aria-labelledby="polymarket-title">
     <header className={styles.predictionHeader}>
       <div><small>Public prediction market research</small><h3 id="polymarket-title">Polymarket · {sport.toUpperCase()}</h3></div>
@@ -60,25 +72,26 @@ export default function PolymarketResearch({sport}:{sport:Sport}) {
     {!listing && !error && <div className={styles.notice}>Loading Polymarket events…</div>}
     {listing && <>
       <p className={styles.predictionScope}>{listing.scope} Retrieved {new Date(listing.observed_at).toLocaleString()}.</p>
-      {!listing.events.length && <div className={styles.emptyInline}>No upcoming events appeared in this league-series sample.</div>}
-      {!!listing.events.length && <div className={styles.predictionEvents} aria-label="Polymarket league events">
-        {listing.events.map(event=><button key={event.slug} type="button" aria-pressed={selected===event.slug}
+      {!events.length && <div className={styles.emptyInline}>No upcoming events appeared in this league-series sample.</div>}
+      {!!events.length && <div className={styles.predictionEvents} aria-label="Polymarket league events">
+        {events.map(event=><button key={event.slug} type="button" aria-pressed={selected===event.slug}
           onClick={()=>setSelected(event.slug)}>
           <strong>{event.title}</strong><span>{new Date(event.starts_at).toLocaleString(undefined,{weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}</span>
         </button>)}
       </div>}
     </>}
-    {detailError && <div className={styles.notice} role="status">{detailError}</div>}
-    {selected && !detail && !detailError && <div className={styles.notice}>Loading contract quotes…</div>}
-    {detail && <div className={styles.predictionDetail}>
+    {selected && !selectedUpcoming && !!events.length && <div className={styles.notice}>Selected event has started. Choose another upcoming event.</div>}
+    {detailError && selectedUpcoming && <div className={styles.notice} role="status">{detailError}</div>}
+    {selectedUpcoming && !activeDetail && !detailError && <div className={styles.notice}>Loading contract quotes…</div>}
+    {activeDetail && <div className={styles.predictionDetail}>
       <div className={styles.predictionDetailHead}>
-        <div><strong>{detail.event.title}</strong><span>Observed {new Date(detail.observed_at).toLocaleString()}</span></div>
-        <a href={detail.event.url} target="_blank" rel="noopener noreferrer">View event and rules at Polymarket ↗</a>
+        <div><strong>{activeDetail.event.title}</strong><span>Observed {new Date(activeDetail.observed_at).toLocaleString()}</span></div>
+        <a href={activeDetail.event.url} target="_blank" rel="noopener noreferrer">View event and rules at Polymarket ↗</a>
       </div>
       <div className={styles.predictionTerms}>Bid and ask refer to the labeled first outcome of each contract and are Gamma-reported snapshots. The indicative outcome price is excluded because it may differ sharply from the ask. No fill, profit, or model edge is implied.</div>
-      {!detail.markets.length && <div className={styles.emptyInline}>No open contracts with valid terms were returned for this event.</div>}
-      {!!detail.markets.length && <div className={styles.predictionContracts}>
-        {detail.markets.map((market,index)=><article key={index} className={styles.predictionContract}>
+      {!activeDetail.markets.length && <div className={styles.emptyInline}>No open contracts with valid terms were returned for this event.</div>}
+      {!!activeDetail.markets.length && <div className={styles.predictionContracts}>
+        {activeDetail.markets.map((market,index)=><article key={index} className={styles.predictionContract}>
           <strong>{market.question}</strong>
           <div><span>{market.outcome} bid <b>{cents(market.best_bid)}</b></span><span>{market.outcome} ask <b>{cents(market.best_ask)}</b></span>
             <span>Liquidity <b>{market.liquidity_usd===null ? '—' : '$'+market.liquidity_usd.toFixed(0)}</b></span>

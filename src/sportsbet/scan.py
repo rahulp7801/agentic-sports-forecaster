@@ -12,13 +12,16 @@ from zoneinfo import ZoneInfo
 import httpx
 import structlog
 from sportsbet.config import settings, DEFAULT_DAILY_CREDIT_LIMIT
+from sportsbet.ingestion.odds_api_credential import require_safe_odds_api_key
 from sportsbet.dashboard import publish_snapshot, load_snapshot
 from sportsbet.diagnostics import error_fields
 from sportsbet.db.connection import create_async_pool
 from sportsbet.graph.graph import create_graph
 from sportsbet.ingestion.prop_odds import PlayerPropSnapshotCreate, parse_event_quotes, write_player_prop_snapshots
-from sportsbet.ledger import Ledger
-from sportsbet.model_contract import MODEL_VERSION, model_version_for, history_policy_for
+from sportsbet.nba_source_asof import ReleaseLedger as Ledger
+from sportsbet.credit_projection import next_rolling_credit_release
+from sportsbet.model_contract import MODEL_VERSION
+from sportsbet.nba_source_asof import NBA_MODEL_VERSION, model_version_for, history_policy_for
 from sportsbet.prop.agents import make_prop_quant_agent
 from sportsbet.prop.availability import (blocks_unadjusted_teammate_context,
                                          fetch_event_availability, player_availability, nfl_roster_history_bindings)
@@ -56,7 +59,8 @@ PRIOR_EVENT_EVIDENCE_QUERY = '''SELECT snapshot_key,jsonb_build_object(
     'signal_count',CASE WHEN jsonb_typeof(payload->'signals')='array'
         THEN jsonb_array_length(payload->'signals') ELSE -1 END,
     'signals',COALESCE((SELECT jsonb_agg(jsonb_build_object(
-        'sport',signal->'sport','game_id',signal->'game_id','sample_size',signal->'sample_size',
+        'sport',signal->'sport','game_id',signal->'game_id',
+        'player_id',signal->'player_id','prop_type',signal->'prop_type','sample_size',signal->'sample_size',
         'true_prob',signal->'true_prob','implied_prob',signal->'implied_prob','ev_pct',signal->'ev_pct',
         'push_probability',signal->'push_probability','confidence_interval',signal->'confidence_interval',
         'gate_reason',signal->'gate_reason','sportsbook',signal->'sportsbook',
@@ -154,9 +158,46 @@ def prior_event_evidence(sport: str, event_id: str, now: datetime | None = None)
         return None,None
 
 
+def _prior_event_coverage(snapshot: object,sport: str,event_id: str,now: datetime) -> tuple[int,int]:
+    """Count sample-supported athletes first, then shorter-history fallbacks."""
+    try:
+        if not isinstance(snapshot,dict):return 0,0
+        age=now-timestamp(snapshot['generated_at'])
+        games=snapshot.get('games')
+        if (not timedelta(minutes=-1)<=age<=timedelta(hours=FORECAST_HORIZON_HOURS)
+                or not isinstance(games,list) or len(games)!=1
+                or not isinstance(games[0],dict)
+                or games[0].get('game_id')!=event_id or games[0].get('sport')!=sport):
+            return 0,0
+        signals=snapshot.get('signals')
+        count=snapshot.get('signal_count',len(signals) if isinstance(signals,list) else -1)
+        if (type(count) is not int or not 0<=count<=MAX_PRIORITY_SIGNALS
+                or not isinstance(signals,list) or len(signals)!=count):
+            return 0,0
+        supported=set()
+        observed=set()
+        for signal in signals:
+            if not (isinstance(signal,dict)
+                    and signal.get('sport')==sport and signal.get('game_id')==event_id
+                    and isinstance(signal.get('player_id'),str)
+                    and 0<len(signal['player_id'])<=32
+                    and signal.get('prop_type') in MARKETS[sport].values()
+                    and type(signal.get('sample_size')) is int and 0<signal['sample_size']<=40
+                    and isinstance(signal.get('availability'),dict)
+                    and signal['availability'].get('status')=='observed'
+                    and signal['availability'].get('roster_confirmed') is True):
+                continue
+            observed.add(signal['player_id'])
+            if signal['sample_size']>=20:
+                supported.add(signal['player_id'])
+        return len(supported),len(observed)
+    except (KeyError,TypeError,ValueError,AttributeError):
+        return 0,0
+
+
 async def prior_event_evidence_batch(pool,sport: str,event_ids: list[str],now: datetime):
     """Project and load only fields used for refresh priority, in one database read."""
-    evidence={event_id:(None,None) for event_id in event_ids}
+    evidence={event_id:(None,None,(0,0)) for event_id in event_ids}
     if not event_ids:
         return evidence
     keys=[f'signals:{sport}:{event_id}' for event_id in event_ids]
@@ -174,7 +215,8 @@ async def prior_event_evidence_batch(pool,sport: str,event_ids: list[str],now: d
                 continue
             if isinstance(payload,str):
                 payload=json.loads(payload)
-            evidence[event_id]=_prior_event_evidence(payload,sport,event_id,now)
+            evidence[event_id]=(*_prior_event_evidence(payload,sport,event_id,now),
+                                _prior_event_coverage(payload,sport,event_id,now))
         except (KeyError,TypeError,json.JSONDecodeError):
             continue
     return evidence
@@ -189,6 +231,11 @@ def prior_quality_sort(quality: tuple[float, int] | None) -> tuple[bool, float, 
     if quality is None:
         return True,0,0
     return False,-quality[0],-quality[1]
+
+def prelock_coverage_sort(event: dict,coverage: tuple[int,int],now: datetime) -> tuple[int,int]:
+    """Keep the coverage tie-break inside the existing prelock reserve stage."""
+    start=timestamp(event['commence_time'])
+    return tuple(-count for count in coverage) if now+LOCK_BEFORE_START<start<=now+PRELOCK_QUOTE_WINDOW else (0,0)
 
 def timestamp(value: str) -> datetime:
     result=datetime.fromisoformat(value.replace('Z','+00:00'))
@@ -299,6 +346,7 @@ def unprocessed_cached_event(cache: ProviderResponseCache, event: dict, sport: s
 
 async def discover_events(client: httpx.AsyncClient, cache: ProviderResponseCache,
                           sport: str, owner: str, now: datetime) -> list[dict]:
+    require_safe_odds_api_key(settings.odds_api_key)
     key = cache_key('events', sport)
     cached = cache.load(key, 'the_odds_api', sport, now)
     if cached:
@@ -354,12 +402,24 @@ async def evaluate_event(pool, event: dict, sport: str, ledger: Ledger, scan_id:
     bindings=nfl_roster_history_bindings(availability,event,datetime.now(timezone.utc)) if sport=='nfl' else {}
     history_ids=sorted({bindings[player]['history_player_id'] for player in quoted_players if player in bindings})
     identity_evidence={}
+    identity_time=datetime.now(timezone.utc) if sport=='nba' else None
+    source_asof=(identity_time is not None
+                 and model_version_for('nba',identity_time)==NBA_MODEL_VERSION)
     if normalized_players:
+        source_filter=(" AND source_provider IN ('nba','espn')"
+            " AND source_sha256 ~ '^[0-9a-f]{64}$'"
+            " AND source_record_sha256 ~ '^[0-9a-f]{64}$'"
+            " AND source_observed_at IS NOT NULL AND source_observed_at <= $3"
+            if source_asof else '')
+        identity_args=[normalized_players,history_ids]
+        if source_asof:
+            identity_args.append(identity_time)
         async with pool.acquire() as conn:
             rows=await conn.fetch(f'''SELECT LOWER(player_name) AS normalized_name,
                 {identity_column}::text AS player_id FROM {table}
-                WHERE LOWER(player_name)=ANY($1::text[]) OR {identity_column}::text=ANY($2::text[])
-                GROUP BY LOWER(player_name),{identity_column}''',normalized_players,history_ids)
+                WHERE (LOWER(player_name)=ANY($1::text[]) OR {identity_column}::text=ANY($2::text[]))
+                {source_filter}
+                GROUP BY LOWER(player_name),{identity_column}''',*identity_args)
         identities={name: set() for name in normalized_players}
         observed_ids=set()
         for row in rows:
@@ -385,7 +445,7 @@ async def evaluate_event(pool, event: dict, sport: str, ledger: Ledger, scan_id:
                 del player_ids[player]
                 identity_evidence.pop(player,None)
     prepared=[]
-    selection_time=datetime.now(timezone.utc)
+    selection_time=identity_time if source_asof else datetime.now(timezone.utc)
     for player,market,line,side in selections:
         candidates=[q for q in quotes if (q.player_name,q.prop_type,q.line,q.side)==(player,market,line,side)]
         fresh=[q for q in candidates if -60 <= (selection_time-q.snapped_at).total_seconds() <= 300]
@@ -552,9 +612,14 @@ async def evaluate_event(pool, event: dict, sport: str, ledger: Ledger, scan_id:
             quote_source_provider=quote.source_provider,quote_source_sha256=quote.source_sha256,
             quote_source_record_sha256=quote.source_record_sha256,accepted=accepted,gate_reason=reason,
             stake_fraction=float(signal.kelly_fraction) if accepted else 0,model_version=model_version_for(sport, selection_time),
-            **({'history_policy_version':history_policy_for(sport),'history_observed_before':selection_time.isoformat()} if sport in ('cfb','nfl') else {}),
+            **({'history_policy_version':history_policy_for(sport),'history_observed_before':selection_time.isoformat()}
+                if model_version_for(sport, selection_time) != MODEL_VERSION else {}),
             recommendation_policy_version=RECOMMENDATION_POLICY_VERSION,
             **paired_market_baseline(quote, quotes))
+        # Research only: the production model still uses its single best offer.
+        # Commit already-fetched alternate books before the immutable forecast write.
+        from sportsbet.quant.cross_book_quote_receipt import capture as capture_cross_book_quotes
+        payload['cross_book_quote_receipt']=capture_cross_book_quotes(quote,quotes)
         if player in identity_evidence:
             payload['player_identity_evidence']=identity_evidence[player]
         counts[reason] += 1
@@ -592,7 +657,11 @@ async def evaluate_event(pool, event: dict, sport: str, ledger: Ledger, scan_id:
                 game_start_time=start.isoformat(),sample_size=prop.sample_size,mean_stat=float(prop.mean_stat) if prop.mean_stat is not None else None,
                 confidence_interval=[float(x) for x in model_interval] if model_interval else None,
                 model_version=model_version_for(sport, selection_time),
-                **({'history_policy_version':history_policy_for(sport)} if sport in ('cfb','nfl') else {}),strength='unrated',trade_plan=trade_plan,injury_flags={},market_type=market,
+                **({'history_policy_version':history_policy_for(sport)}
+                    if model_version_for(sport, selection_time) != MODEL_VERSION else {}),
+                **({'history_observed_before':selection_time.isoformat()}
+                    if model_version_for(sport, selection_time) != MODEL_VERSION else {}),
+                strength='unrated',trade_plan=trade_plan,injury_flags={},market_type=market,
                 availability=availability_evidence,forecast_cutoff=game_date.isoformat(),
                 **({'next_gen_stats':ngs_evidence} if ngs_evidence else {}))
             payload.update(availability=availability_evidence,trade_plan=trade_plan,
@@ -650,13 +719,17 @@ async def evaluate_event(pool, event: dict, sport: str, ledger: Ledger, scan_id:
         home_team=event['home_team'],away_team=event['away_team'],date=game_date.strftime('%Y%m%d'),sport=sport)])
 
 async def run(sports: list[str], daily_credit_limit: int, event_ids: frozenset[str] | None = None):
-    if not sports or len(sports)!=len(set(sports)) or any(s not in MODEL_SPORTS for s in sports) or daily_credit_limit<1:
+    if (not sports or len(sports)!=len(set(sports)) or any(s not in MODEL_SPORTS for s in sports)
+            or type(daily_credit_limit) is not int
+            or not 1<=daily_credit_limit<=DEFAULT_DAILY_CREDIT_LIMIT
+            or settings.odds_rolling_credit_limit>450):
         raise ValueError('Invalid scan scope or budget')
     if event_ids is not None and (len(sports)!=1 or not event_ids or len(event_ids)>10
             or any(not isinstance(value,str) or not value or len(value)>100 for value in event_ids)):
         raise ValueError('Invalid targeted scan')
     if not settings.odds_api_key or not settings.analytics_database_url:
         raise ValueError('Worker credentials are not configured')
+    require_safe_odds_api_key(settings.odds_api_key)
     ledger=Ledger()
     cache=ProviderResponseCache()
     pool=await create_async_pool()
@@ -665,6 +738,8 @@ async def run(sports: list[str], daily_credit_limit: int, event_ids: frozenset[s
     reports={}
     queues={}
     screens={sport:[] for sport in sports}
+    stat_only_capture_counts=Counter()
+    stat_only_capture_failures=0
     held=prop_credit_holdback(sports,daily_credit_limit)
     operation='scan_initialization'
     try:
@@ -687,7 +762,7 @@ async def run(sports: list[str], daily_credit_limit: int, event_ids: frozenset[s
                     report['attempts']={identity:attempt for identity,attempt in report['attempts'].items()
                         if identity in active_ids}
                     evidence=await prior_event_evidence_batch(pool,sport,[event['id'] for event in events],now)
-                    for identity,(_,attempt) in evidence.items():
+                    for identity,(_,attempt,_) in evidence.items():
                         if identity not in report['attempts'] and attempt is not None:
                             report['attempts'][identity]=attempt
                     if event_ids is not None:
@@ -699,9 +774,11 @@ async def run(sports: list[str], daily_credit_limit: int, event_ids: frozenset[s
                         away_team=e['away_team'],game_start_time=e['commence_time'],state='waiting_quotes')
                         for e in events]
                     priorities={event['id']:evidence[event['id']][0] for event in events}
+                    prior_coverage={event['id']:evidence[event['id']][2] for event in events}
                     queues[sport]=sorted(events,key=lambda e:(timestamp(e['commence_time'])>now+LOCK_BEFORE_START,
                         timestamp(e['commence_time'])>now+PRELOCK_QUOTE_WINDOW,
                         *prior_quality_sort(priorities[e['id']]),
+                        prelock_coverage_sort(e,prior_coverage[e['id']],now),
                         report['attempts'].get(e['id'],''),timestamp(e['commence_time']),e['id']))
                 except Exception as exc:
                     report['failures'].append(dict(stage='event_discovery',**error_fields(exc)))
@@ -751,6 +828,9 @@ async def run(sports: list[str], daily_credit_limit: int, event_ids: frozenset[s
                             holdback=event_credit_holdback(event,held,datetime.now(timezone.utc)))
                         if not reserved:
                             event_state.update(state='api_budget',budget_reason=budget_reason)
+                            if budget_reason=='rolling_credit_limit' and 'next_rolling_allowance_at' not in report:
+                                release=next_rolling_credit_release(ledger,len(MARKETS[sport]))
+                                report['next_rolling_allowance_at']=release.isoformat() if release else None
                             if budget_reason=='pregame_credit_reserve':
                                 release=next_reserve_release(event,held,datetime.now(timezone.utc))
                                 if release is not None:
@@ -799,6 +879,21 @@ async def run(sports: list[str], daily_credit_limit: int, event_ids: frozenset[s
                     report['completed_events']+=1
                     report['coverage'][event['id']]=result['coverage']|{'cross_venue':screened['coverage']}
                     event_state['state']='evaluated'
+                    if sport=='nfl':
+                        # The full all-sport scan can outlast a five-minute
+                        # quote. Record the saved forecast now, before the
+                        # next game's provider or model work; research fails
+                        # independently of the consumer scan.
+                        from sportsbet.quant import nfl_stat_only_paper
+                        try:
+                            async with asyncio.timeout(6):
+                                capture=await nfl_stat_only_paper.capture(
+                                    pool,scan_id,event_id=event['id'])
+                            stat_only_capture_counts.update(capture['counts'])
+                        except Exception as exc:
+                            stat_only_capture_failures+=1
+                            log.warning('stat_only_paper_capture_unavailable',
+                                error_type=type(exc).__name__)
                 except Exception as exc:
                     event_state['state']='failed'
                     report['failures'].append(dict(stage='event_evaluation',operation=operation,
@@ -868,6 +963,15 @@ async def run(sports: list[str], daily_credit_limit: int, event_ids: frozenset[s
             if sport=='nfl':
                 from sportsbet.quant.nfl_recent_role_audit import publish_role_history_shadow as publish_recent_role
                 publish_recent_role(prediction_rows,sport,publish_snapshot)
+        if 'nfl' in reports:
+            research_capture=dict(scan_id=scan_id,
+                status='degraded' if stat_only_capture_failures else (
+                    'captured' if stat_only_capture_counts['attempts'] else 'no_supported_offers'),
+                counts=dict(stat_only_capture_counts),failed_events=stat_only_capture_failures)
+            publish_snapshot('research:stat-only-capture:nfl',research_capture)
+            # Added after the public scan snapshot is serialized. Daily uses
+            # this aggregate instead of repeating the expired scan-wide read.
+            reports['nfl']['stat_only_capture']=research_capture
         return reports
     except Exception as exc:
         log.warning('scan_failed',scan_id=scan_id,operation=operation,**error_fields(exc))
