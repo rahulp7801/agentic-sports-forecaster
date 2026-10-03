@@ -202,6 +202,24 @@ remains the user's $0 stop-usage setting. No card, paid provider request,
 order, or bet is involved. A storage-gate rejection leaves the run without a
 retained private pair and must not be interpreted as a negative model result.
 
+The same pregame pair now contains a fixed **research** decision receipt. For
+each source-backed forecast it compares the model probability of YES with the
+captured YES ask, and the complement with the captured NO ask. It selects the
+larger gross gap only when it is at least **five percentage points**; otherwise
+it abstains. The 5-point margin is predeclared for prospective measurement,
+not fitted or validated as a profitable threshold. Both asks must show
+positive size. The receipt commits the exact contract, side, displayed ask,
+size, game, model probability, selection hash, and the full forecast/abstention
+denominator before any result. Later `kalshi_ask_policy` replays the original
+model and exact venue settlement, then reports verified and unavailable
+candidate results and gross unit profit on the verified subset. The decision
+timestamp is recorded after the rule runs and must still be within 30 seconds
+of model start, five minutes of the oldest selected quote, and before the
+first selected kickoff. Displayed asks are historical observations: fills,
+fees, liquidity at execution, current
+roster status, and net ROI remain unverified. It never promotes these rows to
+consumer picks or an edge claim.
+
 This workflow is on a private review branch, **not production**. Deployment
 depends on the protected private PR's required checks. A timely pair remains
 research evidence because displayed midpoints are not executable fills,
@@ -216,3 +234,16 @@ above, then run the offline paired audit with `--market-archive`, `--cohort`,
 Preserve the raw market archive, cohort, six parquet files, crosswalk and
 shadow receipt privately; the GitHub collection artifact expires in about a
 week. Do not re-freeze this cohort after outcomes are known.
+
+For a later *v2 timely pair* that contains the pregame ask-policy receipt, run
+the separate displayed-ask outcome audit against the same authenticated exact
+venue archive. The October 2 stale pair cannot use this protocol.
+
+```text
+python -m sportsbet.quant.kalshi_ask_policy \
+  --pair PRIVATE_TIMELY_PAIR.json \
+  --market-archive MATCHING_RAW_MARKET_ARCHIVE.json \
+  --source-dir MATCHING_PREQUOTE_SOURCE_DIR \
+  --settlements MATCHING_EXACT_VENUE_SETTLEMENTS.json \
+  --output .local/kalshi-displayed-ask-audit.json
+```

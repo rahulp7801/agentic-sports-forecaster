@@ -177,11 +177,13 @@ def create_daily_graph():
                             # A failure cannot change public data or consumer picks.
                             try:
                                 from sportsbet.quant.kalshi_pair_capture import capture, save_pair
+                                from sportsbet.quant.kalshi_ask_policy import freeze as freeze_ask_policy
                                 market_archive=json.loads(Path(archive).read_text(encoding='utf-8'))
                                 manifest_path=Path(source_dir)/'source-manifest.json'
                                 manifest=json.loads(manifest_path.read_text(encoding='utf-8'))
                                 pair=await asyncio.to_thread(capture,market_archive,Path(source_dir),
                                     started_at=datetime.now(timezone.utc),source_manifest=manifest)
+                                pair['ask_policy']=freeze_ask_policy(pair)
                                 save_pair(pair,Path(output))
                             except Exception as exc:
                                 import structlog

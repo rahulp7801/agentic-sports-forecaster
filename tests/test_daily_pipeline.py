@@ -310,6 +310,7 @@ async def test_public_modes_use_real_graph_and_collector_without_paid_or_prop_ca
 @pytest.mark.asyncio
 async def test_public_daily_pairs_existing_nfl_archive_without_exposing_private_rows(monkeypatch,tmp_path):
     from sportsbet.quant import kalshi_pair_capture as pair_module
+    from sportsbet.quant import kalshi_ask_policy as ask_policy
     archive=tmp_path/'market.json'
     archive.write_text(json.dumps({'source':'already_collected'}),encoding='utf-8')
     source_dir=tmp_path/'sources'
@@ -324,14 +325,15 @@ async def test_public_daily_pairs_existing_nfl_archive_without_exposing_private_
         'status':'observed','partial_coverage':False}},
         'captured_at':datetime.now(timezone.utc).isoformat()},archive)))
     monkeypatch.setattr(pair_module,'capture',lambda market,source_dir,*,started_at,source_manifest:
-        (calls.append((market,source_dir,started_at,source_manifest)) or {'private_forecasts':[1]}))
+            (calls.append((market,source_dir,started_at,source_manifest)) or {'private_forecasts':[1]}))
+    monkeypatch.setattr(ask_policy,'freeze',lambda value:{'candidates_count':0})
     monkeypatch.setattr(pair_module,'save_pair',lambda value,output:
         calls.append((value,output)))
     result=await daily.run(['nfl'],'public_daily',25)
     assert result['status']=='observed'
     assert len(calls)==2 and calls[0][0]=={'source':'already_collected'}
     assert calls[0][3]=={'source':'prequote'}
-    assert calls[1][0]=={'private_forecasts':[1]}
+    assert calls[1][0]=={'private_forecasts':[1], 'ask_policy':{'candidates_count':0}}
     assert all('private_forecasts' not in str(value) for value in published.values())
 
 

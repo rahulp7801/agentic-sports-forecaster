@@ -7,6 +7,7 @@ import zipfile
 import pytest
 
 from sportsbet.quant import kalshi_pair_artifact as artifact
+from sportsbet.quant.kalshi_ask_policy import freeze as freeze_ask_policy
 from sportsbet.quant import kalshi_role_shadow_v2 as v2
 from sportsbet.quant.kalshi_market_cohort import freeze
 from tests.test_kalshi_role_shadow import fixture
@@ -28,6 +29,7 @@ def setup(tmp_path, monkeypatch):
         market_selection_sha256=cohort["selection_sha256"],
         forecasts_sha256=shadow["forecasts_sha256"], selected_contracts=1,
         forecast_contracts=1, cohort=cohort, shadow=shadow)
+    pair['ask_policy']=freeze_ask_policy(pair, decided_at=NOW+timedelta(seconds=3))
     pair_path=tmp_path/'pair.json'
     pair_path.write_text(json.dumps(pair),encoding='utf-8')
     source_dir=tmp_path/'sources'
@@ -59,4 +61,13 @@ def test_private_pack_rejects_missing_matching_archive(tmp_path,monkeypatch):
     pair_path,source_dir,market_dir=setup(tmp_path,monkeypatch)
     (market_dir/'market.json').write_text('{}',encoding='utf-8')
     with pytest.raises(ValueError,match="no unique"):
+        artifact.pack(pair_path,source_dir,market_dir,tmp_path/'private.zip')
+
+
+def test_private_pack_rejects_changed_pregame_ask_policy(tmp_path,monkeypatch):
+    pair_path,source_dir,market_dir=setup(tmp_path,monkeypatch)
+    pair=json.loads(pair_path.read_text(encoding='utf-8'))
+    pair['ask_policy']['minimum_gross_margin']='0.00'
+    pair_path.write_text(json.dumps(pair),encoding='utf-8')
+    with pytest.raises(ValueError,match="policy receipt changed"):
         artifact.pack(pair_path,source_dir,market_dir,tmp_path/'private.zip')

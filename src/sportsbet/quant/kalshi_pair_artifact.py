@@ -10,6 +10,7 @@ import zipfile
 from sportsbet.quant.kalshi_market_cohort import MAX_ARCHIVE_BYTES, clock
 from sportsbet.quant.kalshi_market_settlement import verify_cohort
 from sportsbet.quant.kalshi_pair_capture import MAX_PAIR_BYTES, unpack
+from sportsbet.quant.kalshi_ask_policy import freeze as freeze_ask_policy
 from sportsbet.quant import kalshi_role_shadow as v1
 from sportsbet.quant import kalshi_role_shadow_v2 as v2
 from sportsbet.quant.nfl_recent_role_params import SOURCE_SHA256
@@ -33,6 +34,8 @@ def pack(pair_path: Path, source_dir: Path, market_dir: Path, output: Path) -> d
     pair_bytes = bounded(pair_path, MAX_PAIR_BYTES)
     pair = json.loads(pair_bytes)
     cohort, shadow = unpack(pair)
+    if pair.get("ask_policy") != freeze_ask_policy(pair):
+        raise ValueError("Private displayed-ask policy receipt changed")
     if shadow["protocol"] != v2.VERSION:
         raise ValueError("Private workflow requires the forward source protocol")
     manifest_bytes = bounded(source_dir/"source-manifest.json", v2.MAX_RELEASE_BYTES*2+100_000)
