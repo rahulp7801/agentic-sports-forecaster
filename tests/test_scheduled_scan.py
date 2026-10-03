@@ -4,6 +4,7 @@ from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from sportsbet.ledger import Ledger
+from sportsbet.nba_source_asof import NBA_MODEL_VERSION, model_version_for
 from sportsbet.graph.models import PropResult,EVSignal
 from sportsbet.scan import evaluate_event, quotes_from_event
 from sportsbet.scan import recommendation_quality
@@ -86,11 +87,18 @@ async def test_scheduled_graph_routes_real_quotes_and_retains_recency(sport,tmp_
         assert all(call.args[1].observed_before is not None for call in quant.call_args_list)
     assert len(record_many.call_args.args[1])==2
     assert len(result['signals'])==2
+    if sport in ('nfl','cfb') or any(
+            s['model_version']==NBA_MODEL_VERSION for s in result['signals']):
+        assert all(s['history_observed_before']==p['history_observed_before']
+            for s,p in zip(result['signals'],ledger.predictions(),strict=True))
     assert all(s['trade_plan'] and len(s['trade_plan'])==3 and s['gated']
         and s['gate_reason']=='availability_unavailable' and s['kelly_fraction']==0 for s in result['signals'])
     assert {s['direction'] for s in result['signals']}=={'over','under'}
     assert len(ledger.predictions())==2
-    assert all(p['model_version']==({'cfb':'empirical-jeffreys-v4-cfb-history-v1','nfl':'empirical-jeffreys-v4-nfl-history-v1'}.get(sport,'empirical-jeffreys-v4')) and p['model_generated_at']==p['captured_at']
+    assert all(p['cross_book_quote_receipt']=={
+        'version':'cross-book-quote-receipt-v2','references':[]} for p in ledger.predictions())
+    assert all(p['model_version']==({'cfb':'empirical-jeffreys-v4-cfb-history-v1','nfl':'empirical-jeffreys-v4-nfl-history-v1'}.get(
+        sport,model_version_for('nba',datetime.fromisoformat(p['model_generated_at'])))) and p['model_generated_at']==p['captured_at']
         and p['model_sample_size']==40 and len(p['model_confidence_interval'])==2
         and p['model_mean_stat']==24
         and p['home_team']==event(sport)['home_team'] and p['away_team']==event(sport)['away_team']
@@ -105,9 +113,24 @@ async def test_scheduled_graph_routes_real_quotes_and_retains_recency(sport,tmp_
     assert result['coverage']['model_status']=='complete'
     assert result['coverage']['model_concurrency_limit']==8
     assert conn.fetch.await_count==1  # One batched identity lookup per event, not per player/line/side.
+    identity_sql, *identity_args = conn.fetch.await_args.args
+    if sport=='nba' and model_version_for('nba',datetime.now(timezone.utc))==NBA_MODEL_VERSION:
+        assert len(identity_args)==3 and isinstance(identity_args[2],datetime)
+        assert 'source_observed_at IS NOT NULL AND source_observed_at <= $3' in identity_sql
+        assert "source_provider IN ('nba','espn')" in identity_sql
+        assert "source_sha256 ~ '^[0-9a-f]{64}$'" in identity_sql
+        assert "source_record_sha256 ~ '^[0-9a-f]{64}$'" in identity_sql
+        assert 'WHERE (LOWER(player_name)=ANY($1::text[]) OR player_id::text=ANY($2::text[]))' in identity_sql
+    else:
+        assert len(identity_args)==2 and 'source_observed_at' not in identity_sql
     assert all(call.args[1].last_n_games==40 for call in quant.call_args_list)
     assert all(call.args[1].as_of_date is not None for call in quant.call_args_list)
     if sport=='nba':
+        from sportsbet.nba_source_asof import quote_evidence_valid
+        if any(p['model_version']==NBA_MODEL_VERSION for p in ledger.predictions()):
+            assert all(p['history_policy_version']=='nba-source-asof-v1'
+                and quote_evidence_valid(p) for p in ledger.predictions())
+            assert all(call.args[1].observed_before is not None for call in quant.call_args_list)
         assert all(call.args[1].opponent_team=='LAL' and call.args[1].home_away=='home'
             for call in quant.call_args_list)
         assert {signal['home_team'] for signal in result['signals']}=={'Boston Celtics'}

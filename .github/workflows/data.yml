@@ -20,13 +20,21 @@ on:
         type: string
         default: ''
   schedule:
-    - cron: '17 13 * * *'
-    - cron: '7,37 * * * *'
-    # Staggered catch-up: scheduled Actions runs can be dropped; the scanner
-    # checks quote cadence and both credit caps before any paid event request.
-    - cron: '19,49 * * * *'
-    # Free NFL history/NGS recovery after nflverse's documented 07:00 UTC poll.
-    - cron: '29 10,22 * * *'
+    # The $0 private-hosted budget permits a few pregame opportunities, not
+    # half-hour jobs all day. Credit, reserve and source gates remain unchanged.
+    - cron: '17 12 * * *'
+    # Keep three scan opportunities/day. Sunday slots precede the NFL lock;
+    # Monday's late slot covers the Monday night game without extra jobs.
+    - cron: '19 0,16,20 * * 2-5'
+    # A later Saturday slot retains the late FBS prelock opportunity.
+    - cron: '19 0,16 * * 6'
+    - cron: '55 23 * * 6'
+    - cron: '35 15 * * 0'
+    - cron: '45 18 * * 0'
+    - cron: '19 0,16 * * 1'
+    - cron: '45 22 * * 0,1'
+    # Free NFL history/NGS recovery after nflverse's 07:00 UTC poll.
+    - cron: '29 10 * * 2,5'
 permissions:
   contents: read
   actions: read
@@ -39,22 +47,26 @@ jobs:
     if: >-
       github.ref == 'refs/heads/master' && (
         github.event_name == 'workflow_dispatch' ||
-        (github.event.schedule == '17 13 * * *' && vars.DATA_PIPELINE_ENABLED == 'true') ||
-        github.event.schedule == '29 10,22 * * *' ||
-        (github.event.schedule == '7,37 * * * *' && (
-          vars.DATA_PIPELINE_ENABLED == 'true' || vars.PAID_MONITOR_ENABLED == 'true'
-        )) ||
-        (github.event.schedule == '19,49 * * * *' && vars.DATA_PIPELINE_ENABLED == 'true')
+        (github.event.schedule == '17 12 * * *' && vars.DATA_PIPELINE_ENABLED == 'true') ||
+        github.event.schedule == '29 10 * * 2,5' ||
+        (vars.DATA_PIPELINE_ENABLED == 'true' && (
+          github.event.schedule == '19 0,16,20 * * 2-5' ||
+          github.event.schedule == '19 0,16 * * 6' ||
+          github.event.schedule == '55 23 * * 6' ||
+          github.event.schedule == '35 15 * * 0' ||
+          github.event.schedule == '45 18 * * 0' ||
+          github.event.schedule == '19 0,16 * * 1' ||
+          github.event.schedule == '45 22 * * 0,1'
+        ))
       )
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: production
     env:
-      SPORT: ${{ inputs.sport || (github.event.schedule == '29 10,22 * * *' && 'nfl' || (github.event.schedule == '17 13 * * *' || vars.DATA_PIPELINE_ENABLED == 'true') && 'all' || 'both') }}
-      # The daily run refreshes history and settlements. Half-hour runs use the
-      # quota-aware prop scanner when recommendations are enabled; otherwise
-      # they retain the lower-cost provider monitor.
-      OPERATION: ${{ inputs.operation || (github.event.schedule == '17 13 * * *' && 'daily' || github.event.schedule == '29 10,22 * * *' && 'refresh' || (vars.DATA_PIPELINE_ENABLED == 'true' && 'scan' || 'monitor')) }}
+      SPORT: ${{ inputs.sport || (github.event.schedule == '29 10 * * 2,5' && 'nfl' || (github.event.schedule == '17 12 * * *' || vars.DATA_PIPELINE_ENABLED == 'true') && 'all' || 'both') }}
+      # The daily run refreshes history and settlements. Three pregame slots
+      # run the quota-aware all-sport scanner when recommendations are enabled.
+      OPERATION: ${{ inputs.operation || (github.event.schedule == '17 12 * * *' && 'daily' || github.event.schedule == '29 10 * * 2,5' && 'refresh' || (vars.DATA_PIPELINE_ENABLED == 'true' && 'scan' || 'monitor')) }}
       PROVIDER: ${{ inputs.provider || 'all' }}
       EVENT_IDS: ${{ inputs.event_ids || '' }}
       DAILY_CREDIT_LIMIT: ${{ vars.ODDS_DAILY_CREDIT_LIMIT || '20' }}
@@ -178,7 +190,7 @@ jobs:
           import json
           import os
           from pathlib import Path
-          from sportsbet.quant.edge_evidence import assess_prospective_edge
+          from sportsbet.quant.nfl_priced_checkpoint import build_report, store_report
 
           root = Path(os.environ['PRIVATE_EDGE_DIR'])
           reports = {
@@ -188,9 +200,50 @@ jobs:
                   ('Recommendations', 'recommendations.json'),
               )
           }
-          assess_prospective_edge(reports['All forecasts'], reports['Recommendations'])
-          print('Private prospective NFL market evaluation completed')
+          try:
+              store_report(os.environ['ANALYTICS_DATABASE_URL'], build_report(reports))
+          except Exception as exc:
+              raise SystemExit(f'Private prospective NFL market evaluation unavailable: {type(exc).__name__}') from None
+          print('Private prospective NFL market evaluation retained')
           PY
+      - name: Retain current NFL model priced evidence privately
+        if: env.OPERATION == 'daily' && (env.SPORT == 'both' || env.SPORT == 'all' || env.SPORT == 'nfl')
+        timeout-minutes: 10
+        env:
+          ANALYTICS_DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          private_dir="$(mktemp -d "${RUNNER_TEMP}/current-nfl-edge.XXXXXXXX")"
+          trap 'rm -rf "$private_dir"' EXIT
+          uv run --locked python -m sportsbet.quant.nfl_history_edge --output "$private_dir/current.json"
+          PRIVATE_EDGE_DIR="$private_dir" uv run --locked python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from sportsbet.quant.nfl_history_checkpoint import build_report, store_report
+
+          root = Path(os.environ['PRIVATE_EDGE_DIR'])
+          result = json.loads((root / 'current.json').read_text(encoding='utf8'))['nfl']
+          try:
+              store_report(os.environ['ANALYTICS_DATABASE_URL'], build_report(result))
+          except Exception as exc:
+              raise SystemExit(f'Current NFL model priced evaluation unavailable: {type(exc).__name__}') from None
+          print('Current NFL model priced evaluation retained')
+          PY
+      - name: Retain current NBA and CFB priced evidence privately
+        if: env.OPERATION == 'daily'
+        timeout-minutes: 5
+        env:
+          ANALYTICS_DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          case "$SPORT" in
+            all) audit_sport=all ;;
+            both|nba) audit_sport=nba ;;
+            cfb) audit_sport=cfb ;;
+            *) exit 0 ;;
+          esac
+          uv run --locked python -m sportsbet.quant.current_multisport_checkpoint --sport "$audit_sport"
       - name: Stage public evidence without configured credentials
         if: always() && (env.OPERATION == 'watch' || env.OPERATION == 'daily' || env.OPERATION == 'monitor' || env.OPERATION == 'public_daily' || env.OPERATION == 'public_monitor' || env.OPERATION == 'refresh' || env.OPERATION == 'scan')
         id: evidence

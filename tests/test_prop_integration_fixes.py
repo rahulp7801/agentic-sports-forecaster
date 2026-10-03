@@ -160,7 +160,7 @@ def test_prop_snapshot_uses_sport_variable_nba() -> None:
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_httpx.AsyncClient.return_value = mock_client
 
-        agent = make_context_agent(pool=mock_pool, api_key="test-key", daily_credit_cap=500)
+        agent = make_context_agent(pool=mock_pool, api_key="test-key", daily_credit_cap=20)
         asyncio.run(agent(state))
 
     assert captured_snaps, "write_player_prop_snapshot was never called"
@@ -217,7 +217,7 @@ def test_prop_snapshot_sport_defaults_to_nfl() -> None:
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_httpx.AsyncClient.return_value = mock_client
 
-        agent = make_context_agent(pool=mock_pool, api_key="test-key", daily_credit_cap=500)
+        agent = make_context_agent(pool=mock_pool, api_key="test-key", daily_credit_cap=20)
         asyncio.run(agent(state))
 
     assert captured_snaps, "write_player_prop_snapshot was never called"

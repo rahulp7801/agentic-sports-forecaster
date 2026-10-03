@@ -35,6 +35,8 @@ export interface AvailabilityEvidence {
   roster_source_url?: string;
   roster_source_sha256?: string;
   team?: string;
+  opponent_team?: string;
+  opponent_injury_coverage?: 'observed' | 'unavailable';
   player_id?: string;
   player_image_url?: string;
   roster_player_name?: string;
@@ -92,6 +94,7 @@ export interface EVSignal {
   data_source?: string;
   model_version?: string;
   history_policy_version?: string;
+  history_observed_before?: string;
   game_start_time?: string;
   kelly_fraction: number;    // 0–0.25
   american_odds: number;

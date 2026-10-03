@@ -23,6 +23,7 @@ ssl.create_default_context(cafile='certs/supabase-prod-ca-2021.crt')
 # Verify the actual worker imports with the final Linux shared libraries.
 subprocess.run([sys.executable, '-m', 'sportsbet.daily', '--help'], check=True)
 subprocess.run([sys.executable, '-m', 'sportsbet.ingestion.kalshi_history', '--help'], check=True)
+subprocess.run([sys.executable, '-m', 'sportsbet.quant.kalshi_prior20_ask_policy', '--help'], check=True)
 
 now = datetime.now(timezone.utc)
 legs = []

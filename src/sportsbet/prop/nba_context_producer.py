@@ -28,13 +28,14 @@ SQL queries:
 from __future__ import annotations
 
 import structlog
-from datetime import date as date_cls
+from datetime import date as date_cls, datetime
 from typing import Any, Callable, Coroutine, Optional
 
 import asyncpg
 from nba_api.stats.static.teams import get_teams
 
 from sportsbet.graph.models import NBAContextSignals
+from sportsbet.nba_source_asof import NBA_MODEL_VERSION, model_version_for
 from sportsbet.prop.nba_executor import LEAGUE_AVG_DEF_RATING, LEAGUE_AVG_PACE
 
 log = structlog.get_logger()
@@ -65,6 +66,21 @@ _SQL_LAST_GAME = """
     FROM nba_player_gamelogs
     WHERE player_id = $1
       AND game_date < $2
+    ORDER BY game_date DESC
+    LIMIT 1
+"""
+
+# Future NBA team/rest context uses only source-backed history available at
+# model selection. Preserve the old population for original v4 replays.
+_SQL_LAST_GAME_ASOF = """
+    SELECT team_abbreviation, game_date
+    FROM nba_player_gamelogs
+    WHERE player_id = $1
+      AND game_date < $2
+      AND source_provider IN ('nba','espn')
+      AND source_sha256 ~ '^[0-9a-f]{64}$'
+      AND source_record_sha256 ~ '^[0-9a-f]{64}$'
+      AND source_observed_at IS NOT NULL AND source_observed_at <= $3
     ORDER BY game_date DESC
     LIMIT 1
 """
@@ -129,11 +145,22 @@ def make_nba_context_signals_producer(
             return {"nba_context_signals": None} | normalized_teams
 
         season: int = state.get("season", 2024)
+        observed_before = state.get("observed_before")
+        if observed_before is not None and (
+                not isinstance(observed_before, datetime)
+                or observed_before.utcoffset() is None):
+            raise ValueError("NBA context source cutoff must include a timezone")
+        source_asof = (observed_before is not None
+                       and model_version_for("nba", observed_before) == NBA_MODEL_VERSION)
         # --- 2. Query DB ---
         async with pool.acquire() as conn:
             # 2a. Most recent gamelog before target game date (not filtered by season —
             # avoids season-numbering mismatches; game_date cutoff is more reliable)
-            gamelog_row = await conn.fetchrow(_SQL_LAST_GAME, player_id, today)
+            if source_asof:
+                gamelog_row = await conn.fetchrow(
+                    _SQL_LAST_GAME_ASOF, player_id, today, observed_before)
+            else:
+                gamelog_row = await conn.fetchrow(_SQL_LAST_GAME, player_id, today)
 
             if gamelog_row is None:
                 log.info(

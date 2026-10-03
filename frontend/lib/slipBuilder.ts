@@ -8,7 +8,8 @@ function exposure(record:PickBoardRecord) {
   return `${record.game_id}\u0000${record.player.trim().toLowerCase()}`;
 }
 
-function unique(records:PickBoardRecord[],now:number) {
+/** Recheck previously approved records as the game clock advances in an open tab. */
+export function eligibleBoardRecords(records:PickBoardRecord[],now=Date.now()) {
   const seen=new Set<string>();
   return [...records].filter(record=>{
     const start=Date.parse(record.game_start_time ?? '');
@@ -37,7 +38,7 @@ function preferDistinctGames(records:PickBoardRecord[],maximum:number) {
 /** Select only already-approved board records; this function never creates a leg. */
 export function assistedSlip(records:PickBoardRecord[],mode:SlipMode='balanced',now=Date.now(),maximum=MAX_SLIP_LEGS) {
   const limit=Math.max(1,Math.min(MAX_SLIP_LEGS,Math.floor(maximum)));
-  const candidates=unique(records,now);
+  const candidates=eligibleBoardRecords(records,now);
   if(mode==='conservative') return candidates.sort((a,b)=>b.true_prob-a.true_prob || compareQuality(a,b)).slice(0,Math.min(2,limit));
   const ranked=candidates.sort(compareQuality);
   return preferDistinctGames(ranked,mode==='balanced' ? Math.min(3,limit) : limit);

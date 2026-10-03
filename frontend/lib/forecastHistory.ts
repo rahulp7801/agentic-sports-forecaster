@@ -1,5 +1,11 @@
 import type {EVSignal} from './types';
+import {capturedRosterTeam} from './pickContext.ts';
 import {publicGameLogs,validPlayerId,observationCutoff} from './publicGameLogs.ts';
+
+const NFL_STAT_TEAM_ALIASES:Record<string,string>={LAR:'LA',WSH:'WAS'};
+const NBA_STAT_TEAM_ALIASES:Record<string,string>={
+  GS:'GSW',NO:'NOP',NY:'NYK',SA:'SAS',UTAH:'UTA',WSH:'WAS',
+};
 
 /** Descriptive outcomes at this line, never a betting replay or a new forecast. */
 export function historyCutoff(signal:EVSignal) {
@@ -7,9 +13,9 @@ export function historyCutoff(signal:EVSignal) {
   if(!cutoff || !/^\d{4}-\d{2}-\d{2}$/.test(cutoff) || Number(cutoff.slice(0,4))<1 || !Number.isFinite(Date.parse(cutoff))
     || new Date(`${cutoff}T00:00:00Z`).toISOString().slice(0,10)!==cutoff) throw new Error('Forecast cutoff unavailable');
   if(!/([zZ]|[+-]\d\d:\d\d)$/.test(signal.snapped_at) || !Number.isFinite(Date.parse(signal.snapped_at))) throw new Error('Price capture time unavailable');
-  // Date-only logs cannot establish completion across overnight league games.
-  const captureDay=new Date(Date.parse(signal.snapped_at)-86_400_000).toISOString().slice(0,10);
-  return captureDay<cutoff ? captureDay : cutoff;
+  // The as-of game-log API requires source availability by the forecast
+  // capture. Keep every earlier game whose record had actually arrived.
+  return cutoff;
 }
 
 /** Only display rows the source had recorded before this forecast was captured. */
@@ -23,12 +29,33 @@ export function historyObservedBefore(signal:EVSignal) {
       || Date.parse(captured)>=Date.parse(signal.game_start_time)) {
     throw new Error('Forecast capture time unavailable');
   }
-  return captured;
+  // The source-time NBA version selects its history before model inference.
+  // The later immutable forecast write must not widen the display cohort.
+  const sourcePolicy=signal.sport==='nba'
+    && signal.model_version==='empirical-jeffreys-v4-nba-source-asof-v1' ? 'nba-source-asof-v1'
+    : signal.sport==='nfl' && signal.model_version==='empirical-jeffreys-v4-nfl-history-v1'
+      ? 'nfl-explicit-receiving-v1'
+      : signal.sport==='cfb' && signal.model_version==='empirical-jeffreys-v4-cfb-history-v1'
+        ? 'cfb-explicit-receiving-v1' : null;
+  if(sourcePolicy && signal.history_policy_version!==sourcePolicy) {
+    throw new Error('Model source cutoff unavailable');
+  }
+  // Current model versions retain selection time. Only older archive versions
+  // can use forecast capture as their descriptive history cutoff.
+  const observed=sourcePolicy ? signal.history_observed_before : captured;
+  if(!observed) throw new Error('Model source cutoff unavailable');
+  observationCutoff(observed);
+  if(Date.parse(observed)<Date.parse(signal.snapped_at)
+      || Date.parse(observed)>Date.parse(captured)) {
+    throw new Error('Model source cutoff unavailable');
+  }
+  return observed;
 }
 
 export function forecastHistory(value:unknown,signal:EVSignal,count=20) {
   if(!Number.isSafeInteger(count) || count<1 || count>200) throw new Error('Invalid history window');
   const cutoff=historyCutoff(signal);
+  historyObservedBefore(signal);
   if(signal.player_id!==undefined && !validPlayerId(signal.player_id,signal.sport)) throw new Error('Invalid forecast identity');
   const validated=publicGameLogs(value,signal.sport);
   if(!signal.player_id && validated.some(row=>row.player_id!==undefined
@@ -70,6 +97,13 @@ function summarize(rows:ReturnType<typeof forecastHistory>['rows']) {
       teams:[...new Set(rows.map(row=>row.team))]};
 }
 
+/** Resolve exact captured roster codes to the same league's game-log codes. */
+function sameCapturedTeam(sport:EVSignal['sport'],left:string,right:string) {
+  const statTeam=(team:string)=>sport==='nfl' ? NFL_STAT_TEAM_ALIASES[team] ?? team
+    : sport==='nba' ? NBA_STAT_TEAM_ALIASES[team] ?? team : team;
+  return statTeam(left)===statTeam(right);
+}
+
 /** Disjoint recent windows preserve missing observations instead of replacing them. */
 export function recentForm(value:unknown,signal:EVSignal) {
   const history=forecastHistory(value,signal,20);
@@ -87,10 +121,8 @@ export function calendarForm(value:unknown,signal:EVSignal) {
   const before=historyCutoff(signal);
   const from=new Date(Date.parse(signal.forecast_cutoff!)-30*86400000).toISOString().slice(0,10);
   const rows=history.rows.filter(row=>row.date>=from);
-  const availability=signal.availability;
-  const team=availability?.status==='observed' && availability.roster_confirmed
-    && typeof availability.team==='string' && availability.team.trim() ? availability.team : null;
+  const team=capturedRosterTeam(signal);
   return {from,before,allTeams:summarize(rows),capturedTeam:team,
-    capturedTeamSample:team ? summarize(rows.filter(row=>row.team===team)) : null,
+    capturedTeamSample:team ? summarize(rows.filter(row=>sameCapturedTeam(signal.sport,row.team,team))) : null,
     limitedToLatest20:history.rows.length===20 && history.rows.at(-1)!.date>=from};
 }

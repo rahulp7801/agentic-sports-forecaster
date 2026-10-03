@@ -41,6 +41,7 @@ export async function fetchForecasts(sport:Sport,signal?:AbortSignal,view='libra
     const page=publicSignalSnapshots(empty ? [] : [{...body,games:[]}],Date.now(),sport);
     if(player && page.signals.some(row=>!row.player.toLowerCase().includes(player.toLowerCase()))) throw new Error('Invalid searched forecast');
     const pagination=body.pagination;
+    if(view==='qualified' && pagination===undefined) throw new Error('Invalid forecast coverage');
     if(pagination===undefined && (offset || revision)) throw new Error('Invalid forecast coverage');
     if(pagination!==undefined && (!Number.isSafeInteger(body.total_count) || body.total_count<0 || body.total_count>50000
       || pagination.offset!==offset || !/^[a-f0-9]{64}$/.test(pagination.revision)
@@ -61,6 +62,7 @@ export async function fetchForecasts(sport:Sport,signal?:AbortSignal,view='libra
     if(!Number.isSafeInteger(next) || next<=offset || next>offset+100 || next>total) throw new Error('Invalid forecast cursor');
     offset=next;
   }
+  if(view==='qualified' && invalid>0) complete=false;
   return {search_player:player,signals:view==='qualified' ? (complete ? (includeAlternatives ? bestPickOptions(signals) : bestPicks(signals)) : []) : signals,
     games:[...games.values()],game:null,generated_at,invalid_signals:invalid,total_count:total,complete,revision,
     cursor:view==='library' && !complete && revision && offset<total ? {offset,revision,total_count:total,...(player ? {player} : {})} : null};

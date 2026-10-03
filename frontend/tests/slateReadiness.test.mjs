@@ -19,10 +19,38 @@ test('seven-day fixtures are visible before the scan horizon and never claim eva
 });
 test('in-progress games stay visible but permanently lock every pick state',()=>{
   const live={...game,game_time:new Date(now-1).toISOString(),date:'20260918'};
-  const result=slateReadiness([live],{...scan,events:[{...scan.events[0],game_start_time:live.game_time}]},now)[0];
+  const result=slateReadiness([live],{...scan,events:[{...scan.events[0],game_start_time:live.game_time}]},now,new Date(now).toISOString())[0];
   assert.equal(result.state,'Live · picks locked');assert.equal(result.locked,true);
   assert.equal(result.model_estimates,null);assert.equal(result.accepted_at_capture,null);
   assert.deepEqual(result.reasons,[]);
+});
+test('the slate closes exactly one hour before kickoff and does not promise post-lock checks',()=>{
+  const cutoff=Date.parse(game.game_time)-60*60000;
+  const recorded={...scan,finished_at:new Date(cutoff-60000).toISOString(),events:[{
+    ...scan.events[0],state:'scheduled',next_refresh_at:new Date(cutoff+30000).toISOString()}]};
+  const before=slateReadiness([game],recorded,cutoff-1)[0];
+  assert.equal(before.locked,false);
+  assert.equal(before.next_refresh_at,null);
+  const at=slateReadiness([game],recorded,cutoff)[0];
+  assert.equal(at.locked,true);assert.equal(at.state,'Pregame pick window closed');
+  assert.equal(at.overdue_at,null);assert.equal(at.next_refresh_at,null);
+  assert.equal(at.accepted_at_capture,1);
+  assert.equal(at.model_estimates,7);
+  const later=slateReadiness([game],recorded,cutoff+30*60000)[0];
+  assert.equal(later.state,'Pregame pick window closed');
+  assert.equal(later.locked,true);
+});
+test('started games require a recent post-kickoff schedule to claim live status',()=>{
+  const start=now-4*3600000,live={...game,game_time:new Date(start).toISOString(),date:'20260918'};
+  for(const captured of [undefined,new Date(start-1000).toISOString(),
+    new Date(now-61*60000).toISOString(),new Date(now+61000).toISOString()]) {
+    const result=slateReadiness([live],scan,now,captured)[0];
+    assert.equal(result.state,'Status update pending · picks locked');
+    assert.equal(result.locked,true);
+    assert.equal(result.quotes,null);
+  }
+  assert.equal(slateReadiness([live],scan,now,new Date(now-59*60000).toISOString())[0].state,
+    'Live · picks locked');
 });
 test('exact game joins retain model gaps, risk reasons and acceptance at capture separately',()=>{
   const result=slateReadiness([game],scan,now)[0];
@@ -96,7 +124,7 @@ test('game budget status distinguishes reserve from exhausted allowance and neve
     const report={...scan,events:[{...scan.events[0],state:'api_budget',budget_reason:reason}]};
     assert.equal(slateReadiness([game],report,now)[0].state,label);
     assert.equal(slateReadiness([game],report,now+46*60000)[0].state,'Scan evidence is stale');
-    assert.equal(slateReadiness([game],report,Date.parse(game.game_time))[0].state,'Live · picks locked');
+    assert.equal(slateReadiness([game],report,Date.parse(game.game_time),game.game_time)[0].state,'Live · picks locked');
   }
   for(const reason of ['private provider message','constructor','__proto__',null,{}]) {
     const report={...scan,events:[{...scan.events[0],state:'api_budget',budget_reason:reason}]};
@@ -114,7 +142,7 @@ test('game-specific due checks become overdue without claiming a successful refr
     const overdue=slateReadiness([game],report,now+age*60000)[0];
     assert.equal(overdue.state,'Quote check overdue');assert.equal(overdue.overdue_at,due);assert.equal(overdue.next_refresh_at,null);
   }
-  const live=slateReadiness([game],report,Date.parse(game.game_time))[0];
+  const live=slateReadiness([game],report,Date.parse(game.game_time),game.game_time)[0];
   assert.equal(live.state,'Live · picks locked');assert.equal(live.overdue_at,null);assert.equal(live.next_refresh_at,null);
 });
 
