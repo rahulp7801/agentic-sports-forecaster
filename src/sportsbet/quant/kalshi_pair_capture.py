@@ -14,6 +14,7 @@ from pathlib import Path
 from sportsbet.quant.kalshi_market_cohort import MAX_ARCHIVE_BYTES, clock, freeze
 from sportsbet.quant.kalshi_market_settlement import MAX_CONTRACTS
 from sportsbet.quant.kalshi_role_shadow import build_report
+from sportsbet.quant import kalshi_role_shadow_v2
 
 
 VERSION = "kalshi-nfl-contemporaneous-pair-v1"
@@ -23,7 +24,8 @@ MAX_QUOTE_AGE_SECONDS = Decimal(300)
 
 
 def capture(market_archive: dict, source_dir: Path, *, started_at: datetime,
-            completed_at: datetime | None = None) -> dict:
+            completed_at: datetime | None = None,
+            source_manifest: dict | None = None) -> dict:
     """Fail closed if any selected quote ages out during model construction."""
     if started_at.utcoffset() is None:
         raise ValueError("Pair capture requires a timezone")
@@ -34,7 +36,10 @@ def capture(market_archive: dict, source_dir: Path, *, started_at: datetime,
     first_quote = min(clock(row["received_at"]) for row in rows)
     if not 0 <= (started_at-first_quote).total_seconds() <= 300:
         raise ValueError("Market quotes are not fresh at pair capture")
-    shadow = build_report(market_archive, cohort, source_dir, now=started_at)
+    shadow = (build_report(market_archive, cohort, source_dir, now=started_at)
+              if source_manifest is None else
+              kalshi_role_shadow_v2.build_report(market_archive, cohort, source_dir,
+                                                 source_manifest, now=started_at))
     completed = completed_at or datetime.now(timezone.utc)
     if completed.utcoffset() is None:
         raise ValueError("Pair completion requires a timezone")
@@ -77,10 +82,22 @@ def unpack(value: dict) -> tuple[dict, dict]:
     return cohort, shadow
 
 
+def save_pair(value: dict, output: Path) -> None:
+    """Keep player-level research out of snapshots and public artifact staging."""
+    encoded = json.dumps(value, sort_keys=True, indent=2, allow_nan=False)
+    if len(encoded.encode()) > MAX_PAIR_BYTES:
+        raise ValueError("Pair receipt exceeds its size limit")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("x", encoding="utf-8") as stream:
+        stream.write(encoded)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--market-archive", type=Path, required=True)
     parser.add_argument("--source-dir", type=Path, required=True)
+    parser.add_argument("--source-manifest", type=Path,
+                        help="Official release metadata staged before this market capture")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.output.exists() or args.output.is_symlink():
@@ -89,15 +106,13 @@ def main() -> None:
         parser.error("Market archive is empty or exceeds its size limit")
     archive = json.loads(args.market_archive.read_text(encoding="utf-8"))
     try:
-        result = capture(archive, args.source_dir, started_at=datetime.now(timezone.utc))
+        manifest = (json.loads(args.source_manifest.read_text(encoding="utf-8"))
+                    if args.source_manifest else None)
+        result = capture(archive, args.source_dir, started_at=datetime.now(timezone.utc),
+                         source_manifest=manifest)
     except (KeyError, TypeError, ValueError) as exc:
         parser.error(str(exc))
-    encoded = json.dumps(result, sort_keys=True, indent=2, allow_nan=False)
-    if len(encoded.encode()) > MAX_PAIR_BYTES:
-        parser.error("Pair receipt exceeds its size limit")
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    with args.output.open("x", encoding="utf-8") as stream:
-        stream.write(encoded)
+    save_pair(result, args.output)
     print(json.dumps({key: result[key] for key in (
         "protocol", "started_at", "completed_at", "selected_contracts",
         "forecast_contracts", "market_selection_sha256", "forecasts_sha256",

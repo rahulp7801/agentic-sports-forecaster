@@ -151,10 +151,10 @@ are needed for an edge claim.
 For a **future existing natural archive**, `kalshi_pair_capture` can freeze a
 new market cohort and role shadow in one private receipt. It requires every
 selected quote to be at most five minutes old at model completion, limits
-the model build to 30 seconds, checks the same prequote source hashes and
-earliest game start, and writes exclusively to an ignored file. It makes no
-provider request. If artifact delivery exceeds the window, it fails closed;
-the archived quote must not be relabeled as current. Its nested `cohort` and
+the model build to 30 seconds, checks prequote source hashes and earliest game
+start, and writes exclusively to an ignored file. It makes no provider
+request. If artifact delivery exceeds the window, it fails closed; the
+archived quote must not be relabeled as current. Its nested `cohort` and
 `shadow` can later be passed to `kalshi_role_shadow_eval --pair` after exact
 venue settlements. The displayed midpoint still lacks executable depth and
 the model still lacks current-roster proof, so a timely pair remains research
@@ -164,14 +164,50 @@ evidence rather than a qualified consumer pick.
 python -m sportsbet.quant.kalshi_pair_capture \
   --market-archive FRESH_PRIVATE_NFL_MARKET_ARCHIVE.json \
   --source-dir PRIVATE_HASH_PINNED_NFL_PARQUETS \
+  --source-manifest PRIVATE_HASH_PINNED_NFL_PARQUETS/source-manifest.json \
   --output .local/kalshi-fresh-pair.json
 ```
 
 The real October 2 archive was rejected by this command on October 3 with
 `Market quotes are not fresh at pair capture`; it wrote no pair. The next
-operational step is to run this against a natural public-daily archive as soon
-as its capture is available, or place the same offline pairing immediately
-after free collection in the existing worker if artifact delivery is too slow.
+operational step was to place the offline pairing immediately after free
+collection in the existing worker. The October 2 public-daily market was
+captured at 18:43:24 UTC, but the worker finished at approximately 18:48 UTC
+and its public artifact was packaged at approximately 18:49 UTC. Downloading
+that artifact and then building a model would systematically exceed the frozen
+five-minute quote window.
+
+The proposed private workflow stages six bounded official nflverse source
+assets and the raw release metadata before its natural `public_daily` market
+collection. The 2026 player-stat asset was updated again at **2026-10-03
+09:04:21 UTC**, after the original October 2 quote. The v1 source set and
+receipt above remain frozen; a forward-only v2 source manifest pins the
+current release IDs, update times, URLs, sizes, and SHA-256 values per run.
+The actual six current assets were staged and replay-loaded locally on
+October 3 without an odds request. The v2 builder uses the unchanged v1
+forecast algorithm. It refuses a manifest or asset that postdates the new
+market capture.
+
+For an NFL `public_daily` run, the worker now attempts the private pair as soon
+as the existing free `market_watch` call returns its raw archive. It does not
+trigger another quote call and has no effect on the public market snapshot or
+consumer picks when research fails. The receipt requires a model build within
+30 seconds, all selected quotes at most five minutes old at completion, and
+at least one source-backed forecast. A successful pair, its raw market
+archive, exact six parquet inputs, source-release metadata, and pinned identity
+crosswalk are replay-checked, scanned for secrets, and packaged in a private
+seven-day GitHub artifact. The repository artifact budget remains 350 MB with
+room reserved for the same run's public evidence; the account Actions budget
+remains the user's $0 stop-usage setting. No card, paid provider request,
+order, or bet is involved. A storage-gate rejection leaves the run without a
+retained private pair and must not be interpreted as a negative model result.
+
+This workflow is on a private review branch, **not production**. Deployment
+depends on the protected private PR's required checks. A timely pair remains
+research evidence because displayed midpoints are not executable fills,
+current roster availability is not independently verified, and no prospective
+game-clustered advantage has been measured. Do not present it as a consumer
+recommendation or a 75% win-rate claim.
 
 After 2026-10-06 06:15 UTC, use the bounded read-only settlement collector
 above, then run the offline paired audit with `--market-archive`, `--cohort`,

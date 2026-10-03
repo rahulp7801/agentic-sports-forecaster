@@ -1,15 +1,19 @@
 """Paired future-game model and venue benchmark audit."""
 import copy
 from datetime import datetime, timezone
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
 
 from sportsbet.quant.kalshi_market_cohort import digest, freeze
 from sportsbet.quant import kalshi_role_shadow as role
+from sportsbet.quant import kalshi_role_shadow_v2 as role_v2
 from sportsbet.quant import kalshi_role_shadow_eval as paired
 from sportsbet.quant.kalshi_market_settlement import VERSION as SETTLEMENT_VERSION
 from tests.test_kalshi_role_shadow import NOW, RULES, fixture
+from tests.test_kalshi_role_shadow_v2 import manifest
 
 
 AFTER = datetime(2026, 10, 5, tzinfo=timezone.utc)
@@ -63,6 +67,32 @@ def test_fresh_quote_is_counted_but_still_not_an_executable_offer(monkeypatch):
     assert report["price_contemporaneous_with_model"] is True
     assert report["market_midpoint_executable"] is False
     assert report["edge_established"] is False
+
+
+def test_forward_source_receipt_replays_before_venue_scoring(monkeypatch):
+    archive, _, stats, snaps, identity = fixture()
+    cohort = freeze(archive, "2026-10-02T18:44:00+00:00")
+    generated = datetime(2026, 10, 2, 18, 46, tzinfo=timezone.utc)
+    source = manifest()
+    source["staged_at"] = "2026-10-02T18:43:00+00:00"
+    for asset in source["assets"].values():
+        asset["updated_at"] = "2026-10-02T18:42:00+00:00"
+    for response in source["release_responses"].values():
+        listing = json.loads(response["text"])
+        for item in listing["assets"]:
+            item["updated_at"] = "2026-10-02T18:42:00+00:00"
+        response["text"] = json.dumps(listing)
+        response["sha256"] = hashlib.sha256(response["text"].encode()).hexdigest()
+    monkeypatch.setattr(role_v2, "load_sources", lambda *args: (stats, snaps))
+    monkeypatch.setattr(role_v2.v1, "identity_index", lambda *args: identity)
+    shadow = role_v2.build_report(archive, cohort, Path("unused"), source, now=generated)
+    report = paired.evaluate(archive, cohort, shadow, Path("unused"), venue(cohort), now=AFTER)
+    assert report["protocol"] == paired.FORWARD_VERSION
+    assert report["paired_venue_verified"] == report["quote_pairs_within_5m"] == 1
+    changed = copy.deepcopy(shadow)
+    changed["source_manifest"]["assets"]["stats_2026"]["sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="changed"):
+        paired.evaluate(archive, cohort, changed, Path("unused"), venue(cohort), now=AFTER)
 
 
 def test_model_receipt_cannot_precede_frozen_contract_selection(monkeypatch):

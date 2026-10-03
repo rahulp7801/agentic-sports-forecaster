@@ -6,6 +6,7 @@ from sportsbet.config import DEFAULT_DAILY_CREDIT_LIMIT
 import argparse
 import asyncio
 import json
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -165,8 +166,27 @@ def create_daily_graph():
                 if reusable_public_market(cached,sport,state['mode'],datetime.now(timezone.utc)):
                     summary=cached
                 else:
-                    summary,_=await watch(sport,state['daily_credit_limit'],DEFAULT_GAME_LIMIT,True,
+                    summary,archive=await watch(sport,state['daily_credit_limit'],DEFAULT_GAME_LIMIT,True,
                         **({'provider':public_provider} if public else {'credit_holdback':market_holdback,'sportsbook_cadence_hours':6}))
+                    if state['mode']=='public_daily' and sport=='nfl':
+                        source_dir=os.environ.get('KALSHI_PAIR_SOURCE_DIR')
+                        output=os.environ.get('KALSHI_PAIR_OUTPUT')
+                        if source_dir and output and archive is not None:
+                            # This private research receipt is made at the free
+                            # capture, before NBA refresh/settlement can age it out.
+                            # A failure cannot change public data or consumer picks.
+                            try:
+                                from sportsbet.quant.kalshi_pair_capture import capture, save_pair
+                                market_archive=json.loads(Path(archive).read_text(encoding='utf-8'))
+                                manifest_path=Path(source_dir)/'source-manifest.json'
+                                manifest=json.loads(manifest_path.read_text(encoding='utf-8'))
+                                pair=await asyncio.to_thread(capture,market_archive,Path(source_dir),
+                                    started_at=datetime.now(timezone.utc),source_manifest=manifest)
+                                save_pair(pair,Path(output))
+                            except Exception as exc:
+                                import structlog
+                                structlog.get_logger().warning('kalshi_pair_unavailable',
+                                    error_type=type(exc).__name__)
                 requested=[source for source in summary['sources'].values() if source['status']!='not_requested']
                 complete = bool(requested) and all(
                     source['status']=='observed' and not source.get('partial_coverage',True)

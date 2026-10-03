@@ -16,20 +16,28 @@ from sportsbet.quant.kalshi_market_cohort import clock
 from sportsbet.quant.kalshi_market_settlement import venue_results
 from sportsbet.quant.kalshi_pair_capture import unpack
 from sportsbet.quant.kalshi_role_shadow import VERSION as SHADOW_VERSION, build_report
+from sportsbet.quant import kalshi_role_shadow_v2
 
 
 VERSION = "kalshi-nfl-role-market-paired-v1"
+FORWARD_VERSION = "kalshi-nfl-role-market-paired-v2"
 MAX_INPUT_BYTES = 30_000_000
 
 
 def evaluate(market_archive: dict, cohort: dict, shadow: dict, source_dir: Path,
              settlements: dict, *, now: datetime | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
-    if now.utcoffset() is None or shadow.get("protocol") != SHADOW_VERSION:
+    if now.utcoffset() is None or shadow.get("protocol") not in (
+            SHADOW_VERSION, kalshi_role_shadow_v2.VERSION):
         raise ValueError("Invalid shadow protocol or audit clock")
     generated = clock(shadow["generated_at"])
-    if (generated > now or generated < clock(cohort["frozen_at"])
-            or build_report(market_archive, cohort, source_dir, now=generated) != shadow):
+    if generated > now or generated < clock(cohort["frozen_at"]):
+        raise ValueError("Frozen shadow chronology changed")
+    replay = (build_report(market_archive, cohort, source_dir, now=generated)
+              if shadow["protocol"] == SHADOW_VERSION else
+              kalshi_role_shadow_v2.build_report(market_archive, cohort, source_dir,
+                                                 shadow["source_manifest"], now=generated))
+    if replay != shadow:
         raise ValueError("Frozen shadow source or forecast changed")
     selection, states = venue_results(market_archive, cohort, settlements, now=now)
     by_offer = {row["ticker"]: row for row in selection}
@@ -81,7 +89,8 @@ def evaluate(market_archive: dict, cohort: dict, shadow: dict, source_dir: Path,
     total = len(model_scores)
     game_means = [sum(values)/len(values) for values in game_deltas.values()]
     game_log_means = [sum(values)/len(values) for values in game_log_deltas.values()]
-    return dict(protocol=VERSION,
+    return dict(protocol=(VERSION if shadow["protocol"] == SHADOW_VERSION
+                          else FORWARD_VERSION),
         market_selection_sha256=cohort["selection_sha256"],
         shadow_forecasts_sha256=shadow["forecasts_sha256"],
         settlement_evidence_sha256=settlements["evidence_sha256"],
