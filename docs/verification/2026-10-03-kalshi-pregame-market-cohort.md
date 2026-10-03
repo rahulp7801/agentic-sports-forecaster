@@ -130,12 +130,15 @@ explicitly unavailable: 90 have fewer than 20 offensive games, 20 lack
 sufficient recent quoted-team role, and 18 lack a unique identity. This
 is a research shadow, with zero qualified picks and no established edge.
 
-The frozen market quote preceded model generation by about 13 hours, so
-their probability difference is a research hypothesis rather than an
-executable same-time price edge. `kalshi_role_shadow_eval` replays the full
+The frozen market quote preceded model generation by **49,705–49,706
+seconds** across the 289 forecast pairs (about 13 hours 48 minutes), so
+**0/289** meet the five-minute model/quote pairing window. Their probability
+difference is a research hypothesis rather than an executable same-time price
+edge. `kalshi_role_shadow_eval` replays the full
 source and forecast receipts, then scores only the same exact contracts with
 venue-verified YES/NO outcomes. It reports paired model and market Brier and
-log loss, equal-game differences, missing result states, and full denominators; it never
+log loss, equal-game differences, quote/model age and five-minute pair counts,
+missing result states, and full denominators; it never
 labels this result as ROI, CLV, or a consumer pick. The current cohort has
 only 15 games, so it cannot alone satisfy the previously frozen NFL role
 protocol's 50 independent-game evidence gate even if every contract settles.
@@ -144,6 +147,31 @@ confidence bounds for both scores against production and market baselines;
 this offline Kalshi comparison alone does not provide those tests. Further
 prospectively frozen cohorts and contemporaneous executable price captures
 are needed for an edge claim.
+
+For a **future existing natural archive**, `kalshi_pair_capture` can freeze a
+new market cohort and role shadow in one private receipt. It requires every
+selected quote to be at most five minutes old at model completion, limits
+the model build to 30 seconds, checks the same prequote source hashes and
+earliest game start, and writes exclusively to an ignored file. It makes no
+provider request. If artifact delivery exceeds the window, it fails closed;
+the archived quote must not be relabeled as current. Its nested `cohort` and
+`shadow` can later be passed to `kalshi_role_shadow_eval --pair` after exact
+venue settlements. The displayed midpoint still lacks executable depth and
+the model still lacks current-roster proof, so a timely pair remains research
+evidence rather than a qualified consumer pick.
+
+```text
+python -m sportsbet.quant.kalshi_pair_capture \
+  --market-archive FRESH_PRIVATE_NFL_MARKET_ARCHIVE.json \
+  --source-dir PRIVATE_HASH_PINNED_NFL_PARQUETS \
+  --output .local/kalshi-fresh-pair.json
+```
+
+The real October 2 archive was rejected by this command on October 3 with
+`Market quotes are not fresh at pair capture`; it wrote no pair. The next
+operational step is to run this against a natural public-daily archive as soon
+as its capture is available, or place the same offline pairing immediately
+after free collection in the existing worker if artifact delivery is too slow.
 
 After 2026-10-06 06:15 UTC, use the bounded read-only settlement collector
 above, then run the offline paired audit with `--market-archive`, `--cohort`,

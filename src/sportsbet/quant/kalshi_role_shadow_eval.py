@@ -14,6 +14,7 @@ from pathlib import Path
 
 from sportsbet.quant.kalshi_market_cohort import clock
 from sportsbet.quant.kalshi_market_settlement import venue_results
+from sportsbet.quant.kalshi_pair_capture import unpack
 from sportsbet.quant.kalshi_role_shadow import VERSION as SHADOW_VERSION, build_report
 
 
@@ -27,7 +28,8 @@ def evaluate(market_archive: dict, cohort: dict, shadow: dict, source_dir: Path,
     if now.utcoffset() is None or shadow.get("protocol") != SHADOW_VERSION:
         raise ValueError("Invalid shadow protocol or audit clock")
     generated = clock(shadow["generated_at"])
-    if generated > now or build_report(market_archive, cohort, source_dir, now=generated) != shadow:
+    if (generated > now or generated < clock(cohort["frozen_at"])
+            or build_report(market_archive, cohort, source_dir, now=generated) != shadow):
         raise ValueError("Frozen shadow source or forecast changed")
     selection, states = venue_results(market_archive, cohort, settlements, now=now)
     by_offer = {row["ticker"]: row for row in selection}
@@ -42,12 +44,20 @@ def evaluate(market_archive: dict, cohort: dict, shadow: dict, source_dir: Path,
     model_log_scores: list[Decimal] = []
     market_log_scores: list[Decimal] = []
     game_log_deltas: dict[str, list[Decimal]] = defaultdict(list)
+    quote_ages: list[Decimal] = []
+    contemporaneous = 0
+    contemporaneous_verified = 0
     for forecast in forecasts:
         offer = by_offer[forecast["ticker"]]
         state, result = states[forecast["ticker"]]
         counts[state] += 1
+        age = Decimal(str((generated-clock(offer["received_at"])).total_seconds()))
+        quote_ages.append(age)
+        timely = Decimal(0) <= age <= Decimal(300)
+        contemporaneous += int(timely)
         if state != "venue_verified":
             continue
+        contemporaneous_verified += int(timely)
         try:
             model_p = Decimal(str(forecast["model_over_probability"]))
             market_p = Decimal(str(offer["market_midpoint"]))
@@ -79,6 +89,10 @@ def evaluate(market_archive: dict, cohort: dict, shadow: dict, source_dir: Path,
         shadow_unavailable=len(selection)-len(forecasts),
         paired_venue_verified=total, paired_verified_games=len(game_deltas),
         paired_result_counts=dict(sorted(counts.items())),
+        quote_age_seconds_min=str(min(quote_ages)) if quote_ages else None,
+        quote_age_seconds_max=str(max(quote_ages)) if quote_ages else None,
+        quote_pairs_within_5m=contemporaneous,
+        verified_pairs_within_5m=contemporaneous_verified,
         model_verified_subset_brier=str(sum(model_scores)/total) if total else None,
         market_verified_subset_brier=str(sum(market_scores)/total) if total else None,
         paired_market_minus_model_brier=(str((sum(market_scores)-sum(model_scores))/total)
@@ -93,7 +107,7 @@ def evaluate(market_archive: dict, cohort: dict, shadow: dict, source_dir: Path,
             str(sum(game_log_means)/len(game_log_means)) if game_log_means else None),
         complete=total == len(forecasts),
         minimum_50_independent_games_met=len(game_deltas) >= 50,
-        price_contemporaneous_with_model=False,
+        price_contemporaneous_with_model=bool(forecasts) and contemporaneous == len(forecasts),
         market_midpoint_executable=False,
         roi=None, clv=None, edge_established=False, qualified_picks=0,
         execution_ready=False)
@@ -111,16 +125,22 @@ def _load(path: Path) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--market-archive", type=Path, required=True)
-    parser.add_argument("--cohort", type=Path, required=True)
-    parser.add_argument("--shadow", type=Path, required=True)
+    parser.add_argument("--cohort", type=Path)
+    parser.add_argument("--shadow", type=Path)
+    parser.add_argument("--pair", type=Path, help="Fresh pair receipt instead of separate cohort/shadow files")
     parser.add_argument("--source-dir", type=Path, required=True)
     parser.add_argument("--settlements", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.output.exists() or args.output.is_symlink():
         parser.error("Output already exists")
-    report = evaluate(_load(args.market_archive), _load(args.cohort),
-        _load(args.shadow), args.source_dir, _load(args.settlements))
+    if bool(args.pair) == bool(args.cohort and args.shadow) or (
+            args.pair and (args.cohort or args.shadow)):
+        parser.error("Supply either --pair or both --cohort and --shadow")
+    cohort, shadow = (unpack(_load(args.pair)) if args.pair else
+                      (_load(args.cohort), _load(args.shadow)))
+    report = evaluate(_load(args.market_archive), cohort, shadow,
+        args.source_dir, _load(args.settlements))
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("x", encoding="utf-8") as stream:
         json.dump(report, stream, indent=2, sort_keys=True, allow_nan=False)

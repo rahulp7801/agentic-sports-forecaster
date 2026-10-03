@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from sportsbet.quant.kalshi_market_cohort import digest
+from sportsbet.quant.kalshi_market_cohort import digest, freeze
 from sportsbet.quant import kalshi_role_shadow as role
 from sportsbet.quant import kalshi_role_shadow_eval as paired
 from sportsbet.quant.kalshi_market_settlement import VERSION as SETTLEMENT_VERSION
@@ -48,6 +48,30 @@ def test_paired_score_requires_same_verified_contract_and_keeps_no_edge_claim(mo
     assert report["minimum_50_independent_games_met"] is False
     assert report["roi"] is None and report["edge_established"] is False
     assert report["price_contemporaneous_with_model"] is False
+    assert report["quote_pairs_within_5m"] == report["verified_pairs_within_5m"] == 0
+    assert float(report["quote_age_seconds_min"]) > 300
+
+
+def test_fresh_quote_is_counted_but_still_not_an_executable_offer(monkeypatch):
+    archive, _, stats, snaps, identity = fixture()
+    cohort = freeze(archive, "2026-10-02T18:44:00+00:00")
+    generated = datetime(2026, 10, 2, 18, 46, tzinfo=timezone.utc)
+    shadow = role.predict(archive, cohort, stats, snaps, identity, now=generated)
+    monkeypatch.setattr(paired, "build_report", lambda *args, **kwargs: shadow)
+    report = paired.evaluate(archive, cohort, shadow, Path("unused"), venue(cohort), now=AFTER)
+    assert report["quote_pairs_within_5m"] == report["verified_pairs_within_5m"] == 1
+    assert report["price_contemporaneous_with_model"] is True
+    assert report["market_midpoint_executable"] is False
+    assert report["edge_established"] is False
+
+
+def test_model_receipt_cannot_precede_frozen_contract_selection(monkeypatch):
+    archive, cohort, stats, snaps, identity = fixture()
+    shadow = role.predict(archive, cohort, stats, snaps, identity,
+                          now=datetime(2026, 10, 3, 7, 28, tzinfo=timezone.utc))
+    monkeypatch.setattr(paired, "build_report", lambda *args, **kwargs: shadow)
+    with pytest.raises(ValueError, match="changed"):
+        paired.evaluate(archive, cohort, shadow, Path("unused"), venue(cohort), now=AFTER)
 
 
 def test_unreturned_contract_keeps_model_and_market_pair_unscored(monkeypatch):
