@@ -20,7 +20,7 @@ export async function GET(request:Request) {
   // from every page view when the stored slate is absent or stale.
   result ??=sport==='cfb' ? scheduleSnapshot(null,sport,now,6) : await liveSchedule(sport,now,6);
   if(result.status!==200) return Response.json(result.body,{status:503,headers:NO_STORE_HEADERS});
-  const games=slateReadiness(result.body.games,scan,now);
+  const games=slateReadiness(result.body.games,scan,now,result.body.captured_at);
   return Response.json({...result.body,games,coverage_available,
     settlements:settlementProgress(reports,sport,now),window_days:7},{headers:PUBLIC_CACHE_HEADERS.status});
 }

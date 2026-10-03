@@ -108,6 +108,8 @@ jobs:
       - run: uv run --locked alembic upgrade head
       - run: uv run --locked pytest tests/test_schema.py tests/test_hosted_storage.py tests/test_worker_postgres.py tests/test_cfb_supplement_postgres.py tests/test_cfb_revision_postgres.py tests/test_nfl_supplement_postgres.py tests/test_injury_context_postgres.py tests/test_db_access.py tests/test_forecast_pages_postgres.py -q
       - name: Verify locked migration-only environment against local schema
+        env:
+          PSYCOPG_IMPL: python
         run: |
           UV_PROJECT_ENVIRONMENT="$RUNNER_TEMP/migrations-venv" uv sync --locked --only-group migrations
           "$RUNNER_TEMP/migrations-venv/bin/alembic" current --check-heads
@@ -157,6 +159,8 @@ jobs:
     environment: production
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      PSYCOPG_IMPL: python
+      PYTHONFAULTHANDLER: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
