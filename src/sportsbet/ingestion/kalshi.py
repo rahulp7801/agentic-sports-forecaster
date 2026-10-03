@@ -124,6 +124,16 @@ class KalshiReader:
             params['status'] = 'settled'
         return await self._get('/historical/markets' if historical else '/markets', params=params)
 
+    async def quoted_markets(self, tickers: list[str]) -> dict:
+        """Public, read-only current metadata for exact precommitted tickers."""
+        if not 1 <= len(tickers) <= 20 or len(set(tickers)) != len(tickers):
+            raise ValueError('Request 1..20 distinct market tickers')
+        body = await self._get('/markets', params=dict(
+            tickers=','.join(ticker_path(t) for t in tickers), limit=20))
+        if len(json.dumps(body, allow_nan=False)) > 2_000_000:
+            raise ValueError('Exact market response exceeds size bound')
+        return body
+
     async def minute_candles(self, ticker: str, *, historical: bool, start_ts: int, end_ts: int) -> dict:
         ticker = ticker_path(ticker)
         if type(start_ts) is not int or type(end_ts) is not int or not 0 < end_ts-start_ts <= 3600:

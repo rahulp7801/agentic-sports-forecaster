@@ -64,6 +64,7 @@ def test_invalid_identity_evidence_cannot_supply_history(defect):
 async def test_scanner_resolves_only_authenticated_history_and_keeps_all_gates(tmp_path,monkeypatch,case):
     from sportsbet import scan
     monkeypatch.setattr(scan.settings,'history_shadow_enabled',False)
+    monkeypatch.setattr(scan.settings,'role_history_shadow_enabled',False)
     now=datetime.now(timezone.utc);data=availability(now)
     raw=dict(id='identity-event',home_team='Home',away_team='Away',
         commence_time=(now+timedelta(hours=2)).isoformat(),bookmakers=[dict(key='book',last_update=now.isoformat(),
@@ -83,6 +84,7 @@ async def test_scanner_resolves_only_authenticated_history_and_keeps_all_gates(t
     pool=MagicMock();pool.acquire.return_value.__aenter__=AsyncMock(return_value=conn)
     pool.acquire.return_value.__aexit__=AsyncMock(return_value=None)
     estimate=PropResult(true_probability=Decimal('.6'),sample_size=40,mean_stat=Decimal('24'),
+        history_source_verified=True,
         confidence_interval=(Decimal('.55'),Decimal('.65')))
     ledger=Ledger(tmp_path/'identity.sqlite')
     with patch('sportsbet.prop.agents.run_prop_query',AsyncMock(return_value=estimate)) as quant, \

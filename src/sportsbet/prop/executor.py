@@ -28,6 +28,7 @@ import structlog
 from sportsbet.graph.models import PropParams, PropResult
 from sportsbet.prop.probability import empirical_outcome_probabilities
 from sportsbet.prop.query_builder import PropQueryBuilder
+from sportsbet.prop.nfl_core_source_proof import attach_source_proof, verify_source_rows
 
 if TYPE_CHECKING:
     pass
@@ -66,6 +67,7 @@ async def run_prop_query(pool: asyncpg.Pool, params: PropParams) -> PropResult:
     mean_stat is None when row["mean_val"] is None (no non-NULL rows in player_stats).
     """
     sql, args = PropQueryBuilder.build(params)
+    sql, args = attach_source_proof(sql, args, params)
 
     log.info(
         "prop_query_executing",
@@ -169,4 +171,8 @@ async def run_prop_query(pool: asyncpg.Pool, params: PropParams) -> PropResult:
         push_probability=Decimal(str(round(push_probability, 6))),
         data_source=data_src,
         mean_stat=mean_stat,
+        history_source_verified=(row.get('history_source_verified') is True
+            and verify_source_rows(row.get('history_source_rows'), total)
+            if params.sport == 'nfl' and params.prop_type in ('pass_yds', 'rush_yds')
+            else None),
     )

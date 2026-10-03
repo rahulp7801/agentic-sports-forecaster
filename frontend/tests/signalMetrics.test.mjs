@@ -5,12 +5,12 @@ const now = Date.parse('2026-09-10T12:00:00Z');
 const quote = {gated:false,forecast_cutoff:'2026-09-10',confidence_interval:[.55,.7],true_prob: .6, american_odds: -110, push_probability: 0,
   direction: 'under', sportsbook: 'draftkings', model_version: 'empirical-jeffreys-v4',
   sample_size: 30, kelly_fraction: .04, snapped_at: new Date(now).toISOString(),
-  game_start_time: new Date(now + 3600000).toISOString(),availability:{status:'observed',
+  game_start_time: new Date(now + 2*3600000).toISOString(),availability:{status:'observed',
     roster_confirmed:true,subject_status:'Not listed on injury report',probability_adjusted:false,
     captured_at:new Date(now).toISOString(),team:'KC',teammates:[],
     source_url:'https://site.api.espn.com/apis/site/v2/sports/football/nfl/injuries',source_sha256:'a'.repeat(64),
     roster_source_url:'https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/12/roster',roster_source_sha256:'b'.repeat(64)}};
-const publicQuote={...quote,id:'prediction',player:'Player',team:'',opponent:'',
+const publicQuote={...quote,captured_at:new Date(now).toISOString(),id:'prediction',player:'Player',team:'',opponent:'',
   home_team:'Home',away_team:'Away',game_id:'game',sport:'nfl',prop_type:'pass_yds',line:249.5,
   mean_stat:260,confidence_interval:[.55,.7],trade_plan:[],injury_flags:{},
   market_type:'player_pass_yds',strength:'unrated'};
@@ -49,7 +49,7 @@ test('CFB availability keeps exact college sources and rejects unsupported conte
     source_url:'https://site.api.espn.com/apis/site/v2/sports/football/college-football/injuries',
     roster_source_url:'https://site.api.espn.com/apis/site/v2/sports/football/college-football/teams/194/roster',
     player_id:'4429000',player_image_url:'https://a.espncdn.com/i/headshots/college-football/players/full/4429000.png'};
-  const signal={...publicQuote,sport:'cfb',availability};
+  const signal={...publicQuote,sport:'cfb',player_id:'4429000',availability};
   const projected=publicSignals([signal],now).signals[0];
   assert.equal(projected.sport,'cfb');
   assert.equal(projected.availability.player_id,'4429000');
@@ -58,6 +58,55 @@ test('CFB availability keeps exact college sources and rejects unsupported conte
   assert.equal(rejected.availability,undefined);assert.equal(rejected.gated,true);
   assert.deepEqual(publicSignals([{...signal,prop_type:'points'}],now),{signals:[],invalid_signals:1});
 });
+test('a later roster capture cannot be attached to an earlier forecast',()=>{
+  const forecast=new Date(now+30000).toISOString();
+  const late=new Date(now+60000).toISOString();
+  const source={...publicQuote,captured_at:forecast};
+  const valid=publicSignals([{...source,availability:{...quote.availability,captured_at:forecast}}],now+120000).signals[0];
+  assert.equal(valid.availability.roster_confirmed,true);
+  const changed=publicSignals([{...source,availability:{...quote.availability,captured_at:late}}],now+120000).signals[0];
+  assert.equal(changed.availability,undefined);
+  assert.equal(changed.gate_reason,'availability_unavailable');
+  assert.equal(changed.true_prob,publicQuote.true_prob);
+});
+
+test('qualified context requires a recorded forecast and no later teammate report',()=>{
+  const missing=publicSignals([{...publicQuote,captured_at:undefined}],now).signals[0];
+  assert.equal(missing.availability,undefined);
+  assert.equal(missing.gated,true);
+  assert.equal(missing.gate_reason,'availability_unavailable');
+  assert.equal(missing.true_prob,publicQuote.true_prob);
+  const report={player:'Defender',status:'Questionable',position:'CB',
+    reported_at:new Date(now+30000).toISOString(),relationship:'opponent',team:'LV',unit:'defense',
+    source_url:quote.availability.source_url,source_sha256:'a'.repeat(64)};
+  const future=publicSignals([{...publicQuote,captured_at:new Date(now+15000).toISOString(),
+    availability:{...quote.availability,teammates:[report]}}],now+45000).signals[0];
+  assert.equal(future.availability,undefined);
+  assert.equal(future.gated,true);
+  assert.equal(future.gate_reason,'availability_unavailable');
+  assert.equal(future.true_prob,publicQuote.true_prob);
+  const atCapture=publicSignals([{...publicQuote,availability:{...quote.availability,
+    teammates:[{...report,reported_at:quote.availability.captured_at}]}}],now).signals[0];
+  assert.equal(atCapture.availability.teammates.length,1);
+  assert.equal(atCapture.gated,false);
+});
+
+test('CFB observed roster binds the exact history athlete even without a name alias',()=>{
+  const roster='https://site.api.espn.com/apis/site/v2/sports/football/college-football/teams/324/roster';
+  const availability={...quote.availability,team:'CCU',player_id:'5203477',
+    source_url:roster,source_sha256:'b'.repeat(64),roster_source_url:roster,roster_source_sha256:'b'.repeat(64)};
+  const project=(player_id,reported_id)=>publicSignals([{...publicQuote,sport:'cfb',player_id,
+    availability:{...availability,player_id:reported_id}}],now).signals[0];
+  assert.equal(project('5203477','5203477').availability.player_id,'5203477');
+  for(const [history,reported] of [['5203477','999'],['5203477',undefined],[undefined,'5203477']]) {
+    const signal=project(history,reported);
+    assert.equal(signal.availability,undefined);
+    assert.equal(signal.gated,true);
+    assert.equal(signal.gate_reason,'availability_unavailable');
+    assert.equal(signal.true_prob,publicQuote.true_prob);
+  }
+});
+
 test('latest available view retains archived forecasts without loosening eligibility',()=>{
   assert.equal(latestForecastWindow([publicQuote],now),'upcoming');
   const later=now+7200000;
@@ -114,6 +163,18 @@ test('kickoff permanently overrides quote freshness',()=>{
   const started=signalMetrics({...quote,snapped_at:new Date(now-3600000).toISOString(),game_start_time:new Date(now).toISOString()},now);
   assert.equal(started.gated,true);assert.equal(started.gate_reason,'game_started');assert.equal(started.kelly_fraction,0);
 });
+test('the existing T-60 board lock also ends live qualification at the exact boundary',()=>{
+  const start=now+3_600_000;
+  const fresh=(at)=>({...quote,snapped_at:new Date(at).toISOString(),
+    game_start_time:new Date(start).toISOString(),
+    availability:{...quote.availability,captured_at:new Date(at).toISOString()}});
+  assert.equal(signalMetrics(fresh(start-3_600_001),start-3_600_001).gated,false);
+  const atLock=signalMetrics(fresh(start-3_600_000),start-3_600_000);
+  assert.equal(atLock.gate_reason,'game_locked');
+  assert.equal(atLock.kelly_fraction,0);
+  assert.equal(signalMetrics(fresh(start-3_599_999),start-3_599_999).gate_reason,'game_locked');
+  assert.equal(signalMetrics(fresh(start-3_600_000),start-3_600_000,true).gated,false);
+});
 test('uncertainty must come from a valid reported interval', () => {
   assert.equal(signalMetrics({...quote, confidence_interval:[.9,.2]},now).confidence_interval,null);
   assert.deepEqual(signalMetrics({...quote, confidence_interval:[.4,.8]},now).confidence_interval,[.4,.8]);
@@ -154,18 +215,28 @@ test('recorded injury context retains explicit participation cohorts and strips 
   const split={player:'Defender',status:'Out',position:'CB',team:'LV',relationship:'opponent',unit:'defense',
     source:'nflverse_snap_counts',participation:'recorded unit snaps',evidence_version:'recorded-participation-v2',unknown_games:2,participant_id:'private-pfr-id',
     active:{games:8,mean:241.25,hit_rate:.625},absent:{games:0,mean:null,hit_rate:null}};
-  const result=publicSignals([{...publicQuote,availability:{...quote.availability,context_splits:[split]}}],now).signals[0];
+  const report={player:'Defender',status:'Out',position:'CB',team:'LV',relationship:'opponent',unit:'defense',
+    reported_at:new Date(now).toISOString(),source_url:quote.availability.source_url,source_sha256:'a'.repeat(64)};
+  const withReport={...quote.availability,teammates:[report]};
+  const result=publicSignals([{...publicQuote,availability:{...withReport,context_splits:[split]}}],now).signals[0];
   assert.deepEqual(result.availability.context_splits,[{player:'Defender',status:'Out',position:'CB',team:'LV',
     relationship:'opponent',unit:'defense',source:'nflverse_snap_counts',participation:'recorded unit snaps',evidence_version:'recorded-participation-v2',unknown_games:2,
     active:split.active,absent:split.absent}]);
   assert.equal(result.true_prob,.6);assert.equal(result.availability.probability_adjusted,false);
+  for(const mismatch of [null,{...report,status:'Questionable'},{...report,team:'KC'},
+    {...report,player:'Other Defender'},{...report,relationship:'teammate'}]) {
+    const projected=publicSignals([{...publicQuote,availability:{...quote.availability,
+      teammates:mismatch ? [mismatch] : [],context_splits:[split]}}],now).signals[0];
+    assert.equal(projected.availability.context_splits,undefined);
+    assert.equal(projected.availability.roster_confirmed,true);
+  }
   const legacy={...split};delete legacy.evidence_version;
-  const retained=publicSignals([{...publicQuote,availability:{...quote.availability,context_splits:[legacy]}}],now).signals[0];
+  const retained=publicSignals([{...publicQuote,availability:{...withReport,context_splits:[legacy]}}],now).signals[0];
   assert.equal(retained.availability.context_splits,undefined);
   assert.equal(retained.availability.roster_confirmed,true);assert.equal(retained.true_prob,.6);
-  assert.deepEqual(retained.availability.teammates,quote.availability.teammates);
+  assert.deepEqual(retained.availability.teammates,[report]);
   const unknown={...split,active:{games:0,mean:null,hit_rate:null},unknown_games:8};
-  const partial=publicSignals([{...publicQuote,availability:{...quote.availability,context_splits:[unknown]}}],now).signals[0];
+  const partial=publicSignals([{...publicQuote,availability:{...withReport,context_splits:[unknown]}}],now).signals[0];
   assert.equal(partial.availability.context_splits[0].unknown_games,8);
   for(const broken of [{...split,source:'private_feed'},{...split,active:{games:41,mean:1,hit_rate:.5}},
     {...split,absent:{games:0,mean:0,hit_rate:null}},
@@ -174,7 +245,7 @@ test('recorded injury context retains explicit participation cohorts and strips 
     {...split,unknown_games:-1},{...split,unknown_games:33},{...split,unknown_games:1.5},
     {...split,evidence_version:'future-unsupported'},
     {...split,absent:{games:1,mean:2,hit_rate:1}}]) {
-    const projected=publicSignals([{...publicQuote,availability:{...quote.availability,context_splits:[broken]}}],now).signals[0];
+    const projected=publicSignals([{...publicQuote,availability:{...withReport,context_splits:[broken]}}],now).signals[0];
     assert.equal(projected.availability,undefined);assert.equal(projected.gated,true);
   }
 });
@@ -191,9 +262,24 @@ test('relevant current reports retain team relationship and unit context',()=>{
   }
 });
 
+test('opponent injury coverage is retained only as a bounded, complete pair',()=>{
+  const project=availability=>publicSignals([{...publicQuote,availability}],now).signals[0];
+  const observed=project({...quote.availability,opponent_team:'LV',opponent_injury_coverage:'observed'});
+  assert.equal(observed.availability.opponent_team,'LV');
+  assert.equal(observed.availability.opponent_injury_coverage,'observed');
+  assert.equal(observed.gated,false);
+  for(const patch of [{opponent_team:'LV'}, {opponent_injury_coverage:'unavailable'},
+    {opponent_team:'KC',opponent_injury_coverage:'observed'},
+    {opponent_team:'LV',opponent_injury_coverage:'fabricated'}]) {
+    const invalid=project({...quote.availability,...patch});
+    assert.equal(invalid.availability,undefined);
+    assert.equal(invalid.gated,true);
+  }
+});
+
 test('forecast windows change at kickoff',()=>{
   assert.equal(forecastWindow(quote,now),'upcoming');
-  assert.equal(forecastWindow(quote,now+3600000),'archive');
+  assert.equal(forecastWindow(quote,now+2*3600000),'archive');
   assert.equal(forecastWindow({},now),'archive');
 });
 
@@ -301,6 +387,8 @@ test('NBA explicit zero minutes and unknown participation remain separate',()=>{
   const availability={...quote.availability,context_splits:[split],
     source_url:'https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries',
     roster_source_url:'https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/12/roster'};
+  availability.teammates=[{player:'Guard',status:'Out',position:'SG',team:'KC',relationship:'teammate',unit:'offense',
+    reported_at:new Date(now).toISOString(),source_url:availability.source_url,source_sha256:'a'.repeat(64)}];
   const result=publicSignals([{...publicQuote,sport:'nba',prop_type:'points',availability}],now).signals[0];
   assert.deepEqual(result.availability.context_splits,[split]);
   assert.equal(result.true_prob,.6);
@@ -370,7 +458,8 @@ test('corrected CFB model requires its policy and preserves historical validatio
   const current=Date.parse('2026-09-29T12:00:00Z');
   const signal={...quote,sport:'cfb',forecast_cutoff:'2026-09-29',
     model_version:'empirical-jeffreys-v4-cfb-history-v1',history_policy_version:'cfb-explicit-receiving-v1',
-    snapped_at:new Date(current).toISOString(),game_start_time:new Date(current+3600000).toISOString(),
+    snapped_at:new Date(current).toISOString(),history_observed_before:new Date(current).toISOString(),
+    captured_at:new Date(current).toISOString(),game_start_time:new Date(current+2*3600000).toISOString(),
     availability:{...quote.availability,captured_at:new Date(current).toISOString()}};
   assert.equal(signalMetrics(signal,current).gated,false);
   assert.equal(signalMetrics({...signal,history_policy_version:undefined},current).gate_reason,'legacy_model');
@@ -382,16 +471,91 @@ test('corrected CFB model requires its policy and preserves historical validatio
   assert.equal(projected.history_policy_version,'cfb-explicit-receiving-v1');
 });
 
+test('new football signal projection retains source time only with its exact policy',()=>{
+  const captured='2026-10-04T03:01:00Z';
+  const source='2026-10-04T03:00:10Z';
+  for(const [sport,version,policy] of [
+    ['nfl','empirical-jeffreys-v4-nfl-history-v1','nfl-explicit-receiving-v1'],
+    ['cfb','empirical-jeffreys-v4-cfb-history-v1','cfb-explicit-receiving-v1']]) {
+    const value={...publicQuote,sport,model_version:version,history_policy_version:policy,
+      history_observed_before:source,snapped_at:'2026-10-04T03:00:00Z',
+      captured_at:captured,game_start_time:'2026-10-04T08:00:00Z',
+      forecast_cutoff:'2026-10-04'};
+    const projected=publicSignals([value],Date.parse(captured)).signals[0];
+    assert.equal(projected.history_observed_before,source);
+    assert.equal(publicSignals([{...value,history_policy_version:'invalid'}],
+      Date.parse(captured)).signals[0].history_observed_before,undefined);
+    assert.equal(publicSignals([{...value,model_version:'empirical-jeffreys-v4'}],
+      Date.parse(captured)).signals[0].history_observed_before,undefined);
+  }
+});
+
+test('current NFL and CFB picks require a pre-forecast source selection time',()=>{
+  const current=Date.parse('2026-10-04T03:01:00Z');
+  const quoteTime='2026-10-04T03:00:00Z';
+  const captureTime='2026-10-04T03:01:00Z';
+  const sourceTime='2026-10-04T03:00:10Z';
+  for(const [sport,version,policy] of [
+    ['nfl','empirical-jeffreys-v4-nfl-history-v1','nfl-explicit-receiving-v1'],
+    ['cfb','empirical-jeffreys-v4-cfb-history-v1','cfb-explicit-receiving-v1']]) {
+    const value={...publicQuote,sport,model_version:version,history_policy_version:policy,
+      forecast_cutoff:'2026-10-04',snapped_at:quoteTime,history_observed_before:sourceTime,
+      captured_at:captureTime,game_start_time:'2026-10-04T08:00:00Z',
+      availability:{...quote.availability,captured_at:quoteTime}};
+    assert.equal(signalMetrics(value,current).gated,false);
+    for(const changed of [
+      {history_observed_before:undefined},
+      {history_observed_before:'2026-10-04T02:59:59Z'},
+      {history_observed_before:'2026-10-04T03:01:01Z'},
+      {history_observed_before:'2026-10-04T08:00:00Z'},
+      {captured_at:undefined},
+    ]) {
+      const projected=signalMetrics({...value,...changed},current);
+      assert.equal(projected.gated,true);
+      assert.equal(projected.gate_reason,'source_chronology_unavailable');
+      assert.equal(projected.true_prob,value.true_prob);
+    }
+  }
+});
+
+test('NBA source-time model requires its new policy while retained v4 stays historical',()=>{
+  const current=Date.parse('2026-10-04T03:01:00Z');
+  const signal={...quote,sport:'nba',forecast_cutoff:'2026-10-04',
+    model_version:'empirical-jeffreys-v4-nba-source-asof-v1',
+    history_policy_version:'nba-source-asof-v1',
+    history_observed_before:new Date(current).toISOString(),
+    snapped_at:new Date(current).toISOString(),
+    captured_at:new Date(current).toISOString(),
+    game_start_time:new Date(current+2*3600000).toISOString(),
+    availability:{...quote.availability,captured_at:new Date(current).toISOString()}};
+  assert.equal(signalMetrics(signal,current).gated,false);
+  assert.equal(signalMetrics({...signal,history_policy_version:undefined},current).gate_reason,'legacy_model');
+  assert.equal(signalMetrics({...signal,model_version:'empirical-jeffreys-v4'},current).gate_reason,'legacy_model');
+  assert.equal(signalMetrics({...signal,model_version:'empirical-jeffreys-v4'},current,true).gated,false);
+  for(const history_observed_before of [undefined,
+    new Date(current-1000).toISOString(),new Date(current+1000).toISOString()]) {
+    assert.equal(signalMetrics({...signal,history_observed_before},current).gate_reason,
+      'source_chronology_unavailable');
+  }
+  const projected=publicSignals([{...publicQuote,...signal,prop_type:'points',
+    market_type:'player_points',captured_at:new Date(current).toISOString()}],current).signals[0];
+  assert.equal(projected.history_policy_version,'nba-source-asof-v1');
+  assert.equal(projected.history_observed_before,new Date(current).toISOString());
+  assert.notEqual(projected.gate_reason,'legacy_model');
+});
+
 
 test('CFB public availability distinguishes relevant teammate absence from known defense',()=>{
   const capture=Date.parse('2026-10-01T12:00:00Z');
   const source='https://site.api.espn.com/apis/site/v2/sports/football/college-football/injuries';
   const roster='https://site.api.espn.com/apis/site/v2/sports/football/college-football/teams/12/roster?limit=1000';
-  const base={...publicQuote,sport:'cfb',model_version:'empirical-jeffreys-v4-cfb-history-v1',
+  const base={...publicQuote,sport:'cfb',player_id:'5203477',model_version:'empirical-jeffreys-v4-cfb-history-v1',
     history_policy_version:'cfb-explicit-receiving-v1',forecast_cutoff:'2026-10-01',
-    snapped_at:new Date(capture).toISOString(),game_start_time:new Date(capture+4*3600000).toISOString(),
+    snapped_at:new Date(capture).toISOString(),history_observed_before:new Date(capture).toISOString(),
+    captured_at:new Date(capture).toISOString(),
+    game_start_time:new Date(capture+4*3600000).toISOString(),
     availability:{...quote.availability,captured_at:new Date(capture).toISOString(),team:'HOM',
-      source_url:source,roster_source_url:roster}};
+      player_id:'5203477',source_url:source,roster_source_url:roster}};
   const project=teammates=>publicSignals([{...base,availability:{...base.availability,teammates}}],capture).signals[0];
   const opponent={player:'Opponent corner',position:'CB',status:'Out',
     reported_at:new Date(capture).toISOString(),team:'AWY',relationship:'opponent',unit:'defense',
@@ -411,13 +575,41 @@ test('CFB public availability distinguishes relevant teammate absence from known
 test('NFL corrected-history policy gates current signals while retaining old picks',()=>{
   const when=Date.parse('2026-09-30T12:00:00Z');
   const legacy={...quote,sport:'nfl',forecast_cutoff:'2026-09-30',
-    snapped_at:new Date(when).toISOString(),game_start_time:new Date(when+3600000).toISOString(),
+    snapped_at:new Date(when).toISOString(),game_start_time:new Date(when+2*3600000).toISOString(),
     availability:{...quote.availability,captured_at:new Date(when).toISOString()}};
   assert.equal(signalMetrics(legacy,when).gate_reason,'legacy_model');
   assert.equal(signalMetrics(legacy,when,true).gated,false);
   assert.equal(signalMetrics({...legacy,model_version:'empirical-jeffreys-v4-nfl-history-v1',
-    history_policy_version:'nfl-explicit-receiving-v1'},when).gated,false);
+    history_policy_version:'nfl-explicit-receiving-v1',history_observed_before:new Date(when).toISOString(),
+    captured_at:new Date(when).toISOString()},when).gated,false);
   assert.equal(signalMetrics({...legacy,model_version:'empirical-jeffreys-v4-nfl-history-v1'},when).gate_reason,'legacy_model');
+});
+
+test('new NFL passing and rushing picks require the source proof through public projection',()=>{
+  const captured=Date.parse('2026-10-04T19:45:00Z');
+  const source={...publicQuote,model_version:'empirical-jeffreys-v4-nfl-history-v1',
+    history_policy_version:'nfl-explicit-receiving-v1',
+    snapped_at:new Date(captured).toISOString(),captured_at:new Date(captured).toISOString(),
+    history_observed_before:new Date(captured).toISOString(),
+    game_start_time:new Date(captured+2*3600000).toISOString(),forecast_cutoff:'2026-10-04',
+    availability:{...quote.availability,captured_at:new Date(captured).toISOString()}};
+  for(const prop_type of ['pass_yds','rush_yds']) {
+    const base={...source,prop_type};
+    for(const patch of [{},{history_source_verified:false},
+      {history_source_admission_policy:'unknown',history_source_verified:true}]) {
+      const projected=publicSignals([{...base,...patch}],captured).signals[0];
+      assert.equal(projected.gate_reason,'history_source_unavailable');
+      assert.equal(projected.kelly_fraction,0);
+      assert.equal(projected.true_prob,base.true_prob);
+    }
+    const valid={...base,history_source_admission_policy:'nfl-core-history-source-admission-v1',
+      history_source_verified:true};
+    const projected=publicSignals([valid],captured).signals[0];
+    assert.equal(projected.gated,false);
+    assert.equal(projected.history_source_verified,true);
+    assert.equal(publicSignals([projected],captured).signals[0].gated,false);
+  }
+  assert.equal(publicSignals([{...source,prop_type:'receptions'}],captured).signals[0].gated,false);
 });
 
 test('tracking source chronology uses forecast capture and survives repeat projection',()=>{
@@ -481,7 +673,9 @@ test('participation window and nested cohort fields are projected without changi
     absent:{games:0,mean:null,hit_rate:null,private:'secret'},
     sample_window:{cutoff:publicQuote.forecast_cutoff,active:{oldest:'2025-09-01',newest:'2025-09-08',private:'secret'},
       absent:null,unknown:{oldest:'2026-09-01',newest:'2026-09-01'},private:'secret'}};
-  const project=sample_window=>publicSignals([{...publicQuote,availability:{...quote.availability,
+  const report={player:'Receiver',status:'Questionable',position:'WR',team:'KC',relationship:'teammate',unit:'offense',
+    reported_at:new Date(now).toISOString(),source_url:quote.availability.source_url,source_sha256:'a'.repeat(64)};
+  const project=sample_window=>publicSignals([{...publicQuote,availability:{...quote.availability,teammates:[report],
     context_splits:[{...split,sample_window}]}}],now).signals[0];
   const result=project(split.sample_window),retained=result.availability.context_splits[0];
   assert.deepEqual(retained.active,{games:2,mean:260,hit_rate:.5});

@@ -19,6 +19,7 @@ export default function TerminalApp() {
   const [view, setView] = useState<TerminalView>('dashboard');
   const [sport, setSport] = useState<Sport>('nfl');
   const [player,setPlayer]=useState('');
+  const [playerId,setPlayerId]=useState('');
   const viewport=useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -38,6 +39,7 @@ export default function TerminalApp() {
 
   const changeView = (nextView: string) => {
     setPlayer('');
+    setPlayerId('');
     const resolved = nextView as TerminalView;
     setView(resolved);
     window.location.hash = terminalHash(sport, resolved);
@@ -45,6 +47,7 @@ export default function TerminalApp() {
 
   const changeSport = (nextSport: Sport) => {
     setPlayer('');
+    setPlayerId('');
     setSport(nextSport);
     const nextView=nextSport==='cfb' && !['dashboard','results','props','arbitrage','parlay','gamelogs'].includes(view) ? 'dashboard' : view;
     setView(nextView);
@@ -69,10 +72,10 @@ export default function TerminalApp() {
           </div>
           <div className="terminal-view" ref={viewport}>
             {view === 'dashboard' && (
-              <Overview key={sport} sport={sport} onOpenMarkets={() => changeView('arbitrage')} onOpenSlip={()=>changeView('parlay')} onOpenPlayers={name=>{changeView('props');setPlayer(name ?? '');}} />
+              <Overview key={sport} sport={sport} onOpenMarkets={() => changeView('arbitrage')} onOpenSlip={()=>changeView('parlay')} onOpenPlayers={(name,id)=>{changeView('props');setPlayer(name ?? '');setPlayerId(id ?? '');}} />
             )}
             {view === 'results' && <PickResults key={sport} sport={sport} />}
-            {view === 'props' && <PropsAnalysis key={sport+player} sport={sport} initialPlayer={player} />}
+            {view === 'props' && <PropsAnalysis key={sport+player+playerId} sport={sport} initialPlayer={player} initialPlayerId={playerId} />}
             {view === 'gamelogs' && <GameLogs key={sport} sport={sport} />}
             {view === 'arbitrage' && <MarketWatch sport={sport} />}
             {view === 'backtest' && <BacktestLab sport={sport} />}

@@ -1,0 +1,9 @@
+# NFL recent-role audit portability — 2026-10-02
+
+The current NFL receiving-history model and its frozen `nfl-recent-role-shadow-v2` candidate are unchanged. Production worker receipts were made on Linux. Python's `gzip.compress(mtime=0)` can use OS header byte 3 on Linux and 10 on Windows even when the compressed body and canonical input are identical. Rebuilding a receipt on Windows therefore caused the old audit verifier to reject a valid prediction.
+
+`nfl-recent-role-portable-proof-v1` is an explicit audit version. It decodes and validates the original bounded input, replays the frozen model and all source, identity, availability, cutoff and quote checks, validates the retained record hash, and compares every replay field. It tolerates only gzip byte 9 changing between the two known OS values; the other compressed bytes and input commitments must match. The producer, model probability, qualification and settlement rules are untouched. The audit hashes the new verifier source and continues to require the server's pregame recording receipt.
+
+A read-only hosted audit on Windows found 29 earliest current-model predicted receipts previously classified as `invalid_shadow_record`: 26 receiving-yard and 3 reception receipts. The versioned verifier recovers exactly these as source-backed paired predictions, all pending final outcomes; it does not create a decided result or an edge claim. Remaining earliest attempts retain their prior reasons: insufficient history or incomplete participation. The private aggregate report stays in ignored local research storage.
+
+The focused role-shadow suite passes 24 tests, including cross-OS replay, unrelated gzip-header mutation and malformed-base64 rejection. No provider request, paid credit, wager, risk reservation or production database write was made during verification.

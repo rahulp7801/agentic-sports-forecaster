@@ -208,14 +208,35 @@ def test_cfb_activation_retains_history_and_requires_new_policy(monkeypatch):
     start=datetime(2026,9,30,20,tzinfo=timezone.utc)
     old=row('a',old_start-timedelta(hours=2),old_start)|{'sport':'cfb','game_id':'old'}
     new=row('b',start-timedelta(hours=2),start)|{'sport':'cfb','model_version':CFB_MODEL_VERSION,
-        'history_policy_version':CFB_HISTORY_POLICY}
+        'history_policy_version':CFB_HISTORY_POLICY,
+        'history_observed_before':(start-timedelta(hours=2,minutes=1)).isoformat()}
     now=start-timedelta(minutes=90)
     board=build_pick_board([old,new],'cfb',now)
     assert len(board['history'])==len(board['current'])==1
     assert board['current'][0]['history_policy_version']==CFB_HISTORY_POLICY
+    assert board['current'][0]['history_observed_before']==new['history_observed_before']
     assert board['history'][0]['model_version']=='empirical-jeffreys-v4'
+    assert 'history_observed_before' not in board['history'][0]
     assert build_pick_board([new|{'history_policy_version':None}],'cfb',now)['current']==[]
     assert len(build_pick_board([new|{'model_version':'empirical-jeffreys-v4'}],'cfb',now)['current'])==1
+
+
+def test_new_nfl_board_retains_selection_cutoff_without_relabeling_v4(monkeypatch):
+    from sportsbet.model_contract import NFL_MODEL_VERSION, NFL_HISTORY_POLICY
+
+    monkeypatch.setattr('sportsbet.picks.quote_evidence_valid', lambda value: True)
+    monkeypatch.setattr('sportsbet.picks.settlement_identity_valid', lambda value: True)
+    start = datetime(2026, 10, 4, 20, tzinfo=timezone.utc)
+    captured = start-timedelta(hours=2)
+    source = (captured-timedelta(minutes=1)).isoformat()
+    new = row('a', captured, start) | {
+        'model_version': NFL_MODEL_VERSION, 'history_policy_version': NFL_HISTORY_POLICY,
+        'history_observed_before': source}
+    board = build_pick_board([new], 'nfl', start-timedelta(minutes=90))
+    assert board['current'][0]['history_observed_before'] == source
+    legacy = row('b', captured, start) | {'history_observed_before': source}
+    old_board = build_pick_board([legacy], 'nfl', start-timedelta(minutes=90))
+    assert 'history_observed_before' not in old_board['current'][0]
 
 
 def test_board_clarifies_legacy_plan_without_changing_receipt(monkeypatch):

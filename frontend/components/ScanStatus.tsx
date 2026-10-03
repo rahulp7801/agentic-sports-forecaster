@@ -2,9 +2,10 @@
 
 import { useEffect, useState } from 'react';
 import type {Sport} from '@/lib/types';
+import {scanRailRows,type PublicScanStatus} from '@/lib/scanRail';
 import styles from './TerminalChrome.module.css';
 
-type Status = ReturnType<typeof import('@/lib/scanStatus').scanStatus>;
+type Status = PublicScanStatus;
 
 function tone(state: string) {
   if (state === 'healthy' || state === 'complete') return styles.scanGood;
@@ -13,17 +14,20 @@ function tone(state: string) {
 }
 
 export default function ScanStatus({sport}:{sport?:Sport}) {
-  const [data, setData] = useState<Record<string, Status> | null>(null);
+  const [data, setData] = useState<[Sport, Status][] | null>(null);
   const [error, setError] = useState('');
 
   useEffect(() => {
+    setData(null);setError('');
     const controller = new AbortController();
     async function load() {
       try {
         const response = await fetch('/api/scans', { cache: 'no-store', signal: AbortSignal.any([controller.signal,AbortSignal.timeout(15_000)]) });
         if (!response.ok) throw new Error('Daily scan status unavailable');
-        setData(await response.json());
-        setError('');
+        const rows=scanRailRows(await response.json(),sport);
+        if(!rows) throw new Error('Invalid daily scan status');
+        if(!controller.signal.aborted) setData(rows);
+        if(!controller.signal.aborted) setError('');
       } catch {
         if (!controller.signal.aborted) {
           setData(null);
@@ -37,7 +41,7 @@ export default function ScanStatus({sport}:{sport?:Sport}) {
       controller.abort();
       clearInterval(timer);
     };
-  }, []);
+  }, [sport]);
 
   return (
     <div className={styles.scanRail} data-single-league={sport ? true : undefined} aria-live="polite" aria-label="Daily model pipeline status" tabIndex={0}>
@@ -46,7 +50,7 @@ export default function ScanStatus({sport}:{sport?:Sport}) {
         <div className={`${styles.scanCard} ${styles.scanWarning}`}><strong>{error}</strong></div>
       ) : !data ? (
         <div className={`${styles.scanCard} ${styles.scanQuiet}`}><strong>Checking daily scans…</strong></div>
-      ) : Object.entries(data).filter(([key])=>!sport || key===sport).map(([key, status]) => (
+      ) : data.map(([key, status]) => (
         <article className={`${styles.scanCard} ${tone(status.state)}`} key={key}>
           <div className={styles.scanIdentity}>
             <span>{key.toUpperCase()}</span>
@@ -70,6 +74,7 @@ export default function ScanStatus({sport}:{sport?:Sport}) {
           {status.recorded_budget_label && <div className={styles.scanPlan}>
             <span>Last recorded plan: {status.recorded_budget_label.toLowerCase()}.</span>
             {status.reserve_release_at && <span>{status.reserve_release_passed ? 'Recorded reserve release passed' : 'Earliest recorded reserve release'}: <time dateTime={status.reserve_release_at}>{new Date(status.reserve_release_at).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',timeZoneName:'short'})}</time>. {status.reserve_release_passed ? 'Awaiting a new scan.' : 'Collection still depends on the next worker run and available allowance.'}</span>}
+            {status.rolling_release_at && <span>{status.rolling_release_passed ? 'Recorded rolling allowance estimate passed' : 'Earliest recorded rolling allowance estimate'}: <time dateTime={status.rolling_release_at}>{new Date(status.rolling_release_at).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',timeZoneName:'short'})}</time>. New usage or daily limits can delay it; game and quote availability still require a new scan.</span>}
           </div>}
         </article>
       ))}

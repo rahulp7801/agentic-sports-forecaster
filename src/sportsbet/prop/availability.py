@@ -349,7 +349,20 @@ def player_availability(context: dict | None, player: str, now: datetime, *, pla
         roster_status=team.get('roster_statuses',{}).get(roster_name,'Unknown')
         status = subject[0]['status'] if subject else ('Not listed on injury report'
             if roster_status=='Active' else 'Roster status: '+roster_status)
+        # The subject team may be covered while the opponent is absent from
+        # the injury feed. Preserve that distinction for consumer explanations.
+        opponents = [entry for entry in context['teams'] if entry is not team]
+        opponent_coverage = {}
+        if len(opponents) == 1:
+            opponent_team = opponents[0].get('abbreviation')
+            coverage = opponents[0].get('injury_coverage')
+            if (isinstance(opponent_team, str) and opponent_team
+                    and opponent_team != team['abbreviation']
+                    and coverage in ('observed', 'unavailable')):
+                opponent_coverage = dict(opponent_team=opponent_team,
+                                         opponent_injury_coverage=coverage)
         evidence = dict(status='observed', captured_at=context['captured_at'],
+                        **opponent_coverage,
                         source_url=team.get('injury_source_url',context['source_url']),
                         source_sha256=team.get('injury_source_sha256',context['source_sha256']),
                         roster_confirmed=True, team=team['abbreviation'], subject_status=status,

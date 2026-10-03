@@ -15,12 +15,13 @@ on:
         type: boolean
         default: false
   schedule:
-    - cron: '17 13 * * *'
-    - cron: '47 13 * * *'
-    # GitHub schedules are best-effort. The second pair provides recovery
-    # opportunities inside the dashboard's 90-minute freshness window.
-    - cron: '7,37 * * * *'
-    - cron: '22,52 * * * *'
+    # Private GitHub-hosted minutes are finite under the $0 stop-usage budget.
+    # Sixteen attempts/day span UTC by 90 minutes; delayed/dropped runs remain
+    # visible as stale data. Daily source/receipt work uses two existing slots.
+    - cron: '7 0,3,6,9,15,18,21 * * *'
+    - cron: '7 12 * * *'
+    - cron: '37 1,4,7,10,16,19,22 * * *'
+    - cron: '37 13 * * *'
 permissions:
   contents: read
   actions: read
@@ -35,7 +36,7 @@ jobs:
     environment: production
     env:
       SPORT: ${{ inputs.sport || 'both' }}
-      OPERATION: ${{ inputs.operation || ((github.event.schedule == '17 13 * * *' || github.event.schedule == '47 13 * * *') && 'public_daily' || 'public_monitor') }}
+      OPERATION: ${{ inputs.operation || ((github.event.schedule == '7 12 * * *' || github.event.schedule == '37 13 * * *') && 'public_daily' || 'public_monitor') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -49,6 +50,7 @@ jobs:
       - run: pip install uv==0.11.32
       - run: uv sync --locked
       - name: Check worker configuration
+        id: worker_config
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DATABASE_URL_ASYNC: ${{ secrets.DATABASE_URL_ASYNC }}
@@ -58,21 +60,35 @@ jobs:
             exit 1
           }
       - name: Verify hosted schema is at the application head
+        id: schema
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: uv run --locked alembic current --check-heads
+      - name: Stage free NFL source receipts before the next market capture
+        if: env.OPERATION == 'public_daily' && (env.SPORT == 'both' || env.SPORT == 'nfl')
+        continue-on-error: true
+        run: uv run --locked python -m sportsbet.quant.kalshi_pair_sources --output-dir "$RUNNER_TEMP/nfl-role-sources"
       - name: Update public market data
         if: env.SPORT != 'cfb'
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DATABASE_URL_ASYNC: ${{ secrets.DATABASE_URL_ASYNC }}
           ANALYTICS_DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          KALSHI_PAIR_SOURCE_DIR: ${{ runner.temp }}/nfl-role-sources
+          KALSHI_PAIR_OUTPUT: ${{ runner.temp }}/private-kalshi-pair/pair.json
         run: uv run --locked python -m sportsbet.daily --sport "$SPORT" --mode "$OPERATION" --report-output "$RUNNER_TEMP/public-report.json"
       - name: Update CFB schedule without consuming odds credits
-        if: github.event_name == 'schedule' || env.SPORT == 'cfb'
+        if: always() && !cancelled() && steps.worker_config.outcome == 'success' && steps.schema.outcome == 'success' && (github.event_name == 'schedule' || env.SPORT == 'cfb')
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: uv run --locked python -m sportsbet.schedules --sport cfb
+      - name: Settle CFB from free final sources
+        if: always() && !cancelled() && steps.worker_config.outcome == 'success' && steps.schema.outcome == 'success' && env.OPERATION == 'public_daily' && (env.SPORT == 'both' || env.SPORT == 'cfb')
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_URL_ASYNC: ${{ secrets.DATABASE_URL_ASYNC }}
+          ANALYTICS_DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run --locked python -m sportsbet.cfb_public_settlement
       - name: Update source-backed player profiles
         if: env.SPORT != 'cfb' && env.OPERATION == 'public_daily'
         env:
@@ -89,6 +105,10 @@ jobs:
           # Retry only mismatched public captures, without repeating collection.
           PUBLIC_CAPTURE_VERIFY_ATTEMPTS: '37'
           PUBLIC_CAPTURE_VERIFY_DELAY_MS: '5000'
+          # Retry a briefly unavailable deployed endpoint, never collection.
+          # Persistent 503s still fail the readiness gate after three reads.
+          PUBLIC_READINESS_503_ATTEMPTS: '3'
+          PUBLIC_READINESS_503_DELAY_MS: '5000'
         run: node frontend/scripts/verify-production.mjs
       - name: Stage public evidence without configured provider credentials
         if: always()
@@ -106,6 +126,50 @@ jobs:
         if: always() && steps.evidence.outcome == 'success' && steps.scanner.outcome == 'success'
         id: evidence_scan
         run: gitleaks dir "$RUNNER_TEMP/public-evidence" --config .gitleaks.toml --redact=100 --no-banner
+      - name: Scan private NFL paired receipt and sources
+        if: always() && steps.evidence_scan.outcome == 'success' && env.OPERATION == 'public_daily'
+        id: private_scan
+        run: |
+          if test -f "$RUNNER_TEMP/private-kalshi-pair/pair.json"; then
+            gitleaks dir "$RUNNER_TEMP/private-kalshi-pair" --config .gitleaks.toml --redact=100 --no-banner
+            gitleaks dir "$RUNNER_TEMP/nfl-role-sources" --config .gitleaks.toml --redact=100 --no-banner
+          fi
+      - name: Pack private replayable NFL pair
+        if: always() && steps.private_scan.outcome == 'success'
+        id: private_pack
+        run: |
+          if test -f "$RUNNER_TEMP/private-kalshi-pair/pair.json"; then
+            uv run --locked python -m sportsbet.quant.kalshi_pair_artifact \
+              --pair "$RUNNER_TEMP/private-kalshi-pair/pair.json" \
+              --source-dir "$RUNNER_TEMP/nfl-role-sources" \
+              --market-dir .local/market-watch \
+              --output "$RUNNER_TEMP/private-kalshi-pair.zip"
+            echo 'packaged=true' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Check private pair artifact storage budget
+        if: always() && steps.private_pack.outputs.packaged == 'true'
+        id: private_storage_gate
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python .github/scripts/artifact_storage_gate.py --candidate "$RUNNER_TEMP/private-kalshi-pair.zip" --reserve-bytes 25000000
+      - name: Retain private model and market pair
+        if: always() && steps.private_storage_gate.outputs.retain == 'true'
+        id: private_upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: private-nfl-pair-${{ github.run_id }}
+          path: ${{ runner.temp }}/private-kalshi-pair.zip
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+      - name: Report private NFL pair retention
+        if: always() && env.OPERATION == 'public_daily'
+        env:
+          PRIVATE_PAIR_UPLOAD_OUTCOME: ${{ steps.private_upload.outcome }}
+        run: |
+          if test -f "$RUNNER_TEMP/private-kalshi-pair/pair.json" && test "$PRIVATE_PAIR_UPLOAD_OUTCOME" != success; then
+            echo '::warning title=Private NFL pair not retained::A local pregame pair exists, but its replayable artifact was not uploaded. Inspect the private scan, pack, storage gate, and upload steps.'
+          fi
       - name: Pack verified public evidence losslessly
         if: always() && steps.evidence_scan.outcome == 'success'
         id: evidence_pack
@@ -117,7 +181,11 @@ jobs:
         id: storage_gate
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: python .github/scripts/artifact_storage_gate.py --candidate "$RUNNER_TEMP/public-evidence.tar.xz"
+        run: |
+          reserve=0
+          if test "$OPERATION" = public_daily; then reserve=25000000; fi
+          python .github/scripts/artifact_storage_gate.py \
+            --candidate "$RUNNER_TEMP/public-evidence.tar.xz" --reserve-bytes "$reserve"
       - name: Retain public market evidence for replay
         if: always() && steps.evidence_pack.outcome == 'success' && steps.evidence_pack.outputs.packaged == 'true' && steps.storage_gate.outputs.retain == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

@@ -4,9 +4,11 @@ from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from sportsbet.ledger import Ledger
+from sportsbet.nba_source_asof import NBA_MODEL_VERSION, model_version_for
 from sportsbet.graph.models import PropResult,EVSignal
 from sportsbet.scan import evaluate_event, quotes_from_event
 from sportsbet.scan import recommendation_quality
+from sportsbet.picks import NFL_CORE_SOURCE_ADMISSION_POLICY, build_pick_board
 
 
 async def test_strongest_uncertainty_margin_gets_correlated_risk_slot_first(tmp_path):
@@ -24,7 +26,7 @@ async def test_strongest_uncertainty_margin_gets_correlated_risk_slot_first(tmp_
     async def result(_,params):
         strong=params.line==Decimal('21.5')
         return PropResult(true_probability=Decimal('.6' if strong else '.65'),sample_size=40,
-            mean_stat=Decimal('24'),confidence_interval=(Decimal('.56'),Decimal('.64')) if strong
+            history_source_verified=True,mean_stat=Decimal('24'),confidence_interval=(Decimal('.56'),Decimal('.64')) if strong
             else (Decimal('.52'),Decimal('.78')))
     ledger=Ledger(tmp_path/'quality.sqlite')
     with patch('sportsbet.prop.agents.run_prop_query',AsyncMock(side_effect=result)):
@@ -38,6 +40,43 @@ async def test_strongest_uncertainty_margin_gets_correlated_risk_slot_first(tmp_
     inconsistent=EVSignal(ev_percentage=Decimal('.1'),true_probability=Decimal('.6'),implied_probability=Decimal('.5'),
         kelly_fraction=Decimal('.01'),confidence_interval=(Decimal('.7'),Decimal('.8')),trade_plan=[],market_type='player_pass_yds')
     assert recommendation_quality(inconsistent)==(Decimal('-Infinity'),0)
+
+
+@pytest.mark.parametrize('verified', [False, True])
+async def test_nfl_core_source_proof_controls_admission_without_changing_forecast(tmp_path,verified):
+    conn=AsyncMock();conn.fetch.return_value=[{'normalized_name':'player','player_id':'00-0037248'}]
+    pool=MagicMock();pool.acquire.return_value.__aenter__=AsyncMock(return_value=conn)
+    pool.acquire.return_value.__aexit__=AsyncMock(return_value=None)
+    now=datetime.now(timezone.utc)
+    availability=dict(status='observed',captured_at=now.isoformat(),source_url='source',source_sha256='a'*64,
+        teams=[dict(abbreviation='KC',roster_names=['Player'],roster_statuses={'Player':'Active'},
+            roster_source_url='roster',roster_source_sha256='b'*64,reports=[])])
+    model=PropResult(true_probability=Decimal('.6'),sample_size=40,mean_stat=Decimal('24'),
+        confidence_interval=(Decimal('.55'),Decimal('.65')),history_source_verified=verified)
+    ledger=Ledger(tmp_path/'source.sqlite')
+    with patch('sportsbet.prop.agents.run_prop_query',AsyncMock(return_value=model)),patch.object(
+            ledger,'reserve',return_value=(True,'accepted')) as reserve:
+        output=await evaluate_event(pool,event('nfl'),'nfl',ledger,'source',availability)
+    rows=ledger.predictions()
+    assert len(rows)==2
+    assert all(row['history_source_admission_policy']==NFL_CORE_SOURCE_ADMISSION_POLICY
+        and row['history_source_verified'] is verified for row in rows)
+    assert all(row['model_sample_size']==40 and row['model_probability'] in (.6,.4) for row in rows)
+    proof_counts=output['coverage']['counts']
+    assert proof_counts['nfl_core_source_checked']==2
+    assert proof_counts['nfl_core_source_verified']==(2 if verified else 0)
+    assert reserve.call_count==(2 if verified else 0)
+    assert all(signal['gated'] is (not verified) and signal['history_source_verified'] is verified
+        for signal in output['signals'])
+    if not verified:
+        assert all(row['gate_reason']=='history_source_unavailable' for row in rows)
+        assert build_pick_board(rows,'nfl',datetime.now(timezone.utc))['summary']['current']==0
+    else:
+        board=build_pick_board(rows,'nfl',datetime.now(timezone.utc))
+        assert board['summary']['current']==1
+        assert board['current'][0]['history_source_verified'] is True
+        assert build_pick_board([rows[0] | {'history_source_verified':False}],
+            'nfl',datetime.now(timezone.utc))['summary']['current']==0
 
 def event(sport='nba'):
     now=datetime.now(timezone.utc)
@@ -86,11 +125,18 @@ async def test_scheduled_graph_routes_real_quotes_and_retains_recency(sport,tmp_
         assert all(call.args[1].observed_before is not None for call in quant.call_args_list)
     assert len(record_many.call_args.args[1])==2
     assert len(result['signals'])==2
+    if sport in ('nfl','cfb') or any(
+            s['model_version']==NBA_MODEL_VERSION for s in result['signals']):
+        assert all(s['history_observed_before']==p['history_observed_before']
+            for s,p in zip(result['signals'],ledger.predictions(),strict=True))
     assert all(s['trade_plan'] and len(s['trade_plan'])==3 and s['gated']
         and s['gate_reason']=='availability_unavailable' and s['kelly_fraction']==0 for s in result['signals'])
     assert {s['direction'] for s in result['signals']}=={'over','under'}
     assert len(ledger.predictions())==2
-    assert all(p['model_version']==({'cfb':'empirical-jeffreys-v4-cfb-history-v1','nfl':'empirical-jeffreys-v4-nfl-history-v1'}.get(sport,'empirical-jeffreys-v4')) and p['model_generated_at']==p['captured_at']
+    assert all(p['cross_book_quote_receipt']=={
+        'version':'cross-book-quote-receipt-v2','references':[]} for p in ledger.predictions())
+    assert all(p['model_version']==({'cfb':'empirical-jeffreys-v4-cfb-history-v1','nfl':'empirical-jeffreys-v4-nfl-history-v1'}.get(
+        sport,model_version_for('nba',datetime.fromisoformat(p['model_generated_at'])))) and p['model_generated_at']==p['captured_at']
         and p['model_sample_size']==40 and len(p['model_confidence_interval'])==2
         and p['model_mean_stat']==24
         and p['home_team']==event(sport)['home_team'] and p['away_team']==event(sport)['away_team']
@@ -105,9 +151,24 @@ async def test_scheduled_graph_routes_real_quotes_and_retains_recency(sport,tmp_
     assert result['coverage']['model_status']=='complete'
     assert result['coverage']['model_concurrency_limit']==8
     assert conn.fetch.await_count==1  # One batched identity lookup per event, not per player/line/side.
+    identity_sql, *identity_args = conn.fetch.await_args.args
+    if sport=='nba' and model_version_for('nba',datetime.now(timezone.utc))==NBA_MODEL_VERSION:
+        assert len(identity_args)==3 and isinstance(identity_args[2],datetime)
+        assert 'source_observed_at IS NOT NULL AND source_observed_at <= $3' in identity_sql
+        assert "source_provider IN ('nba','espn')" in identity_sql
+        assert "source_sha256 ~ '^[0-9a-f]{64}$'" in identity_sql
+        assert "source_record_sha256 ~ '^[0-9a-f]{64}$'" in identity_sql
+        assert 'WHERE (LOWER(player_name)=ANY($1::text[]) OR player_id::text=ANY($2::text[]))' in identity_sql
+    else:
+        assert len(identity_args)==2 and 'source_observed_at' not in identity_sql
     assert all(call.args[1].last_n_games==40 for call in quant.call_args_list)
     assert all(call.args[1].as_of_date is not None for call in quant.call_args_list)
     if sport=='nba':
+        from sportsbet.nba_source_asof import quote_evidence_valid
+        if any(p['model_version']==NBA_MODEL_VERSION for p in ledger.predictions()):
+            assert all(p['history_policy_version']=='nba-source-asof-v1'
+                and quote_evidence_valid(p) for p in ledger.predictions())
+            assert all(call.args[1].observed_before is not None for call in quant.call_args_list)
         assert all(call.args[1].opponent_team=='LAL' and call.args[1].home_away=='home'
             for call in quant.call_args_list)
         assert {signal['home_team'] for signal in result['signals']}=={'Boston Celtics'}
@@ -178,7 +239,7 @@ async def test_availability_really_controls_daily_recommendations(tmp_path,injur
         from sportsbet.prop.availability import NFL_PLAYER_IDS_URL
         availability.update(player_identities={'00-0037248':'123'},identity_source=dict(
             url=NFL_PLAYER_IDS_URL,source_sha256='c'*64,retrieved_at=now.isoformat()))
-    result_model=PropResult(true_probability=Decimal('.6'),sample_size=40,mean_stat=Decimal('24'),
+    result_model=PropResult(true_probability=Decimal('.6'),sample_size=40,history_source_verified=True,mean_stat=Decimal('24'),
         confidence_interval=(Decimal('.55'),Decimal('.65')))
     ledger=Ledger(tmp_path/'audit.sqlite')
     with patch('sportsbet.prop.agents.run_prop_query',AsyncMock(return_value=result_model)),patch.object(ledger,'reserve',return_value=(True,'accepted')) as reserve:
@@ -210,7 +271,7 @@ async def test_overflowed_opponent_reports_cannot_clear_teammate_absence_gate(tm
                 roster_statuses={},roster_source_url='roster2',roster_source_sha256='c'*64,
                 reports=[dict(player=f'Defender {i}',status='Out',position='CB',
                     reported_at=now.isoformat()) for i in range(9)])])
-    model=PropResult(true_probability=Decimal('.6'),sample_size=40,mean_stat=Decimal('24'),
+    model=PropResult(true_probability=Decimal('.6'),sample_size=40,history_source_verified=True,mean_stat=Decimal('24'),
         confidence_interval=(Decimal('.55'),Decimal('.65')))
     ledger=Ledger(tmp_path/'audit.sqlite')
     with patch('sportsbet.prop.agents.run_prop_query',AsyncMock(return_value=model)),patch.object(
@@ -233,7 +294,7 @@ async def test_irrelevant_defensive_teammate_does_not_block_offensive_forecast(t
         teams=[dict(abbreviation='KC',roster_names=['Player','Corner'],roster_ids={},
         roster_statuses={'Player':'Active','Corner':'Active'},roster_source_url='roster',roster_source_sha256='b'*64,
         reports=[dict(player='Corner',status='Out',position='CB',reported_at=now.isoformat())])])
-    model=PropResult(true_probability=Decimal('.6'),sample_size=40,mean_stat=Decimal('24'),
+    model=PropResult(true_probability=Decimal('.6'),sample_size=40,history_source_verified=True,mean_stat=Decimal('24'),
         confidence_interval=(Decimal('.55'),Decimal('.65')))
     ledger=Ledger(tmp_path/'audit.sqlite')
     with patch('sportsbet.prop.agents.run_prop_query',AsyncMock(return_value=model)),patch.object(
@@ -254,7 +315,7 @@ async def test_relevant_opposing_defender_is_disclosed_without_erasing_current_p
             roster_source_url='roster',roster_source_sha256='b'*64,reports=[]),
         dict(abbreviation='LV',roster_names=['Defender'],roster_ids={},roster_statuses={'Defender':'Active'},
             roster_source_url='roster2',roster_source_sha256='c'*64,reports=[report])])
-    model=PropResult(true_probability=Decimal('.6'),sample_size=40,mean_stat=Decimal('24'),
+    model=PropResult(true_probability=Decimal('.6'),sample_size=40,history_source_verified=True,mean_stat=Decimal('24'),
         confidence_interval=(Decimal('.55'),Decimal('.65')))
     ledger=Ledger(tmp_path/'audit.sqlite')
     with patch('sportsbet.prop.agents.run_prop_query',AsyncMock(return_value=model)),patch.object(

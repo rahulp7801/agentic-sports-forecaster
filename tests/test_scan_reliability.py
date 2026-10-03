@@ -11,8 +11,25 @@ from sportsbet.ledger import Ledger
 from sportsbet.provider_cache import CachedResponse
 
 
+@pytest.mark.asyncio
+async def test_scan_rejects_raised_paid_caps_before_pool_or_provider(monkeypatch):
+    from sportsbet.config import settings
+    pool=AsyncMock()
+    monkeypatch.setattr(scan,'create_async_pool',pool)
+    for limit in (21, True):
+        with pytest.raises(ValueError,match='scope or budget'):
+            await scan.run(['nba'],limit)
+    monkeypatch.setattr(settings,'odds_rolling_credit_limit',451)
+    with pytest.raises(ValueError,match='scope or budget'):
+        await scan.run(['nba'],20)
+    pool.assert_not_awaited()
+
+
 @pytest.fixture
 def worker(monkeypatch,tmp_path):
+    from sportsbet.quant import nfl_stat_only_paper
+    monkeypatch.setattr(nfl_stat_only_paper,'capture',AsyncMock(return_value={
+        'status':'no_supported_offers','counts':{'attempts':0}}))
     stored={}
     class MemoryCache:
         def __init__(self):
@@ -39,7 +56,9 @@ def worker(monkeypatch,tmp_path):
     monkeypatch.setattr(scan,'load_snapshot',lambda key:deepcopy(stored.get(key)))
     monkeypatch.setattr(scan,'publish_snapshot',lambda key,value:stored.update({key:deepcopy(value)}))
     async def prior_batch(pool,sport,event_ids,now):
-        return {event_id:scan.prior_event_evidence(sport,event_id,now) for event_id in event_ids}
+        return {event_id:(*scan.prior_event_evidence(sport,event_id,now),
+            scan._prior_event_coverage(stored.get(f'signals:{sport}:{event_id}'),sport,event_id,now))
+            for event_id in event_ids}
     monkeypatch.setattr(scan,'prior_event_evidence_batch',prior_batch)
     pool=AsyncMock()
     pool.provider_cache=cache
@@ -60,6 +79,40 @@ def worker(monkeypatch,tmp_path):
 def transport(monkeypatch,handle):
     original=httpx.AsyncClient
     monkeypatch.setattr(scan.httpx,'AsyncClient',lambda **kwargs:original(**kwargs,transport=httpx.MockTransport(handle)))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('fail_first',[False,True])
+async def test_nfl_paper_capture_follows_each_saved_event_before_the_next_quote(monkeypatch,worker,fail_first):
+    from sportsbet.quant import nfl_stat_only_paper
+    stored,events,evaluated,_=worker
+    for event in events['nfl']:
+        event['commence_time']=(datetime.now(timezone.utc)+timedelta(minutes=30)).isoformat()
+    captured=[]
+    def handle(request):
+        if request.url.path.endswith('/events'):
+            return httpx.Response(200,json=events['nfl'])
+        identity=request.url.path.split('/')[-2]
+        assert len(captured)==len(evaluated)
+        return httpx.Response(200,json=next(e for e in events['nfl'] if e['id']==identity))
+    async def capture(pool,scan_id,event_id=None):
+        assert event_id==evaluated[-1]
+        assert f'signals:nfl:{event_id}' in stored
+        captured.append(event_id)
+        if fail_first and event_id=='nfl0':
+            raise RuntimeError('research database unavailable')
+        return {'status':'captured','counts':{'attempts':1,'recorded':1}}
+    monkeypatch.setattr(nfl_stat_only_paper,'capture',capture)
+    transport(monkeypatch,handle)
+    report=(await scan.run(['nfl'],8))['nfl']
+    assert evaluated==captured==['nfl0','nfl1']
+    assert report['completed_events']==2
+    assert report['status']=='complete'
+    assert report['stat_only_capture']['counts']=={
+        'attempts':2-int(fail_first),'recorded':2-int(fail_first)}
+    assert report['stat_only_capture']['failed_events']==int(fail_first)
+    assert report['stat_only_capture']['status']==('degraded' if fail_first else 'captured')
+    assert stored['research:stat-only-capture:nfl']==report['stat_only_capture']
 
 
 async def test_future_forecasts_cover_48_hours_but_never_started_games(monkeypatch,worker):
@@ -139,6 +192,64 @@ async def test_scarce_budget_refreshes_best_prior_near_pass_first(monkeypatch,wo
         'nba0':'api_budget','nba1':'evaluated'}
 
 
+@pytest.mark.asyncio
+async def test_prelock_reserve_prefers_prior_roster_coverage_over_older_empty_capture(monkeypatch,worker):
+    stored,events,evaluated,_=worker
+    now=datetime.now(timezone.utc)
+    events['cfb']=[dict(id='cfb'+str(i),home_team='Home',away_team='Away',
+        commence_time=(now+timedelta(minutes=90)).isoformat()) for i in range(2)]
+    for index,event in enumerate(events['cfb']):
+        stored[f"signals:cfb:{event['id']}"]={
+            'generated_at':(now-timedelta(hours=2,seconds=10-index)).isoformat(),
+            'games':[dict(game_id=event['id'],sport='cfb')],
+            'signals':[] if index==0 else [dict(sport='cfb',game_id='cfb1',player_id='123',
+                prop_type='receptions',sample_size=19,
+                availability={'status':'observed','roster_confirmed':True})]}
+    assert scan._prior_event_coverage(stored['signals:cfb:cfb0'],'cfb','cfb0',now)==(0,0)
+    assert scan._prior_event_coverage(stored['signals:cfb:cfb1'],'cfb','cfb1',now)==(0,1)
+    assert scan.Ledger().reserve_api_credits(12,20)
+    requests=[]
+    def handle(request):
+        if request.url.path.endswith('/events'):
+            return httpx.Response(200,json=events['cfb'])
+        requests.append(request.url.path)
+        return httpx.Response(200,json=events['cfb'][1])
+    transport(monkeypatch,handle)
+    report=(await scan.run(['cfb'],20))['cfb']
+    assert evaluated==['cfb1'] and len(requests)==1
+    assert report['budget_reasons']=={'pregame_credit_reserve':1}
+    assert {event['game_id']:event['state'] for event in report['events']}=={
+        'cfb0':'api_budget','cfb1':'evaluated'}
+
+
+@pytest.mark.asyncio
+async def test_prelock_reserve_prefers_sample_supported_athlete_over_more_short_histories(monkeypatch,worker):
+    stored,events,evaluated,_=worker
+    now=datetime.now(timezone.utc)
+    events['cfb']=[dict(id='cfb'+str(i),home_team='Home',away_team='Away',
+        commence_time=(now+timedelta(minutes=90)).isoformat()) for i in range(2)]
+    base=dict(sport='cfb',prop_type='receptions',
+        availability={'status':'observed','roster_confirmed':True})
+    for index,event in enumerate(events['cfb']):
+        signals=[base | dict(game_id=event['id'],player_id=str(player),sample_size=sample)
+            for player,sample in ([(1,19),(2,19),(3,19)] if index==0 else [(4,20)])]
+        stored[f"signals:cfb:{event['id']}"]=dict(generated_at=(now-timedelta(hours=2)).isoformat(),
+            games=[dict(game_id=event['id'],sport='cfb')],signals=signals)
+    assert scan._prior_event_coverage(stored['signals:cfb:cfb0'],'cfb','cfb0',now)==(0,3)
+    assert scan._prior_event_coverage(stored['signals:cfb:cfb1'],'cfb','cfb1',now)==(1,1)
+    assert scan.Ledger().reserve_api_credits(12,20)
+    requests=[]
+    def handle(request):
+        if request.url.path.endswith('/events'):
+            return httpx.Response(200,json=events['cfb'])
+        requests.append(request.url.path)
+        return httpx.Response(200,json=events['cfb'][1])
+    transport(monkeypatch,handle)
+    report=(await scan.run(['cfb'],20))['cfb']
+    assert evaluated==['cfb1'] and len(requests)==1
+    assert report['budget_reasons']=={'pregame_credit_reserve':1}
+
+
 def test_prior_event_quality_rejects_malformed_and_weak_snapshots(monkeypatch):
     valid=dict(sport='nfl',game_id='event',sample_size=30,true_prob=.62,implied_prob=.55,
         ev_pct=.07,push_probability=0,confidence_interval=[.54,.70],
@@ -159,10 +270,42 @@ def test_prior_event_quality_rejects_malformed_and_weak_snapshots(monkeypatch):
     assert scan.prior_event_quality('nfl','event') is None
 
 
+def test_prior_coverage_fails_closed_for_stale_or_mismatched_snapshots():
+    now=datetime.now(timezone.utc)
+    signal=dict(sport='cfb',game_id='event',player_id='123',prop_type='receptions',sample_size=19,
+        availability={'status':'observed','roster_confirmed':True})
+    snapshot=dict(generated_at=now.isoformat(),games=[dict(game_id='event',sport='cfb')],
+                  signal_count=1,signals=[signal])
+    assert scan._prior_event_coverage(snapshot,'cfb','event',now)==(0,1)
+    assert scan._prior_event_coverage(snapshot | {'signal_count':2,
+        'signals':[signal,signal | {'prop_type':'rec_yds'}]},'cfb','event',now)==(0,1)
+    assert scan._prior_event_coverage(snapshot | {'signal_count':2,
+        'signals':[signal,signal | {'sample_size':20}]},'cfb','event',now)==(1,1)
+    for changed in (
+        {'generated_at':(now-timedelta(hours=49)).isoformat()},
+        {'generated_at':(now+timedelta(minutes=2)).isoformat()},
+        {'games':[dict(game_id='other',sport='cfb')]},
+        {'signal_count':2},
+        {'signals':[signal | {'sample_size':True}]},
+        {'signals':[signal | {'game_id':'other'}]},
+        {'signals':[signal | {'availability':{'status':'unavailable'}}]},
+    ):
+        assert scan._prior_event_coverage(snapshot | changed,'cfb','event',now)==(0,0)
+
+
+def test_coverage_tie_break_only_applies_before_the_one_hour_lock():
+    now=datetime.now(timezone.utc)
+    event=lambda minutes:dict(commence_time=(now+timedelta(minutes=minutes)).isoformat())
+    assert scan.prelock_coverage_sort(event(90),(1,12),now)==(-1,-12)
+    assert scan.prelock_coverage_sort(event(60),(1,12),now)==(0,0)
+    assert scan.prelock_coverage_sort(event(121),(1,12),now)==(0,0)
+
+
 @pytest.mark.asyncio
 async def test_prior_event_batch_projects_bounded_fields_in_one_query():
     now=datetime.now(timezone.utc)
-    valid=dict(sport='nfl',game_id='event',sample_size=30,true_prob=.62,implied_prob=.55,
+    valid=dict(sport='nfl',game_id='event',player_id='00-0000001',prop_type='receptions',
+        sample_size=30,true_prob=.62,implied_prob=.55,
         ev_pct=.07,push_probability=0,confidence_interval=[.54,.70],
         gate_reason='stale_quote',sportsbook='book',american_odds=-110,
         availability={'status':'observed','roster_confirmed':True})
@@ -178,15 +321,16 @@ async def test_prior_event_batch_projects_bounded_fields_in_one_query():
     class Pool:
         def acquire(self): return Connection()
     result=await scan.prior_event_evidence_batch(Pool(),'nfl',['event'],now)
-    quality,attempt=result['event']
+    quality,attempt,coverage=result['event']
     assert quality==pytest.approx((-.01,30)),result
     assert attempt==now.isoformat()
+    assert coverage==(1,1)
 
     class OfflineConnection(Connection):
         async def fetch(self,*args): raise RuntimeError('offline')
     class OfflinePool:
         def acquire(self): return OfflineConnection()
-    assert await scan.prior_event_evidence_batch(OfflinePool(),'nfl',['event'],now)=={'event':(None,None)}
+    assert await scan.prior_event_evidence_batch(OfflinePool(),'nfl',['event'],now)=={'event':(None,None,(0,0))}
 
 
 @pytest.mark.asyncio
@@ -197,7 +341,7 @@ async def test_league_failure_does_not_stop_other_league_or_leak_provider_key(mo
         if request.url.path.endswith('/events'): return httpx.Response(200,json=events['nba'])
         return httpx.Response(200,json=next(e for e in events['nba'] if e['id'] in request.url.path))
     transport(monkeypatch,handle)
-    result=await scan.run(['nfl','nba'],25)
+    result=await scan.run(['nfl','nba'],20)
     assert evaluated==['nba0','nba1']
     assert result['nfl']['eligible_events'] is None
     assert result['nfl']['status']=='degraded'
@@ -214,7 +358,7 @@ async def test_mismatched_quote_response_is_rejected_and_next_event_continues(mo
         event=next(e for e in events['nba'] if e['id'] in request.url.path)
         return httpx.Response(200,json=event | ({'home_team':'Wrong'} if event['id']=='nba0' else {}))
     transport(monkeypatch,handle)
-    report=(await scan.run(['nba'],25))['nba']
+    report=(await scan.run(['nba'],20))['nba']
     assert evaluated==['nba1'] and report['completed_events']==1
     assert report['failures'][0]['event_id']=='nba0'
     assert {e['game_id']:e['state'] for e in report['events']}=={'nba0':'failed','nba1':'evaluated'}
@@ -232,7 +376,7 @@ async def test_unavailable_model_coverage_degrades_otherwise_completed_events(mo
         if request.url.path.endswith('/events'): return httpx.Response(200,json=events['nba'])
         return httpx.Response(200,json=next(e for e in events['nba'] if e['id'] in request.url.path))
     transport(monkeypatch,handle)
-    report=(await scan.run(['nba'],25))['nba']
+    report=(await scan.run(['nba'],20))['nba']
     assert report['completed_events']==2
     assert report['model_complete_events']==report['model_partial_events']==0
     assert report['model_unavailable_events']==2
@@ -256,7 +400,7 @@ async def test_observed_quote_coverage_survives_model_failure(monkeypatch,worker
     def handle(request):
         return httpx.Response(200,json=events['nba'] if request.url.path.endswith('/events') else quoted)
     transport(monkeypatch,handle)
-    report=(await scan.run(['nba'],25))['nba']
+    report=(await scan.run(['nba'],20))['nba']
     assert report['status']=='degraded' and report['completed_events']==0
     assert report['failures']==[{'stage':'event_evaluation','operation':'model_evaluation','event_id':'nba0','error_type':'TimeoutError'}]
     assert report['coverage']['nba0']['quotes']==2
@@ -308,9 +452,9 @@ async def test_repeated_monitor_defers_network_requests_without_relabeling_old_q
         if request.url.path.endswith('/events'):return httpx.Response(200,json=events['nba'])
         return httpx.Response(200,json=next(e for e in events['nba'] if e['id'] in request.url.path))
     transport(monkeypatch,handle)
-    await scan.run(['nba'],25)
+    await scan.run(['nba'],20)
     original=deepcopy(stored['signals:nba:nba0'])
-    report=(await scan.run(['nba'],25))['nba']
+    report=(await scan.run(['nba'],20))['nba']
     assert evaluated==['nba0','nba1']
     assert len(requests)==3  # One cached discovery request and just two paid event requests.
     assert report['status']=='scheduled' and report['cadence_deferred_events']==2
@@ -327,16 +471,16 @@ async def test_targeted_operator_scan_refreshes_one_exact_event_without_loosenin
         if request.url.path.endswith('/events'):return httpx.Response(200,json=events['nba'])
         return httpx.Response(200,json=next(e for e in events['nba'] if e['id'] in request.url.path))
     transport(monkeypatch,handle)
-    await scan.run(['nba'],25)
-    report=(await scan.run(['nba'],25,frozenset({'nba1'})))['nba']
+    await scan.run(['nba'],20)
+    report=(await scan.run(['nba'],20,frozenset({'nba1'})))['nba']
     assert evaluated==['nba0','nba1','nba1']
     assert requests.count('/v4/sports/basketball_nba/events/nba1/odds')==2
     assert report['eligible_events']==report['attempted_events']==report['completed_events']==1
     assert report['cadence_deferred_events']==report['budget_skipped_events']==0
     assert set(report['attempts'])=={'nba0','nba1'}
     with pytest.raises(ValueError,match='targeted'):
-        await scan.run(['nfl','nba'],25,frozenset({'nba1'}))
-    missing=(await scan.run(['nba'],25,frozenset({'missing'})))['nba']
+        await scan.run(['nfl','nba'],20,frozenset({'nba1'}))
+    missing=(await scan.run(['nba'],20,frozenset({'missing'})))['nba']
     assert missing['status']=='degraded' and missing['eligible_events'] is None
     assert missing['failures']==[{'stage':'event_discovery','error_type':'ValueError'}]
 
@@ -354,7 +498,7 @@ async def test_signal_snapshot_restores_lost_cadence_without_spending_again(monk
         if request.url.path.endswith('/events'):return httpx.Response(200,json=events['nba'])
         return httpx.Response(200,json=next(e for e in events['nba'] if e['id'] in request.url.path))
     transport(monkeypatch,handle)
-    report=(await scan.run(['nba'],25))['nba']
+    report=(await scan.run(['nba'],20))['nba']
     assert evaluated==['nba1']
     assert report['attempted_events']==report['completed_events']==1
     assert report['cadence_deferred_events']==1
@@ -364,14 +508,14 @@ async def test_signal_snapshot_restores_lost_cadence_without_spending_again(monk
 @pytest.mark.asyncio
 async def test_scan_splits_reserved_checks_before_board_lock_and_final_hour(monkeypatch,worker):
     stored,events,evaluated,pool=worker
-    assert scan.Ledger().reserve_api_credits(17,25)
+    assert scan.Ledger().reserve_api_credits(12,20)
     for event in events['nfl']:
         event['commence_time']=(datetime.now(timezone.utc)+timedelta(hours=3)).isoformat()
     def handle(request):
         if request.url.path.endswith('/events'):return httpx.Response(200,json=events['nfl'])
         return httpx.Response(200,json=next(e for e in events['nfl'] if e['id'] in request.url.path))
     transport(monkeypatch,handle)
-    distant=(await scan.run(['nfl'],25))['nfl']
+    distant=(await scan.run(['nfl'],20))['nfl']
     assert distant['budget_skipped_events']==2 and not evaluated
     assert distant['budget_reasons']=={'pregame_credit_reserve':2}
     assert all(event['budget_reason']=='pregame_credit_reserve' for event in distant['events'])
@@ -381,23 +525,23 @@ async def test_scan_splits_reserved_checks_before_board_lock_and_final_hour(monk
     for event in events['nfl']:
         event['commence_time']=(datetime.now(timezone.utc)+timedelta(minutes=90)).isoformat()
     pool.provider_cache.records.pop('odds:events:nfl')
-    prelock=(await scan.run(['nfl'],25))['nfl']
+    prelock=(await scan.run(['nfl'],20))['nfl']
     assert prelock['completed_events']==1 and prelock['budget_skipped_events']==1
     assert prelock['budget_reasons']=={'pregame_credit_reserve':1}
     deferred=next(event for event in prelock['events'] if event['state']=='api_budget')
     assert scan.timestamp(deferred['next_reserve_release_at'])==scan.timestamp(deferred['game_start_time'])-scan.LOCK_BEFORE_START
     assert evaluated==['nfl0']
-    repeated=(await scan.run(['nfl'],25))['nfl']
+    repeated=(await scan.run(['nfl'],20))['nfl']
     assert repeated['attempted_events']==0 and evaluated==['nfl0']
     for event in events['nfl']:
         event['commence_time']=(datetime.now(timezone.utc)+timedelta(minutes=30)).isoformat()
     pool.provider_cache.records.pop('odds:events:nfl')  # Provider schedule changed between synthetic runs.
-    close=(await scan.run(['nfl'],25))['nfl']
+    close=(await scan.run(['nfl'],20))['nfl']
     assert close['completed_events']==1 and close['budget_skipped_events']==0
     assert close['cadence_deferred_events']==1  # The other event was just captured.
     assert close['budget_reasons']=={}
     assert evaluated==['nfl0','nfl1']
-    assert not scan.Ledger().reserve_api_credits(1,25)
+    assert not scan.Ledger().reserve_api_credits(1,20)
 
 
 @pytest.mark.asyncio
@@ -409,7 +553,7 @@ async def test_cfb_uses_its_own_manual_player_model_path(monkeypatch,worker):
     def handle(request):
         return httpx.Response(200,json=events['cfb'] if request.url.path.endswith('/events') else events['cfb'][0])
     transport(monkeypatch,handle)
-    report=(await scan.run(['cfb'],25))['cfb']
+    report=(await scan.run(['cfb'],20))['cfb']
     assert evaluated==['college1'] and report['completed_events']==1
     assert stored['signals:cfb:college1']['games']==[]
 
@@ -421,7 +565,7 @@ async def test_prelock_event_precedes_distant_candidate_within_league(monkeypatc
     events['nfl'][0]['commence_time']=(now+timedelta(hours=3)).isoformat()
     events['nfl'][1]['commence_time']=(now+timedelta(minutes=90)).isoformat()
     async def evidence(pool,sport,identities,now):
-        return {'nfl0':((.2,40),None),'nfl1':(None,None)}
+        return {'nfl0':((.2,40),None,(0,0)),'nfl1':(None,None,(0,0))}
     monkeypatch.setattr(scan,'prior_event_evidence_batch',evidence)
     def handle(request):
         if request.url.path.endswith('/events'):return httpx.Response(200,json=events['nfl'])
@@ -433,6 +577,27 @@ async def test_prelock_event_precedes_distant_candidate_within_league(monkeypatc
     assert report['completed_events']==report['budget_skipped_events']==1
     assert report['budget_reasons']=={'daily_credit_limit':1}
     assert all('next_reserve_release_at' not in event for event in report['events'])
+
+
+@pytest.mark.asyncio
+async def test_rolling_budget_reports_read_only_earliest_expiry_without_quotes(monkeypatch, worker):
+    _, events, evaluated, _ = worker
+    ledger = scan.Ledger()
+    today = datetime.now(timezone.utc).date()
+    with ledger.connect() as db:
+        db.execute('INSERT INTO api_usage VALUES (?,?)',
+                   ((today-timedelta(days=29)).isoformat(), 450))
+    def handle(request):
+        assert request.url.path.endswith('/events')
+        return httpx.Response(200, json=events['nfl'])
+    transport(monkeypatch, handle)
+    report = (await scan.run(['nfl'], 20))['nfl']
+    assert report['budget_reasons'] == {'rolling_credit_limit': 2}
+    assert report['attempted_events'] == 0 and not evaluated
+    assert report['next_rolling_allowance_at'] == datetime.combine(
+        today+timedelta(days=2), datetime.min.time(), timezone.utc).isoformat()
+    with ledger.connect() as db:
+        assert db.execute('SELECT SUM(credits) FROM api_usage').fetchone()[0] == 450
 
 
 @pytest.mark.asyncio
@@ -472,7 +637,7 @@ async def test_cache_cleanup_failure_preserves_primary_result_and_continues(monk
         if request.url.path.endswith('/events'): return httpx.Response(200,json=events['nba'])
         return httpx.Response(200,json=next(e for e in events['nba'] if e['id'] in request.url.path))
     transport(monkeypatch,handle)
-    report=(await scan.run(['nba'],25))['nba']
+    report=(await scan.run(['nba'],20))['nba']
     assert report['status']=='degraded'
     assert report['completed_events']==(1 if model_fails else 2)
     states={e['game_id']:e['state'] for e in report['events']}
@@ -522,7 +687,7 @@ async def test_prequote_database_failure_does_not_spend_or_abort_later_event(mon
         if request.url.path.endswith('/events'): return httpx.Response(200,json=events['nba'])
         return httpx.Response(200,json=next(e for e in events['nba'] if e['id'] in request.url.path))
     transport(monkeypatch,handle)
-    report=(await scan.run(['nba'],25))['nba']
+    report=(await scan.run(['nba'],20))['nba']
     assert report['status']=='degraded' and evaluated==['nba1']
     assert report['failures']==[dict(stage='event_evaluation',operation=operation,event_id='nba0',
         error_type='ConnectionFailure',sqlstate='08006')]

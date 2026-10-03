@@ -236,6 +236,9 @@ class PropResult(BaseModel):
     data_source: Optional[str] = None
     mean_stat: Optional[Decimal] = None
     push_probability: Decimal = Decimal("0")
+    # NFL passing/rushing admission proof. This does not alter the frozen
+    # probability or historical sample; an unavailable proof blocks a pick.
+    history_source_verified: Optional[bool] = None
 
 
 class NBAContextSignals(BaseModel):
