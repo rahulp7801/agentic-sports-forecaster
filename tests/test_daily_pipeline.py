@@ -1,6 +1,7 @@
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
+import json
 
 import pytest
 
@@ -8,6 +9,19 @@ from sportsbet import daily
 from sportsbet import refresh as refresh_module
 from sportsbet.ledger import Ledger
 from sportsbet.config import settings
+
+
+@pytest.mark.asyncio
+async def test_paid_daily_rejects_raised_caps_before_graph(monkeypatch):
+    graph=AsyncMock()
+    monkeypatch.setattr(daily,'create_daily_graph',graph)
+    for limit in (21, True):
+        with pytest.raises(ValueError,match='Invalid pipeline request'):
+            await daily.run(['nfl'],'monitor',limit)
+    monkeypatch.setattr(settings,'odds_rolling_credit_limit',451)
+    with pytest.raises(ValueError,match='Invalid pipeline request'):
+        await daily.run(['nfl'],'daily',20)
+    graph.assert_not_awaited()
 
 
 @pytest.fixture(autouse=True)
@@ -45,7 +59,7 @@ async def test_actual_daily_graph_isolates_refresh_failure_and_orders_paid_stage
     monkeypatch.setattr(refresh_module,'refresh',refresh)
     monkeypatch.setattr(daily,'watch',watch)
     monkeypatch.setattr(daily,'scan',scan)
-    report=await daily.run(['nfl','nba'],'daily',25)
+    report=await daily.run(['nfl','nba'],'daily',20)
     assert report['status']=='degraded'
     assert report['props']['nfl']['status']=='blocked'
     assert report['props']['nba']['status']=='complete'
@@ -66,10 +80,10 @@ async def test_monitor_cannot_use_old_failed_incomplete_or_future_refreshes(monk
     scan=AsyncMock();watch=AsyncMock(return_value=({'sources':{'kalshi':{'status':'observed','partial_coverage':False}},
         'captured_at':datetime.now(timezone.utc).isoformat()},None))
     monkeypatch.setattr(daily,'scan',scan);monkeypatch.setattr(daily,'watch',watch)
-    result=await daily.run(['nfl'],'monitor',25)
+    result=await daily.run(['nfl'],'monitor',20)
     assert result['props']['nfl']['status']=='blocked'
     scan.assert_not_called()
-    watch.assert_awaited_once_with('nfl',25,daily.DEFAULT_GAME_LIMIT,True,credit_holdback=12,sportsbook_cadence_hours=6)
+    watch.assert_awaited_once_with('nfl',20,daily.DEFAULT_GAME_LIMIT,True,credit_holdback=12,sportsbook_cadence_hours=6)
 
 
 @pytest.mark.asyncio
@@ -79,12 +93,12 @@ async def test_monitor_uses_recent_history_and_refreshes_markets_before_props(mo
     watch=AsyncMock(return_value=({'sources':{'kalshi':{'status':'observed','partial_coverage':False}},
         'captured_at':datetime.now(timezone.utc).isoformat()},None))
     async def scan_ready(sports,limit):
-        watch.assert_awaited_once_with('nba',25,daily.DEFAULT_GAME_LIMIT,True,credit_holdback=9,sportsbook_cadence_hours=6)
+        watch.assert_awaited_once_with('nba',20,daily.DEFAULT_GAME_LIMIT,True,credit_holdback=9,sportsbook_cadence_hours=6)
         return {'nba':{'status':'complete'}}
     scan=AsyncMock(side_effect=scan_ready)
     monkeypatch.setattr(daily,'scan',scan);monkeypatch.setattr(daily,'watch',watch)
-    assert (await daily.run(['nba'],'monitor',25))['status']=='complete'
-    scan.assert_awaited_once_with(['nba'],25)
+    assert (await daily.run(['nba'],'monitor',20))['status']=='complete'
+    scan.assert_awaited_once_with(['nba'],20)
 
 
 @pytest.mark.asyncio
@@ -101,7 +115,7 @@ async def test_daily_settles_observed_stats_before_scanning_new_props(monkeypatc
         calls.append(('scan','nba'))
         return {'nba':{'status':'complete'}}
     monkeypatch.setattr(daily,'scan',scan)
-    result=await daily.run(['nba'],'daily',25)
+    result=await daily.run(['nba'],'daily',20)
     assert result['status']=='complete' and calls.index(('settle','nba'))<calls.index(('scan','nba'))
     assert stored['metrics:all']['cohort']=='all_predictions'
     assert stored['metrics:recommendations']['cohort']=='recommendations'
@@ -130,7 +144,7 @@ async def test_daily_uses_catchup_evidence_but_publishes_current_schedule_only(m
     monkeypatch.setattr(daily,'watch',AsyncMock(return_value=({'sources':{'kalshi':{
         'status':'observed','partial_coverage':False}},'captured_at':datetime.now(timezone.utc).isoformat()},None)))
     monkeypatch.setattr(daily,'scan',AsyncMock(return_value={'nfl':{'status':'complete'}}))
-    report=await daily.run(['nfl'],'daily',25)
+    report=await daily.run(['nfl'],'daily',20)
     assert report['status']=='complete'
     assert collector.await_count==3
     current_call,older_call,future_call=collector.await_args_list
@@ -158,7 +172,7 @@ async def test_catchup_failure_degrades_settlement_without_hiding_current_schedu
     monkeypatch.setattr(daily,'watch',AsyncMock(return_value=({'sources':{'kalshi':{
         'status':'observed','partial_coverage':False}},'captured_at':datetime.now(timezone.utc).isoformat()},None)))
     scan=AsyncMock(return_value={'nba':{'status':'complete'}});monkeypatch.setattr(daily,'scan',scan)
-    report=await daily.run(['nba'],'daily',25)
+    report=await daily.run(['nba'],'daily',20)
     assert report['status']=='degraded' and report['schedules']['nba']['status']=='complete'
     assert stored['schedule:nba']==current and settled[0]['status']=='partial'
     scan.assert_awaited_once()
@@ -191,7 +205,7 @@ async def test_settlement_failure_is_redacted_and_degrades_without_suppressing_s
     monkeypatch.setattr(daily,'watch',AsyncMock(return_value=({'sources':{'kalshi':{
         'status':'observed','partial_coverage':False}},'captured_at':datetime.now(timezone.utc).isoformat()},None)))
     scan=AsyncMock(return_value={'nba':{'status':'complete'}});monkeypatch.setattr(daily,'scan',scan)
-    result=await daily.run(['nba'],'monitor',25)
+    result=await daily.run(['nba'],'monitor',20)
     assert result['status']=='degraded' and result['settlements']['nba']=={
         'status':'failed','error_type':'RuntimeError'}
     assert 'secret' not in str(result)
@@ -207,6 +221,7 @@ async def test_full_monitor_real_collector_shares_budget_and_preserves_other_ven
     stored={};requests=[]
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(settings,'odds_api_key','fixture')
+    monkeypatch.setattr(settings,'analytics_database_url','postgresql://test-only')
     monkeypatch.setattr(market_watch,'Ledger',lambda:ledger)
     monkeypatch.setattr(market_watch,'load_snapshot',lambda key:deepcopy(stored.get(key)))
     monkeypatch.setattr(daily,'load_snapshot',lambda key:dict(status='complete',finished_at=datetime.now(timezone.utc).isoformat()))
@@ -262,6 +277,8 @@ async def test_public_modes_use_real_graph_and_collector_without_paid_or_prop_ca
     from sportsbet import market_watch
     stored={}; refreshed=[]
     monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv('KALSHI_PAIR_SOURCE_DIR',raising=False)
+    monkeypatch.delenv('KALSHI_PAIR_OUTPUT',raising=False)
     for module in (daily,refresh_module,market_watch):
         monkeypatch.setattr(module,'publish_snapshot',lambda key,value:stored.update({key:deepcopy(value)}))
     def refresh(sport,day,backfill=False):
@@ -284,6 +301,10 @@ async def test_public_modes_use_real_graph_and_collector_without_paid_or_prop_ca
     result=await daily.run(['nfl','nba'],mode,25)
     assert result['status']=='observed' and result['execution_ready'] is False
     assert result['scope']==daily.PUBLIC_SCOPES[mode]
+    if mode=='public_daily':
+        assert result['markets']['nfl']['research_pair_status']=='not_configured'
+    else:
+        assert 'research_pair_status' not in result['markets']['nfl']
     assert refreshed==(['nfl','nba'] if mode=='public_daily' else [])
     assert kalshi.await_count==2
     books.assert_not_called();props.assert_not_called()
@@ -304,6 +325,99 @@ async def test_public_modes_use_real_graph_and_collector_without_paid_or_prop_ca
         assert result['markets'][sport]['sources']['prizepicks']['status']==(
             'observed' if mode=='public_daily' else 'not_requested')
     assert len(list((tmp_path/'.local/market-watch').glob('*.json')))==2
+
+
+@pytest.mark.asyncio
+async def test_public_daily_pairs_existing_nfl_archive_without_exposing_private_rows(monkeypatch,tmp_path):
+    from sportsbet.quant import kalshi_pair_capture as pair_module
+    from sportsbet.quant import kalshi_ask_policy as ask_policy
+    from sportsbet.quant import kalshi_prior20_ask_policy as prior20_policy
+    archive=tmp_path/'market.json'
+    archive.write_text(json.dumps({'source':'already_collected'}),encoding='utf-8')
+    source_dir=tmp_path/'sources'
+    source_dir.mkdir()
+    (source_dir/'source-manifest.json').write_text('{"source":"prequote"}',encoding='utf-8')
+    calls=[];published={}
+    monkeypatch.setenv('KALSHI_PAIR_SOURCE_DIR',str(source_dir))
+    monkeypatch.setenv('KALSHI_PAIR_OUTPUT',str(tmp_path/'private'/'pair.json'))
+    monkeypatch.setattr(daily,'publish_snapshot',lambda key,value:published.update({key:deepcopy(value)}))
+    monkeypatch.setattr(daily,'refresh_history',lambda *args:{'status':'complete'})
+    monkeypatch.setattr(daily,'watch',AsyncMock(return_value=({'sources':{'kalshi':{
+        'status':'observed','partial_coverage':False}},
+        'captured_at':datetime.now(timezone.utc).isoformat()},archive)))
+    monkeypatch.setattr(pair_module,'capture',lambda market,source_dir,*,started_at,source_manifest:
+            (calls.append((market,source_dir,started_at,source_manifest)) or {'private_forecasts':[1]}))
+    monkeypatch.setattr(ask_policy,'freeze',lambda value:{'candidates_count':0})
+    monkeypatch.setattr(prior20_policy,'freeze',lambda value:{'candidates_count':1})
+    monkeypatch.setattr(pair_module,'save_pair',lambda value,output:
+        calls.append((value,output)))
+    result=await daily.run(['nfl'],'public_daily',25)
+    assert result['status']=='observed'
+    assert result['markets']['nfl']['research_pair_status']=='captured_local'
+    assert len(calls)==2 and calls[0][0]=={'source':'already_collected'}
+    assert calls[0][3]=={'source':'prequote'}
+    assert calls[1][0]=={'private_forecasts':[1], 'ask_policy':{'candidates_count':0},
+                         'prior20_ask_policy':{'candidates_count':1}}
+    assert all('private_forecasts' not in str(value) for value in published.values())
+
+
+@pytest.mark.asyncio
+async def test_failed_private_pair_does_not_change_public_collection(monkeypatch,tmp_path):
+    from sportsbet.quant import kalshi_pair_capture as pair_module
+    archive=tmp_path/'market.json'
+    archive.write_text('{}',encoding='utf-8')
+    source_dir=tmp_path/'sources'
+    source_dir.mkdir()
+    (source_dir/'source-manifest.json').write_text('{}',encoding='utf-8')
+    monkeypatch.setenv('KALSHI_PAIR_SOURCE_DIR',str(source_dir))
+    monkeypatch.setenv('KALSHI_PAIR_OUTPUT',str(tmp_path/'private'/'pair.json'))
+    monkeypatch.setattr(daily,'publish_snapshot',lambda *args:None)
+    monkeypatch.setattr(daily,'refresh_history',lambda *args:{'status':'complete'})
+    monkeypatch.setattr(daily,'watch',AsyncMock(return_value=({'sources':{'kalshi':{
+        'status':'observed','partial_coverage':False}},
+        'captured_at':datetime.now(timezone.utc).isoformat()},archive)))
+    monkeypatch.setattr(pair_module,'capture',lambda *args,**kwargs:
+        (_ for _ in ()).throw(ValueError('private detail must stay hidden')))
+    result=await daily.run(['nfl'],'public_daily',25)
+    assert result['status']=='observed'
+    assert result['markets']['nfl']['research_pair_status']=='capture_failed'
+    assert 'private detail' not in str(result)
+    assert not (tmp_path/'private'/'pair.json').exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('reason',['archive_unavailable','source_unavailable'])
+async def test_public_daily_reports_missing_private_pair_input(monkeypatch,tmp_path,reason):
+    from sportsbet.quant import kalshi_pair_capture as pair_module
+    archive=tmp_path/'market.json'
+    archive.write_text('{}',encoding='utf-8')
+    source_dir=tmp_path/'sources'
+    source_dir.mkdir()  # The source manifest was not staged.
+    monkeypatch.setenv('KALSHI_PAIR_SOURCE_DIR',str(source_dir))
+    monkeypatch.setenv('KALSHI_PAIR_OUTPUT',str(tmp_path/'private'/'pair.json'))
+    monkeypatch.setattr(daily,'publish_snapshot',lambda *args:None)
+    monkeypatch.setattr(daily,'refresh_history',lambda *args:{'status':'complete'})
+    monkeypatch.setattr(daily,'watch',AsyncMock(return_value=({'sources':{'kalshi':{
+        'status':'observed','partial_coverage':False}},
+        'captured_at':datetime.now(timezone.utc).isoformat()},
+        None if reason=='archive_unavailable' else archive)))
+    monkeypatch.setattr(pair_module,'capture',lambda *args,**kwargs:
+        pytest.fail('Private model must not run without its inputs'))
+    result=await daily.run(['nfl'],'public_daily',25)
+    assert result['status']=='observed'
+    assert result['markets']['nfl']['research_pair_status']==reason
+    assert 'private' not in str(result['markets']['nfl'])
+
+
+@pytest.mark.asyncio
+async def test_public_daily_reports_failed_market_without_private_details(monkeypatch):
+    monkeypatch.setattr(daily,'publish_snapshot',lambda *args:None)
+    monkeypatch.setattr(daily,'refresh_history',lambda *args:{'status':'complete'})
+    monkeypatch.setattr(daily,'watch',AsyncMock(side_effect=RuntimeError('private provider detail')))
+    result=await daily.run(['nfl'],'public_daily',25)
+    assert result['status']=='degraded'
+    assert result['markets']['nfl']['research_pair_status']=='market_unavailable'
+    assert 'private provider detail' not in str(result)
 
 
 @pytest.mark.asyncio
@@ -345,7 +459,7 @@ async def test_paid_daily_cfb_refreshes_settles_and_scans_without_public_sources
         return {'cfb':{'status':'complete'}}
     monkeypatch.setattr(daily,'watch',watch)
     monkeypatch.setattr(daily,'scan',scan)
-    report=await daily.run(['cfb'],'daily',25)
+    report=await daily.run(['cfb'],'daily',20)
     assert report['status']=='complete'
     assert report['markets']['cfb']['status']=='complete'
     assert stored['picks:cfb']['selection_policy_version']=='pregame-t60-v1'
@@ -364,7 +478,7 @@ async def test_shadow_report_failure_cannot_change_production_settlement(monkeyp
     monkeypatch.setattr(daily,'watch',AsyncMock(return_value=({'sources':{'book':{'status':'observed','partial_coverage':False}},
         'captured_at':datetime.now(timezone.utc).isoformat()},None)))
     monkeypatch.setattr(daily,'scan',AsyncMock(return_value={'nba':{'status':'complete'}}))
-    result=await daily.run(['nba'],'monitor',25)
+    result=await daily.run(['nba'],'monitor',20)
     assert result['status']=='complete' and result['settlements']['nba']['status']=='complete'
     assert 'picks:nba' in stored and 'metrics:all:nba' in stored
 
@@ -379,9 +493,10 @@ def _complete_public_snapshot(sport,mode,when):
 
 
 @pytest.mark.asyncio
-async def test_public_monitor_reuses_fresh_complete_market_without_provider_calls(monkeypatch):
+@pytest.mark.parametrize('source_mode',('public_monitor','public_daily'))
+async def test_public_monitor_reuses_fresh_complete_market_without_provider_calls(monkeypatch,source_mode):
     now=datetime.now(timezone.utc)
-    snapshots={sport:_complete_public_snapshot(sport,'public_monitor',now-timedelta(minutes=2))
+    snapshots={sport:_complete_public_snapshot(sport,source_mode,now-timedelta(minutes=2))
                for sport in ('nfl','nba')}
     monkeypatch.setattr(daily,'load_snapshot',lambda key:snapshots[key.split(':')[1]])
     stored={}
@@ -394,6 +509,21 @@ async def test_public_monitor_reuses_fresh_complete_market_without_provider_call
                for sport in snapshots)
     watch.assert_not_called()
     assert 'pipeline:public_monitor' in stored
+
+
+@pytest.mark.asyncio
+async def test_public_daily_reports_reused_market_without_private_pair(monkeypatch):
+    now=datetime.now(timezone.utc)
+    cached=_complete_public_snapshot('nfl','public_daily',now-timedelta(minutes=2))
+    monkeypatch.setattr(daily,'load_snapshot',lambda key:cached if key=='markets:nfl' else None)
+    monkeypatch.setattr(daily,'publish_snapshot',lambda *args:None)
+    monkeypatch.setattr(daily,'refresh_history',lambda *args:{'status':'complete'})
+    watch=AsyncMock(side_effect=AssertionError('fresh complete market must be reused'))
+    monkeypatch.setattr(daily,'watch',watch)
+    result=await daily.run(['nfl'],'public_daily',25)
+    assert result['status']=='observed'
+    assert result['markets']['nfl']['research_pair_status']=='market_reused'
+    watch.assert_not_called()
 
 
 @pytest.mark.parametrize('fault',('stale','future','partial','wrong_scope','missing_hash','wrong_sport'))
@@ -417,3 +547,46 @@ def test_public_daily_requires_all_requested_sources():
     assert daily.reusable_public_market(complete,'nfl','public_daily',now)
     complete['sources']['prizepicks']['partial_coverage']=True
     assert not daily.reusable_public_market(complete,'nfl','public_daily',now)
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('event_capture',[False,True])
+async def test_nfl_stat_only_failure_does_not_block_existing_research(monkeypatch,event_capture):
+    from unittest.mock import MagicMock
+    from sportsbet.db import connection
+    from sportsbet.quant import nfl_corrected_workload_paper as workload
+    from sportsbet.quant import nfl_stat_only_paper as stat_only
+    stored = {}
+    calls = []
+    monkeypatch.setattr(daily, 'publish_snapshot',
+                        lambda key, value: stored.update({key: deepcopy(value)}))
+    monkeypatch.setattr(daily, 'refresh_history',
+                        lambda sport, day: {'status': 'complete'})
+    monkeypatch.setattr(daily, 'watch', AsyncMock(return_value=(
+        {'sources': {'kalshi': {'status': 'observed', 'partial_coverage': False}},
+         'captured_at': datetime.now(timezone.utc).isoformat()}, None)))
+    scan_result={'status': 'complete', 'scan_id': 'a'*32}
+    if event_capture:
+        scan_result['stat_only_capture']={'status':'captured',
+                                          'counts':{'attempts':2,'recorded':2}}
+    monkeypatch.setattr(daily, 'scan', AsyncMock(return_value={'nfl': scan_result}))
+    pool = MagicMock()
+    pool.close = AsyncMock()
+    monkeypatch.setattr(connection, 'create_async_pool', AsyncMock(return_value=pool))
+    async def stat_capture(receipt_pool, scan_id):
+        calls.append('stat-only')
+        raise RuntimeError('stat-only failed')
+    async def workload_capture(receipt_pool, scan_id):
+        calls.append('workload')
+        return {'status': 'captured'}
+    monkeypatch.setattr(stat_only, 'capture', stat_capture)
+    monkeypatch.setattr(stat_only, 'report', AsyncMock(return_value={'status':'collecting'}))
+    monkeypatch.setattr(workload, 'capture', workload_capture)
+    monkeypatch.setattr(workload, 'report', AsyncMock(return_value={'status': 'collecting'}))
+    await daily.run(['nfl'], 'daily', 20)
+    assert calls == (['workload'] if event_capture else ['stat-only', 'workload'])
+    assert stored['research:stat-only-capture:nfl'] == (
+        scan_result['stat_only_capture'] if event_capture else
+        {'status': 'unavailable', 'error_type': 'RuntimeError'})
+    assert stored['research:corrected-workload-capture:nfl']['status'] == 'captured'
+    assert stored['corrected-workload-shadow-validation:nfl']['status'] == 'collecting'
+    pool.close.assert_awaited_once()

@@ -54,6 +54,10 @@ def apply_plan(conn,plan, *, sport="nfl"):
         if not verified_settlement_evidence(current,u['outcome'],VERIFIED_SETTLEMENT_SOURCE,
                 u['source_ref'],u['observed_at'],u['actual'],proof):
             raise ValueError('Invalid recovery proof')
+        if sport=='nfl':
+            from sportsbet.ingestion.nfl_recovery_proof import valid_recovery_proof
+            if not valid_recovery_proof(proof):
+                raise ValueError('Invalid NFL recovery source receipt')
         values.append((json.dumps(u['outcome']),VERIFIED_SETTLEMENT_SOURCE,u['source_ref'],u['observed_at'],u['actual'],json.dumps(proof,sort_keys=True,separators=(',',':')),u['prediction_id']))
     with conn.cursor() as cursor:
         cursor.executemany('''UPDATE analytics.predictions SET outcome=%s,outcome_source=%s,

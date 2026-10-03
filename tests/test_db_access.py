@@ -1,4 +1,7 @@
 """Restricted hosted roles are verified against disposable PostgreSQL only."""
+from datetime import datetime, timezone
+import hashlib
+import json
 import os
 import uuid
 
@@ -11,6 +14,7 @@ from sportsbet.db.access import (
     ANALYTICS_TABLES,
     APPEND_TABLES,
     CACHE_TABLES,
+    PRIVATE_REPORT_TABLE,
     READER,
     READ_TABLES,
     WORKER,
@@ -41,7 +45,8 @@ def test_provisioning_locks_policy_tables_before_reading_or_writing_role_catalog
     first_statement = connection.statements[0][0]
     assert first_statement.startswith('LOCK TABLE ')
     assert first_statement.endswith(' IN ACCESS EXCLUSIVE MODE')
-    for table in ('alembic_version', *READ_TABLES, *APPEND_TABLES, *CACHE_TABLES, *ANALYTICS_TABLES):
+    for table in ('alembic_version', *READ_TABLES, *APPEND_TABLES, *CACHE_TABLES,
+                  *ANALYTICS_TABLES, PRIVATE_REPORT_TABLE):
         assert f'"{table}"' in first_statement
     assert connection.statements[1][0].startswith('SELECT 1 FROM pg_roles')
 
@@ -70,6 +75,10 @@ def test_reader_cannot_write_or_read_audits_and_worker_cannot_rewrite_prediction
             # Reproduce Supabase defaults, including its owner-executed view.
             admin.execute(sql.SQL('GRANT ALL ON public.dashboard_snapshots, public.dashboard_gamelogs TO {}')
                           .format(sql.Identifier(browser_role)))
+            admin.execute(sql.SQL('GRANT ALL ON analytics.prospective_audit_reports TO {}')
+                          .format(sql.Identifier(browser_role)))
+            admin.execute(sql.SQL('GRANT ALL ON SEQUENCE analytics.prospective_audit_reports_report_id_seq TO {}')
+                          .format(sql.Identifier(browser_role)))
             for schema in ('public','analytics'):
                 for kind in ('TABLES','SEQUENCES'):
                     admin.execute(sql.SQL('ALTER DEFAULT PRIVILEGES IN SCHEMA {} GRANT ALL ON {} TO {}')
@@ -89,12 +98,17 @@ def test_reader_cannot_write_or_read_audits_and_worker_cannot_rewrite_prediction
             admin.execute(sql.SQL('DROP TABLE {}').format(sql.Identifier(schema,'browser_provisioning_probe')))
         admin.execute("INSERT INTO dashboard_snapshots(snapshot_key,payload) VALUES (%s,'{}')", (key,))
     try:
-        with psycopg.connect(dsn, user=READER, password=passwords[READER], autocommit=True) as reader:
+        with psycopg.connect(dsn) as admin:
             for browser_role in ('anon', 'authenticated'):
                 for table in ('public.dashboard_snapshots', 'public.dashboard_gamelogs',
-                              'public.provider_response_cache'):
-                    assert not reader.execute("SELECT has_table_privilege(%s,%s,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE')",
+                              'public.provider_response_cache', 'analytics.prospective_audit_reports'):
+                    assert not admin.execute("SELECT has_table_privilege(%s,%s,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE')",
                                               (browser_role, table)).fetchone()[0]
+            for browser_role in ('anon', 'authenticated'):
+                assert not admin.execute("SELECT has_sequence_privilege(%s,"
+                    "'analytics.prospective_audit_reports_report_id_seq','USAGE,SELECT,UPDATE')",
+                    (browser_role,)).fetchone()[0]
+        with psycopg.connect(dsn, user=READER, password=passwords[READER], autocommit=True) as reader:
             assert reader.execute('SELECT count(*) FROM dashboard_snapshots WHERE snapshot_key=%s', (key,)).fetchone()[0] == 1
             assert reader.execute('SHOW default_transaction_read_only').fetchone()[0] == 'on'
             reader.execute('SELECT payload FROM dashboard_gamelogs LIMIT 1')
@@ -103,6 +117,7 @@ def test_reader_cannot_write_or_read_audits_and_worker_cannot_rewrite_prediction
                               'SELECT * FROM nba_player_gamelogs',
                               'SELECT * FROM player_stats', 'SELECT * FROM provider_response_cache',
                               'SELECT * FROM analytics.paper_selections',
+                              'SELECT * FROM analytics.prospective_audit_reports',
                               'CREATE TABLE public.forbidden_test(id int)'):
                 with pytest.raises(psycopg.errors.InsufficientPrivilege):
                     reader.execute(statement)
@@ -112,6 +127,7 @@ def test_reader_cannot_write_or_read_audits_and_worker_cannot_rewrite_prediction
                 assert worker.execute("UPDATE dashboard_snapshots SET payload='{}' WHERE snapshot_key=%s", (key,)).rowcount == 1
                 worker.execute('SELECT * FROM player_stats LIMIT 1')
                 worker.execute('SELECT * FROM analytics.predictions LIMIT 1')
+                assert worker.execute('SELECT count(*) FROM analytics.prospective_audit_reports').fetchone()[0] == 0
                 assert worker.execute("""INSERT INTO player_prop_snapshots
                     (sport,game_id,player_name,sportsbook,prop_type,line,price,implied_probability,
                      snapped_at,side,game_start_time,source_provider,source_sha256,source_record_sha256)
@@ -140,6 +156,18 @@ def test_reader_cannot_write_or_read_audits_and_worker_cannot_rewrite_prediction
                                       (ngs_id,)).rowcount == 1
                 assert worker.execute('DELETE FROM ngs_stats WHERE id=%s', (ngs_id,)).rowcount == 1
                 worker.execute("INSERT INTO analytics.predictions(id,scan_id,payload) VALUES (%s,%s,'{}')",(key,key))
+                observed = datetime.now(timezone.utc).isoformat()
+                report = json.dumps({'protocol': {'version': 'nba-cfb-priced-prospective-v1'},
+                                     'observed_at': observed, 'sport': 'nba',
+                                     'target_verified': False}, separators=(',', ':'))
+                digest = hashlib.sha256(report.encode()).hexdigest()
+                before = worker.execute('SELECT clock_timestamp()').fetchone()[0]
+                recorded = worker.execute('''INSERT INTO analytics.prospective_audit_reports
+                    (protocol,observed_at,payload,payload_sha256)
+                    VALUES ('nba-cfb-priced-prospective-v1',%s,%s,%s)
+                    RETURNING recorded_at''', (observed, report, digest)).fetchone()[0]
+                after = worker.execute('SELECT clock_timestamp()').fetchone()[0]
+                assert before <= recorded <= after
                 assert worker.execute("""INSERT INTO analytics.paper_selections
                     (protocol,sport,game_id,player_id,prediction_id,decision_at,valid_until,payload,payload_sha256)
                     VALUES ('fixture','nfl',%s,'fixture',%s,clock_timestamp()-INTERVAL '1 minute',
@@ -155,9 +183,18 @@ def test_reader_cannot_write_or_read_audits_and_worker_cannot_rewrite_prediction
                               "UPDATE analytics.quotes SET probability=0 WHERE false",
                               "UPDATE analytics.paper_selections SET payload=payload WHERE false",
                               "DELETE FROM analytics.paper_selections WHERE false",
-                              "TRUNCATE analytics.paper_selections"):
+                              "TRUNCATE analytics.paper_selections",
+                              "UPDATE analytics.prospective_audit_reports SET payload=payload WHERE false",
+                              "DELETE FROM analytics.prospective_audit_reports WHERE false",
+                              "TRUNCATE analytics.prospective_audit_reports"):
                 with pytest.raises(psycopg.errors.InsufficientPrivilege):
                     worker.execute(statement)
+            assert worker.execute("SELECT has_table_privilege(current_user,"
+                                  "'analytics.prospective_audit_reports','SELECT,INSERT')").fetchone()[0]
+            assert not worker.execute("SELECT has_table_privilege(current_user,"
+                                      "'analytics.prospective_audit_reports','UPDATE,DELETE,TRUNCATE')").fetchone()[0]
+            assert worker.execute("SELECT has_sequence_privilege(current_user,"
+                                  "'analytics.prospective_audit_reports_report_id_seq','USAGE,SELECT')").fetchone()[0]
             for table in APPEND_TABLES:
                 assert worker.execute('SELECT has_table_privilege(current_user,%s,\'INSERT\')',
                                       ('public.'+table,)).fetchone()[0]

@@ -9,9 +9,11 @@ import {Bookmark,RefreshCw,LayoutGrid,List} from 'lucide-react';
 import {motion,useReducedMotion} from 'motion/react';
 import {compareQuality,groupAlternateLines} from '@/lib/bestPicks';
 import {fetchForecasts} from '@/lib/fetchForecasts';
+import {capturedPlayerProfile,capturedRosterTeam} from '@/lib/pickContext';
+import {playerIdentity} from '@/lib/playerIdentity';
 
 // PropAnalysis is derived from real EV signals — no mock data
-interface PropsAnalysisProps { sport: Sport; initialPlayer?:string; }
+interface PropsAnalysisProps { sport: Sport; initialPlayer?:string; initialPlayerId?:string; }
 
 const PROP_TYPES: PropType[] = ['points', 'rebounds', 'assists', 'threes', 'pra', 'steals', 'blocks', 'pass_yds', 'pass_tds', 'rush_yds', 'rec_yds', 'receptions'];
 const PROP_LABELS:Record<PropType,string>={points:'Points',rebounds:'Rebounds',assists:'Assists',threes:'Three-pointers',pra:'Points + rebounds + assists',steals:'Steals',blocks:'Blocks',pass_yds:'Passing yards',pass_tds:'Passing touchdowns',rush_yds:'Rushing yards',rec_yds:'Receiving yards',receptions:'Receptions'};
@@ -63,8 +65,9 @@ function ConfidenceBar({ ci, mean, line }: { ci: [number, number] | null; mean: 
   );
 }
 
-export default function PropsAnalysis({ sport,initialPlayer='' }: PropsAnalysisProps) {
+export default function PropsAnalysis({ sport,initialPlayer='',initialPlayerId='' }: PropsAnalysisProps) {
   const [playerFilter, setPlayerFilter] = useState(initialPlayer);
+  const [focusedPlayerId,setFocusedPlayerId]=useState(initialPlayerId);
   const [searchPlayer,setSearchPlayer]=useState(initialPlayer.trim().normalize('NFC'));
   const canonicalPlayer=playerFilter.trim().normalize('NFC');
   const validPlayerSearch=canonicalPlayer==='' || /^[\p{L}\p{M}.'\u2019 -]{1,80}$/u.test(canonicalPlayer);
@@ -91,19 +94,23 @@ export default function PropsAnalysis({ sport,initialPlayer='' }: PropsAnalysisP
     const timer=window.setTimeout(()=>{
       try {
         const saved=JSON.parse(localStorage.getItem('forecast-players') ?? '[]');
-        if(Array.isArray(saved)) setShortlist(saved.filter((value):value is string=>typeof value==='string' && value.length<=110).slice(0,500));
+        if(Array.isArray(saved)) {
+          const valid=saved.filter((value):value is string=>typeof value==='string' && value.length<=110).slice(0,500);
+          setShortlist(valid);
+          if(valid.some(value=>/^(nba|nfl|cfb):(?!(?:id|name):)/.test(value))) setStorageNotice('Older name-only bookmarks need to be saved again to attach an athlete ID.');
+        }
       } catch {setStorageNotice('Saved players are unavailable in this browser.');}
     },0);
     return ()=>window.clearTimeout(timer);
   },[]);
   function savePlayer(p:EVSignal) {
-    const key=`${p.sport}:${p.player}`;
+    const key=playerIdentity(p);
     const updated=shortlist.includes(key) ? shortlist.filter(item=>item!==key) : [...shortlist,key].slice(-500);
     setShortlist(updated);
-    try {localStorage.setItem('forecast-players',JSON.stringify(updated));setStorageNotice('');}
+    try {localStorage.setItem('forecast-players',JSON.stringify(updated));setStorageNotice(updated.some(value=>/^(nba|nfl|cfb):(?!(?:id|name):)/.test(value)) ? 'Older name-only bookmarks need to be saved again to attach an athlete ID.' : '');}
     catch {setStorageNotice('Saved for this session. Browser storage is unavailable.');}
   }
-  function resetFilters() {setPlayerFilter('');setPropFilter('all');setMinEV(0);setWindowFilter('latest');setScope('all');setVisibleCount(24);}
+  function resetFilters() {setPlayerFilter('');setFocusedPlayerId('');setPropFilter('all');setMinEV(0);setWindowFilter('latest');setScope('all');setVisibleCount(24);}
 
   useEffect(()=>{
     const timer=window.setInterval(()=>setNow(Date.now()),30_000);
@@ -163,14 +170,15 @@ export default function PropsAnalysis({ sport,initialPlayer='' }: PropsAnalysisP
   const effectivePropFilter=leagueProps.includes(propFilter as PropType) ? propFilter : 'all';
   const currentProps=publicSignals(library?.search_player===canonicalPlayer ? allProps : [],now).signals;
   const effectiveWindow=windowFilter==='latest' ? latestForecastWindow(currentProps,now) : windowFilter;
-  const players=[...new Map(currentProps.map(p=>[p.player,p])).values()];
+  const players=[...new Map(currentProps.map(p=>[playerIdentity(p),p])).values()];
   const selected=currentProps.find(p=>p.id===selectedId && p.sport===sport);
   const props = currentProps.filter(p => {
     if (p.sport !== sport) return false;
-    if(scope==='saved' && !shortlist.includes(`${p.sport}:${p.player}`)) return false;
+    if(scope==='saved' && !shortlist.includes(playerIdentity(p))) return false;
     if(scope==='eligible' && p.gated) return false;
     if(effectiveWindow!=='all' && forecastWindow(p,now)!==effectiveWindow) return false;
     if (canonicalPlayer && !p.player.toLowerCase().includes(canonicalPlayer.toLowerCase())) return false;
+    if (focusedPlayerId && p.player_id!==focusedPlayerId) return false;
     if (effectivePropFilter !== 'all' && p.prop_type !== effectivePropFilter) return false;
     if (minEV>0 && p.ev_pct < minEV / 100) return false;
     return true;
@@ -191,7 +199,7 @@ export default function PropsAnalysis({ sport,initialPlayer='' }: PropsAnalysisP
       {coverageNotice && <p role="status" style={{padding:'8px 20px',color:'var(--text-secondary)'}}>{coverageNotice}</p>}
       {library?.search_player===canonicalPlayer && library?.cursor && library.cursor.offset<1000 && <div style={{padding:'0 20px 12px'}}><button className={styles.uxButton} type="button" disabled={loading} onClick={()=>void loadMore()}>{loading ? 'Loading forecasts...' : 'Load more recorded forecasts'}</button></div>}
       <div className={styles.forecastControls}>
-        <input aria-label="Search player" maxLength={80} aria-describedby="player-search-scope" className="term-input" placeholder="Find a player..." value={playerFilter} onChange={e=>{setPlayerFilter(e.target.value);setVisibleCount(24);}} />
+        <input aria-label="Search player" maxLength={80} aria-describedby="player-search-scope" className="term-input" placeholder="Find a player..." value={playerFilter} onChange={e=>{setPlayerFilter(e.target.value);setFocusedPlayerId('');setVisibleCount(24);}} />
         <select aria-label="Forecast window" className="term-select" value={windowFilter} onChange={e=>{setWindowFilter(e.target.value);setVisibleCount(24);}}><option value="latest">Available forecasts</option><option value="upcoming">Upcoming games</option><option value="archive">Past games</option><option value="all">All recorded forecasts</option></select>
         <button className={styles.uxButton} type="button" aria-pressed={scope==='saved'} onClick={()=>setScope(scope==='saved'?'all':'saved')}><Bookmark size={16} />Saved players</button>
         <details className={styles.forecastFilters}>
@@ -206,14 +214,14 @@ export default function PropsAnalysis({ sport,initialPlayer='' }: PropsAnalysisP
         </details>
         <div className={styles.viewSwitch} aria-label="Forecast view"><button type="button" aria-pressed={view==='cards'} onClick={()=>setView('cards')}><LayoutGrid size={16} />Cards</button><button type="button" aria-pressed={view==='table'} onClick={()=>setView('table')}><List size={16} />Table</button></div>
       </div>
-      <div className={styles.forecastSummary} role="status"><span>{propGroups.length} player markets / {props.length} recorded lines / {new Set(props.map(p=>p.player)).size} {new Set(props.map(p=>p.player)).size===1 ? 'player' : 'players'}</span><span>{propGroups.filter(group=>!group.pick.gated).length} research eligible</span></div>
+      <div className={styles.forecastSummary} role="status"><span>{propGroups.length} player markets / {props.length} recorded lines / {new Set(props.map(playerIdentity)).size} {new Set(props.map(playerIdentity)).size===1 ? 'player' : 'players'}</span><span>{propGroups.filter(group=>!group.pick.gated).length} research eligible</span></div>
       {storageNotice && <p role="status" className={styles.forecastIntro}>{storageNotice}</p>}
 
       {error && <div className={styles.notice} role="alert">{error}</div>}
       {props.length>0 && props.every(p=>forecastWindow(p,now)==='archive') && <div className={styles.archiveNotice}><strong>Past games · Prices expired</strong><span>Original forecasts and player history remain available for research.</span></div>}
-      {players.length>0 && <nav className={styles.playerShelf} aria-label="Players with recorded forecasts">{players.map(p=><button type="button" key={p.player} aria-pressed={playerFilter===p.player} onClick={()=>{setPlayerFilter(playerFilter===p.player?'':p.player);setVisibleCount(24);}}><PlayerPortrait signal={p} /><strong>{p.player}</strong><small>{p.player_profile?.team ?? p.availability?.team ?? sport.toUpperCase()}{p.player_profile?.jersey ? ` · #${p.player_profile.jersey}` : ''}{p.player_profile?.position ? ` · ${p.player_profile.position}` : ''}</small></button>)}</nav>}
+      {players.length>0 && <nav className={styles.playerShelf} aria-label="Players with recorded forecasts">{players.map(p=><button type="button" key={playerIdentity(p)} aria-pressed={p.player_id ? focusedPlayerId===p.player_id : !focusedPlayerId && playerFilter===p.player} onClick={()=>{const active=p.player_id ? focusedPlayerId===p.player_id : !focusedPlayerId && playerFilter===p.player;setPlayerFilter(active?'':p.player);setFocusedPlayerId(active?'':p.player_id ?? '');setVisibleCount(24);}}><PlayerPortrait signal={p} /><strong>{p.player}</strong><small>{capturedRosterTeam(p) ?? sport.toUpperCase()}{capturedPlayerProfile(p)?.jersey ? ` · #${capturedPlayerProfile(p)?.jersey}` : ''}{capturedPlayerProfile(p)?.position ? ` · ${capturedPlayerProfile(p)?.position}` : ''}</small></button>)}</nav>}
       <p className={styles.forecastIntro}>Prices are recorded observations, not live quotes. Quotes expire after five minutes. Saved players stay in this browser.</p>
-      {selected && <PredictionEvidence signal={selected} onClose={()=>{setSelectedId(null);document.getElementById(`forecast-${selected.id}`)?.focus();}} />}
+      {selected && <PredictionEvidence signal={selected} now={now} onClose={()=>{setSelectedId(null);document.getElementById(`forecast-${selected.id}`)?.focus();}} />}
 
       {/* Table */}
       <div style={{ overflowX: 'auto' }} tabIndex={0} aria-label="Recorded player prop estimates">
@@ -224,7 +232,7 @@ export default function PropsAnalysis({ sport,initialPlayer='' }: PropsAnalysisP
             {allProps.length>0 && <button className={styles.uxButton} type="button" onClick={()=>{resetFilters();setWindowFilter('all');}}>Show all forecasts</button>}
           </div>
         ) : view==='cards' ? <><div className={styles.forecastGrid}>{propGroups.slice(0,visibleCount).map(({pick:p,alternatives})=><motion.article key={p.id} className={styles.forecastCard} initial={reduceMotion ? false : {opacity:0,y:8}} animate={{opacity:1,y:0}} transition={{duration:.2}}>
-          <div className={styles.playerHeading}><PlayerPortrait signal={p} /><div><button id={`forecast-${p.id}`} type="button" className={styles.forecastPlayer} onClick={()=>setSelectedId(p.id)}>{p.player}<span>Explore forecast →</span></button><small>{p.player_profile?.team ?? p.availability?.team ?? p.sport.toUpperCase()}{p.player_profile?.jersey ? ` · #${p.player_profile.jersey}` : ''}{p.player_profile?.position ? ` · ${p.player_profile.position}` : ''}</small></div><SaveButton prop={p} saved={shortlist.includes(`${p.sport}:${p.player}`)} onSave={()=>savePlayer(p)} /></div>
+          <div className={styles.playerHeading}><PlayerPortrait signal={p} /><div><button id={`forecast-${p.id}`} type="button" className={styles.forecastPlayer} onClick={()=>setSelectedId(p.id)}>{p.player}<span>Explore forecast →</span></button><small>{capturedRosterTeam(p) ?? p.sport.toUpperCase()}{capturedPlayerProfile(p)?.jersey ? ` · #${capturedPlayerProfile(p)?.jersey}` : ''}{capturedPlayerProfile(p)?.position ? ` · ${capturedPlayerProfile(p)?.position}` : ''}</small></div><SaveButton prop={p} saved={shortlist.includes(playerIdentity(p))} onSave={()=>savePlayer(p)} /></div>
           <h3>{p.direction} {p.line} <span>{PROP_LABELS[p.prop_type]}</span></h3>
           <p className={styles.cardMatchup}><time dateTime={p.game_start_time}>{new Date(p.game_start_time ?? '').toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}</time><br />{p.home_team} vs {p.away_team} | <QuoteAge signal={p} now={now} /></p>
           <ProbabilityComparison model={p.true_prob} implied={p.implied_prob} gated={p.gated} />
@@ -245,7 +253,7 @@ export default function PropsAnalysis({ sport,initialPlayer='' }: PropsAnalysisP
             </tr>
           </thead>
           <tbody>
-            {propGroups.map(({pick:p,alternatives}) => <PropRow key={p.id} prop={p} alternatives={alternatives} onExplain={id=>setSelectedId(id ?? p.id)} saved={shortlist.includes(`${p.sport}:${p.player}`)} onSave={()=>savePlayer(p)} now={now} />)}
+            {propGroups.map(({pick:p,alternatives}) => <PropRow key={p.id} prop={p} alternatives={alternatives} onExplain={id=>setSelectedId(id ?? p.id)} saved={shortlist.includes(playerIdentity(p))} onSave={()=>savePlayer(p)} now={now} />)}
           </tbody>
         </table>}
       </div>
@@ -273,7 +281,7 @@ function PropRow({ prop,alternatives,onExplain,saved,onSave,now }: { prop: EVSig
       <td>
         <div className={styles.playerHeading}><PlayerPortrait signal={prop} /><SaveButton prop={prop} saved={saved} onSave={onSave} /></div>
         <button id={`forecast-${prop.id}`} type="button" className={styles.forecastPlayer} onClick={()=>onExplain()}>{prop.player}<span>Why this forecast →</span></button>
-        <div style={{color:'var(--text-secondary)',fontSize:12}}>{prop.player_profile?.team ?? prop.availability?.team ?? prop.sport.toUpperCase()}{prop.player_profile?.jersey ? ` · #${prop.player_profile.jersey}` : ''}{prop.player_profile?.position ? ` · ${prop.player_profile.position}` : ''}</div>
+        <div style={{color:'var(--text-secondary)',fontSize:12}}>{capturedRosterTeam(prop) ?? prop.sport.toUpperCase()}{capturedPlayerProfile(prop)?.jersey ? ` · #${capturedPlayerProfile(prop)?.jersey}` : ''}{capturedPlayerProfile(prop)?.position ? ` · ${capturedPlayerProfile(prop)?.position}` : ''}</div>
         <div style={{ color: 'var(--text-muted)', fontSize: 10 }}>{prop.team || prop.home_team} vs {prop.opponent || prop.away_team}</div>
         <span className={`badge ${prop.gated ? 'badge-dim' : 'badge-mint'}`}>{prop.gated ? 'Blocked estimate' : 'Research eligible'}</span>
       </td>
