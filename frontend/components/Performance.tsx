@@ -30,11 +30,15 @@ function MetricBlock({ title, metrics }: { title: string; metrics: MetricReport 
     return <article className={styles.metricBlock}><p className={styles.metricError}>{metrics.error}</p></article>;
   }
 
+  const settledCount = metrics.settled_count;
+  const gameCount = metrics.roi_game_cluster_count;
+  const oneGameSample = typeof settledCount === 'number' && settledCount > 0 && gameCount === 1;
+
   return (
     <article className={styles.metricBlock}>
       <header className={styles.metricBlockHeader}>
         <h3>{title}</h3>
-        <span>{count(metrics, 'settled_count')} settled · {count(metrics, 'pending_count')} pending</span>
+        <span>{count(metrics, 'settled_count')} settled · {count(metrics, 'roi_game_cluster_count')} distinct games · {count(metrics, 'pending_count')} pending</span>
       </header>
       <div className={styles.keyMetrics}>
         <KeyMetric label="ROI">{value(metrics, 'roi', true)}</KeyMetric>
@@ -43,6 +47,7 @@ function MetricBlock({ title, metrics }: { title: string; metrics: MetricReport 
         <KeyMetric label="CLV">{value(metrics, 'clv_mean', true, 'pp')}</KeyMetric>
       </div>
       <div className={styles.metricNotes}>
+        {oneGameSample && <p><b>One-game sample.</b> Multiple predictions from the same game are correlated. These results do not establish a repeatable edge; game-level intervals are unavailable.</p>}
         <p><b>95% intervals</b> · ROI {metricInterval(metrics, 'roi_game_cluster_interval', true)} · hit rate {rateInterval(metrics, 'hit_rate_game_cluster_interval')} · Brier {metricInterval(metrics, 'brier_score_game_cluster_interval')} · CLV {metricInterval(metrics, 'clv_mean_game_cluster_interval', true, 'pp')}</p>
         <p><b>Calibration</b> · n={count(metrics, 'calibration_count')} · error {value(metrics, 'calibration_error')} · log loss {value(metrics, 'log_loss')} · 50/50 Brier benchmark {value(metrics, 'baseline_50_brier')}</p>
       </div>
