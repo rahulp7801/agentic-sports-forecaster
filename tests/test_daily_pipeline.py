@@ -1,6 +1,7 @@
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
+import json
 
 import pytest
 
@@ -304,6 +305,59 @@ async def test_public_modes_use_real_graph_and_collector_without_paid_or_prop_ca
         assert result['markets'][sport]['sources']['prizepicks']['status']==(
             'observed' if mode=='public_daily' else 'not_requested')
     assert len(list((tmp_path/'.local/market-watch').glob('*.json')))==2
+
+
+@pytest.mark.asyncio
+async def test_public_daily_pairs_existing_nfl_archive_without_exposing_private_rows(monkeypatch,tmp_path):
+    from sportsbet.quant import kalshi_pair_capture as pair_module
+    from sportsbet.quant import kalshi_ask_policy as ask_policy
+    archive=tmp_path/'market.json'
+    archive.write_text(json.dumps({'source':'already_collected'}),encoding='utf-8')
+    source_dir=tmp_path/'sources'
+    source_dir.mkdir()
+    (source_dir/'source-manifest.json').write_text('{"source":"prequote"}',encoding='utf-8')
+    calls=[];published={}
+    monkeypatch.setenv('KALSHI_PAIR_SOURCE_DIR',str(source_dir))
+    monkeypatch.setenv('KALSHI_PAIR_OUTPUT',str(tmp_path/'private'/'pair.json'))
+    monkeypatch.setattr(daily,'publish_snapshot',lambda key,value:published.update({key:deepcopy(value)}))
+    monkeypatch.setattr(daily,'refresh_history',lambda *args:{'status':'complete'})
+    monkeypatch.setattr(daily,'watch',AsyncMock(return_value=({'sources':{'kalshi':{
+        'status':'observed','partial_coverage':False}},
+        'captured_at':datetime.now(timezone.utc).isoformat()},archive)))
+    monkeypatch.setattr(pair_module,'capture',lambda market,source_dir,*,started_at,source_manifest:
+            (calls.append((market,source_dir,started_at,source_manifest)) or {'private_forecasts':[1]}))
+    monkeypatch.setattr(ask_policy,'freeze',lambda value:{'candidates_count':0})
+    monkeypatch.setattr(pair_module,'save_pair',lambda value,output:
+        calls.append((value,output)))
+    result=await daily.run(['nfl'],'public_daily',25)
+    assert result['status']=='observed'
+    assert len(calls)==2 and calls[0][0]=={'source':'already_collected'}
+    assert calls[0][3]=={'source':'prequote'}
+    assert calls[1][0]=={'private_forecasts':[1], 'ask_policy':{'candidates_count':0}}
+    assert all('private_forecasts' not in str(value) for value in published.values())
+
+
+@pytest.mark.asyncio
+async def test_failed_private_pair_does_not_change_public_collection(monkeypatch,tmp_path):
+    from sportsbet.quant import kalshi_pair_capture as pair_module
+    archive=tmp_path/'market.json'
+    archive.write_text('{}',encoding='utf-8')
+    source_dir=tmp_path/'sources'
+    source_dir.mkdir()
+    (source_dir/'source-manifest.json').write_text('{}',encoding='utf-8')
+    monkeypatch.setenv('KALSHI_PAIR_SOURCE_DIR',str(source_dir))
+    monkeypatch.setenv('KALSHI_PAIR_OUTPUT',str(tmp_path/'private'/'pair.json'))
+    monkeypatch.setattr(daily,'publish_snapshot',lambda *args:None)
+    monkeypatch.setattr(daily,'refresh_history',lambda *args:{'status':'complete'})
+    monkeypatch.setattr(daily,'watch',AsyncMock(return_value=({'sources':{'kalshi':{
+        'status':'observed','partial_coverage':False}},
+        'captured_at':datetime.now(timezone.utc).isoformat()},archive)))
+    monkeypatch.setattr(pair_module,'capture',lambda *args,**kwargs:
+        (_ for _ in ()).throw(ValueError('private detail must stay hidden')))
+    result=await daily.run(['nfl'],'public_daily',25)
+    assert result['status']=='observed'
+    assert 'private detail' not in str(result)
+    assert not (tmp_path/'private'/'pair.json').exists()
 
 
 @pytest.mark.asyncio
