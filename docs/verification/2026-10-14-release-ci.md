@@ -38,3 +38,18 @@ The aggregate CodeQL result identified two findings:
 
 No query exclusions, reduced query suite, relaxed thresholds or disabled
 branch protections were added. Fresh current-head CI and CodeQL remain required.
+
+## Postmerge production connection binding
+
+Release #350 merged as `0b562e1` after all required checks passed. Production
+upgraded through schema0048 and its restricted transaction read passed.
+Waitlist setup then exposed two configuration problems: the owner migration
+URL lacked verified TLS options, and the generic pipeline DATABASE_URL is the
+ingestion worker identity rather than the dashboard identity required by the
+provisioner.
+
+The existing owner credential was tested read-only against the pinned CA and
+republished with verify-full, retaining its identity and password. Production
+waitlist provisioning alone now binds a separate protected DASHBOARD_DATABASE_URL. Schema readiness and ingestion
+keeps its existing worker credential. The strict same-project/dashboard role
+checks and separate migration owner credential remain enforced.

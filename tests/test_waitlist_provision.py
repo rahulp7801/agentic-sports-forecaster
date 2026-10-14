@@ -46,6 +46,7 @@ def test_context_rejects_before_connection_or_provider(changes):
     READER.replace("verify-full","require"),READER+"&sslmode=require",READER+"&options=-c%20role=postgres",
     READER+"&sslrootcert=a&sslrootcert=b",READER+"#fragment",READER.replace(":5432",":7777"),
     READER.replace("sportsbet_dashboard.projectref","postgres.projectref"),READER.replace("postgres?","?"),
+    READER.replace("sportsbet_dashboard.projectref","sportsbet_worker.projectref"),
 ])
 def test_connection_settings_cannot_override_tls_or_identity(reader):
     with pytest.raises(provisioner.ProvisionError):provisioner.writer_url(reader,OWNER,"generated-password")
