@@ -18,3 +18,23 @@ Original artifact SHA-256:
 
 Validation: focused stat-only paper tests and Git archive byte verification.
 Full Linux CI and required security analyses must pass before merge.
+
+## Security analysis review
+
+The corrected release passed all five CI jobs and all three CodeQL analyses.
+The aggregate CodeQL result identified two findings:
+
+- Replaced a test URL prefix comparison with exact parsed origins, retaining
+  containment assertions and covering unrelated hosts, host suffix spoofing,
+  userinfo spoofing and an HTTP downgrade. All 45 release-controller tests pass.
+- Independently reviewed alert #6 as a password-hashing false positive. The
+  SHA-256 digest only rejects one historically exposed provider API key through
+  `hmac.compare_digest`; it does not store passwords, authenticate users or
+  persist active-key digests. All five callers check before provider I/O; four
+  tests verify no echo and refusal before ledger/network access. The original
+  denylist implementation is retained. CodeQL's own guidance permits SHA-2
+  outside password/limited-input-space hashing:
+  https://codeql.github.com/codeql-query-help/python/py-weak-sensitive-data-hashing/
+
+No query exclusions, reduced query suite, relaxed thresholds or disabled
+branch protections were added. Fresh current-head CI and CodeQL remain required.

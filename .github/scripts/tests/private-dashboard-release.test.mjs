@@ -145,8 +145,9 @@ test('ambiguous recovery insertion is reconciled without duplicate writes',async
 test('verification deadline expiry restores public containment',async()=>{
  let clock=0;const f=fixture({now:()=>clock,verify:async options=>{clock=120001;await options.fetchImpl(ORIGIN+'/api/scans');}});await assert.rejects(f.controller.finish({current,receipt:f.receipt}),/containment restored/);assert.ok(guardState(f.state).guard);assert.equal(guardState(f.state).diagnostic,null);
 });
-test('diagnostic secret is never forwarded to a third-party stylesheet origin',async()=>{
- const f=fixture({verify:async options=>options.fetchImpl('https://attacker.invalid/app.css')});await assert.rejects(f.controller.finish({current,receipt:f.receipt}),/containment restored/);assert.equal(f.calls.some(call=>call.url.startsWith('https://attacker.invalid')),false);assert.ok(guardState(f.state).guard);
+for(const stylesheet of ['https://attacker.invalid/app.css',ORIGIN+'.attacker.invalid/app.css',ORIGIN+'@attacker.invalid/app.css',ORIGIN.replace('https:','http:')+'/app.css'])test('diagnostic secret is never forwarded to stylesheet origin '+new URL(stylesheet).origin,async()=>{
+ const untrustedOrigin=new URL(stylesheet).origin;
+ const f=fixture({verify:async options=>options.fetchImpl(stylesheet)});await assert.rejects(f.controller.finish({current,receipt:f.receipt}),/containment restored/);assert.equal(f.calls.some(call=>new URL(call.url).origin===untrustedOrigin),false);assert.ok(guardState(f.state).guard);assert.equal(guardState(f.state).diagnostic,null);
 });
 
 test('missing-header canary semantics are checked before removing the original guard',async()=>{
