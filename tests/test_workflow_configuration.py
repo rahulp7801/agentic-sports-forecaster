@@ -142,6 +142,16 @@ def test_hosted_schema_is_migrated_after_ci_and_checked_before_collection_and_de
 
     schema_job = ci[ci.index("  production-schema:"):ci.index("  release-plan:")]
     assert "needs: [secrets, backend, frontend, postgres, worker-image]" in schema_job
+    # Only provisioning derives a writer from the dashboard identity; schema
+    # readiness retains its existing worker read and separate owner migration.
+    provision_step = _step(schema_job, "Provision and verify dedicated waitlist credential without rotation")
+    assert "DATABASE_URL: ${{ secrets.DASHBOARD_DATABASE_URL }}" in provision_step
+    assert "secrets.DATABASE_URL" not in provision_step
+    assert "secrets.DASHBOARD_DATABASE_URL" not in schema_job.replace(provision_step, "")
+    assert "DATABASE_URL: ${{ secrets.DATABASE_URL }}" in schema_job[:schema_job.index("    steps:")]
+    for collection in (data, public):
+        assert "secrets.DASHBOARD_DATABASE_URL" not in collection
+        assert "secrets.DATABASE_URL" in collection
     sync = "uv sync --locked --only-group migrations"
     plan = "production-transaction-preflight.py --plan-schema"
     upgrade = ".venv/bin/alembic upgrade head"

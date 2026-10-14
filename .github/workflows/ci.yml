@@ -190,6 +190,8 @@ jobs:
         run: .venv/bin/python .github/scripts/production-transaction-preflight.py
       - name: Provision and verify dedicated waitlist credential without rotation
         env:
+          # Derive the writer from the dashboard identity, not the ingestion worker.
+          DATABASE_URL: ${{ secrets.DASHBOARD_DATABASE_URL }}
           DATABASE_MIGRATION_URL: ${{ secrets.DATABASE_MIGRATION_URL }}
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
