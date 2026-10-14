@@ -1,4 +1,5 @@
 import type {AvailabilityContextSplit} from './types';
+export {contextWindowText} from './participationDisplay.ts';
 
 type Window=NonNullable<AvailabilityContextSplit['sample_window']>;
 function validDay(value:unknown):value is string {
@@ -21,14 +22,4 @@ export function publicContextWindow(value:unknown,counts:{active:number;absent:n
     result[group]={oldest:range.oldest,newest:range.newest};
   }
   return result;
-}
-
-export function contextWindowText(split:AvailabilityContextSplit) {
-  if(!split.sample_window) return ['Dates for these participation groups were not retained in this forecast; their recency is unknown.'];
-  return (['active','absent','unknown'] as const).flatMap(group=>{
-    const range=split.sample_window![group];if(!range) return [];
-    const label=group==='active' ? 'Recorded participation' : group==='absent' ? 'Recorded zero minutes' : 'Unknown participation';
-    const age=Math.floor((Date.parse(split.sample_window!.cutoff)-Date.parse(range.newest))/86400000);
-    return [`${label}: ${range.oldest} to ${range.newest}; latest ${age} day${age===1?'':'s'} before the target game.${age>30 ? ' This group does not establish current form.' : ''}`];
-  });
 }

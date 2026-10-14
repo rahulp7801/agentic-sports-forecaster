@@ -6,14 +6,13 @@ from datetime import date, datetime
 import asyncpg
 
 from sportsbet.prop.availability import blocks_unadjusted_teammate_context
-from sportsbet.prop.nba_query_builder import NBA_GAMELOG_COLUMN_MAP
 from sportsbet.prop.nba_context_producer import nba_team_abbreviation
-from sportsbet.prop.query_builder import PROP_COLUMN_MAP
 from sportsbet.schedules import STAT_TEAM_ALIASES
 
 OFFENSE = frozenset({'QB','RB','FB','WR','TE','C','G','OG','OT','T','OL'})
 DEFENSE = frozenset({'DE','DT','DL','NT','LB','ILB','OLB','CB','DB','S','FS','SS'})
 BASKETBALL = frozenset({'PG','SG','SF','PF','C','G','F','G-F','F-G','F-C','C-F'})
+NFL_SPECIAL_TEAMS = frozenset({'K','P','LS'})
 RISK = frozenset({'out','inactive','injured reserve','doubtful','questionable'})
 
 
@@ -28,9 +27,11 @@ def relevant_availability_reports(context: dict | None, subject_team: str,
         for report in team.get('reports', []):
             if relation == 'teammate' and report.get('player') == subject_player:
                 continue
-            position = str(report.get('position','')).upper()
-            unit = (('offense' if relation=='teammate' else 'defense') if sport=='nba' and position in BASKETBALL
-                    else 'offense' if position in OFFENSE else 'defense' if position in DEFENSE else None)
+            position = str(report.get('position','')).strip().upper()
+            if sport == 'nba':
+                unit = ('offense' if relation=='teammate' else 'defense') if position in BASKETBALL else None
+            else:
+                unit = 'offense' if position in OFFENSE else 'defense' if position in DEFENSE else None
             if str(report.get('status','')).strip().lower() not in RISK:
                 continue
             if (relation,unit) not in (('teammate','offense'),('opponent','defense')):
@@ -52,20 +53,22 @@ def relevant_availability_reports(context: dict | None, subject_team: str,
 def screened_availability_reports(context: dict | None, subject_team: str,
                                   subject_player: str, sport: str,
                                   raw_teammates: list[dict]) -> list[dict]:
-    """Keep relevant units; fail closed on acute CFB teammates of unknown unit.
+    """Keep relevant units and acute teammates whose unit cannot be established.
 
-    The captured CFB roster can identify a teammate even when its position does
+    The captured roster can identify a teammate even when its position does
     not establish offense or defense. Such a report remains a blocker and is
     retained for public explanation, without inventing a unit classification.
     """
     relevant = relevant_availability_reports(context, subject_team, subject_player, sport, limit=None)
-    if sport != 'cfb':
-        return relevant
+    known = BASKETBALL if sport == 'nba' else OFFENSE | DEFENSE
+    if sport == 'nfl':
+        # Preserve the existing exclusion of known nonoffensive NFL specialists.
+        known |= NFL_SPECIAL_TEAMS
     unknown = []
     for report in raw_teammates:
         position = str(report.get('position', '')).strip().upper()
         if (blocks_unadjusted_teammate_context(report)
-                and position not in OFFENSE and position not in DEFENSE):
+                and position not in known):
             unknown.append(dict(player=report['player'], status=report['status'],
                                 position=position or 'Unknown', reported_at=report['reported_at']))
     unknown.sort(key=lambda row:(row['status'].strip().lower(), row['player']))
@@ -135,150 +138,18 @@ def _has_observation_cutoff(observed_before: datetime | None) -> bool:
 
 async def _nfl_split(conn, player_id: str, season: int, cutoff: date, prop_type: str,
                      line: float, direction: str, candidate: dict, observed_before: datetime | None = None) -> dict | None:
-    bounded = _has_observation_cutoff(observed_before)
-    column = PROP_COLUMN_MAP[prop_type]
-    operator = '>' if direction == 'over' else '<'
-    relation = 'team' if candidate['relationship'] == 'teammate' else 'opponent_team'
-    # Legacy ingestion filled missing NFL snap values with zero. Only positive
-    # counts establish participation; neither zero nor a missing row proves absence.
-    snap_column = 'offense_snaps' if candidate['unit'] == 'offense' else 'defense_snaps'
-    stat_team=candidate['stat_team']
-    from sportsbet.model_contract import NFL_HISTORY_FROZEN_AT
-    corrected = (prop_type in ('rec_yds','receptions') and bounded
-        and observed_before >= datetime.fromisoformat(NFL_HISTORY_FROZEN_AT))
-    table = 'nfl_effective_receiving_gamelogs' if corrected else 'player_stats'
-    providers = "('nflverse','nflverse_espn_supplement')" if corrected else "('nflverse')"
-    stat_cutoff = 'AND ps.source_observed_at <= $7' if bounded else ''
-    if corrected:
-        stat_cutoff += ' AND (ps.supplement_inserted_at IS NULL OR ps.supplement_inserted_at <= $7)'
-    snap_cutoff = 'AND source_observed_at <= $7' if bounded else ''
-    row = await conn.fetchrow(f'''WITH tenure AS (
-        SELECT MIN(season*100+week) AS first_week FROM nfl_snap_counts
-        WHERE pfr_player_id=$6 AND team=$5 AND {snap_column}>0 {snap_cutoff}
-          AND source_provider='nflverse'
-          AND source_sha256 ~ '^[0-9a-f]{{64}}$'
-          AND source_record_sha256 ~ '^[0-9a-f]{{64}}$'
-    ), target AS (
-        SELECT ps.season,ps.week,ps.{column}::float AS value,
-            (SELECT MIN(g.game_date) FROM games g WHERE g.season=ps.season AND g.week=ps.week
-              AND (g.home_team=ps.team OR g.away_team=ps.team) AND g.game_date < $4) AS game_date
-        FROM {table} ps
-        WHERE ps.player_id=$1 AND ps.season >= $2 AND ps.{column} IS NOT NULL
-          AND ps.{relation}=$5
-          AND ps.source_provider IN {providers}
-          {stat_cutoff}
-          AND ps.source_sha256 ~ '^[0-9a-f]{{64}}$'
-          AND ps.source_record_sha256 ~ '^[0-9a-f]{{64}}$'
-          AND ps.season*100+ps.week >= (SELECT first_week FROM tenure)
-          AND EXISTS (SELECT 1 FROM games g WHERE g.season=ps.season AND g.week=ps.week
-            AND (g.home_team=ps.team OR g.away_team=ps.team) AND g.game_date < $4)
-        ORDER BY ps.season DESC,ps.week DESC LIMIT 40
-    ), labeled AS (
-        SELECT value,game_date,(SELECT CASE WHEN COUNT(*)=1 AND BOOL_AND(
-            sc.source_provider='nflverse'
-            AND sc.source_sha256 ~ '^[0-9a-f]{{64}}$'
-            AND sc.source_record_sha256 ~ '^[0-9a-f]{{64}}$'
-            AND sc.{snap_column}>0) THEN TRUE END
-          FROM nfl_snap_counts sc
-          WHERE sc.season=target.season AND sc.week=target.week AND sc.team=$5
-            AND sc.pfr_player_id=$6 {snap_cutoff}) AS active FROM target
-    ) SELECT COUNT(*) FILTER (WHERE active) active_games,
-        AVG(value) FILTER (WHERE active) active_mean,
-        COUNT(*) FILTER (WHERE active AND value {operator} $3::double precision) active_hits,
-        COUNT(*) FILTER (WHERE NOT active) absent_games,
-        AVG(value) FILTER (WHERE NOT active) absent_mean,
-        COUNT(*) FILTER (WHERE NOT active AND value {operator} $3::double precision) absent_hits,
-        COUNT(*) FILTER (WHERE active IS NULL) unknown_games,
-        MIN(game_date) FILTER (WHERE active) active_oldest,
-        MAX(game_date) FILTER (WHERE active) active_newest,
-        MIN(game_date) FILTER (WHERE NOT active) absent_oldest,
-        MAX(game_date) FILTER (WHERE NOT active) absent_newest,
-        MIN(game_date) FILTER (WHERE active IS NULL) unknown_oldest,
-        MAX(game_date) FILTER (WHERE active IS NULL) unknown_newest
-      FROM labeled''',player_id,season,line,cutoff,stat_team,candidate['participant_id'],*([observed_before] if bounded else []))
-    if not row or sum(int(row[key] or 0) for key in ('active_games','absent_games','unknown_games'))==0:
-        return None
-    active_games, absent_games = int(row['active_games'] or 0), int(row['absent_games'] or 0)
-    evidence={key:candidate[key] for key in ('player','status','position','team','relationship','unit')}
-    window = _sample_window(row, cutoff)
-    if window is not None:
-        evidence['sample_window'] = window
-    return evidence | dict(active=_summary(active_games,row['active_mean'],int(row['active_hits'] or 0)),
-        absent=_summary(absent_games,row['absent_mean'],int(row['absent_hits'] or 0)),
-        unknown_games=int(row['unknown_games'] or 0),evidence_version='recorded-participation-v2',
-        source='nflverse_snap_counts',participation='recorded unit snaps')
+    _has_observation_cutoff(observed_before)
+    from sportsbet.prop.nfl_participation_evidence import nfl_participation_split
+    return await nfl_participation_split(conn,player_id,season,cutoff,prop_type,
+        line,direction,candidate,observed_before)
 
 
 async def _nba_split(conn, player_id: str, season: int, cutoff: date, prop_type: str,
                      line: float, direction: str, candidate: dict, observed_before: datetime | None = None) -> dict | None:
-    bounded = _has_observation_cutoff(observed_before)
-    column = NBA_GAMELOG_COLUMN_MAP[prop_type]
-    value = '(points+rebounds+assists)' if prop_type == 'pra' else column
-    operator = '>' if direction == 'over' else '<'
-    relation = 'team_abbreviation' if candidate['relationship'] == 'teammate' else 'opponent_team'
-    stat_team = candidate['stat_team']
-    identity_cutoff = ("AND game_date < $3 AND source_observed_at <= $4 "
-        "AND source_provider IN ('nba','espn') "
-        "AND source_sha256 ~ '^[0-9a-f]{64}$' AND source_record_sha256 ~ '^[0-9a-f]{64}$'") if bounded else ''
-    identities = await conn.fetch(f'''SELECT DISTINCT player_id FROM nba_player_gamelogs
-        WHERE LOWER(player_name)=LOWER($1) AND team_abbreviation=$2 {identity_cutoff}''',
-        candidate['player'],stat_team,*([cutoff,observed_before] if bounded else []))
-    if len(identities) != 1:
-        return None
-    participant_id = identities[0]['player_id']
-    stat_cutoff = 'AND source_observed_at <= $7' if bounded else ''
-    participant_cutoff = 'AND gl.source_observed_at <= $7' if bounded else ''
-    row = await conn.fetchrow(f'''WITH tenure AS (
-        SELECT MIN(game_date) first_game FROM nba_player_gamelogs
-        WHERE player_id=$6 AND team_abbreviation=$5 AND minutes>0 {stat_cutoff}
-          AND source_provider IN ('nba','espn')
-          AND source_sha256 ~ '^[0-9a-f]{{64}}$'
-          AND source_record_sha256 ~ '^[0-9a-f]{{64}}$'
-    ), target AS (
-        SELECT game_id,game_date,{value}::float AS value
-        FROM nba_player_gamelogs
-        WHERE player_id=$1 AND season >= $2 AND game_date < $4 AND {relation}=$5 {stat_cutoff}
-          AND game_date >= (SELECT first_game FROM tenure)
-          AND source_provider IN ('nba','espn')
-          AND source_sha256 ~ '^[0-9a-f]{{64}}$'
-          AND source_record_sha256 ~ '^[0-9a-f]{{64}}$'
-          AND {value} IS NOT NULL
-        ORDER BY game_date DESC LIMIT 40
-    ), labeled AS (
-        SELECT value,game_date,(SELECT CASE WHEN COUNT(*)=1 AND BOOL_AND(
-            gl.source_provider IN ('nba','espn')
-            AND gl.source_sha256 ~ '^[0-9a-f]{{64}}$'
-            AND gl.source_record_sha256 ~ '^[0-9a-f]{{64}}$'
-            AND gl.minutes IS NOT NULL AND gl.minutes BETWEEN 0 AND 999.9)
-            THEN BOOL_AND(gl.minutes>0) END
-          FROM nba_player_gamelogs gl
-          WHERE gl.game_id=target.game_id AND gl.player_id=$6 AND gl.team_abbreviation=$5 {participant_cutoff}
-        ) AS active FROM target
-    ) SELECT COUNT(*) FILTER (WHERE active) active_games,
-        AVG(value) FILTER (WHERE active) active_mean,
-        COUNT(*) FILTER (WHERE active AND value {operator} $3::double precision) active_hits,
-        COUNT(*) FILTER (WHERE NOT active) absent_games,
-        AVG(value) FILTER (WHERE NOT active) absent_mean,
-        COUNT(*) FILTER (WHERE NOT active AND value {operator} $3::double precision) absent_hits,
-        COUNT(*) FILTER (WHERE active IS NULL) unknown_games,
-        MIN(game_date) FILTER (WHERE active) active_oldest,
-        MAX(game_date) FILTER (WHERE active) active_newest,
-        MIN(game_date) FILTER (WHERE NOT active) absent_oldest,
-        MAX(game_date) FILTER (WHERE NOT active) absent_newest,
-        MIN(game_date) FILTER (WHERE active IS NULL) unknown_oldest,
-        MAX(game_date) FILTER (WHERE active IS NULL) unknown_newest
-      FROM labeled''',int(player_id),season,line,cutoff,stat_team,participant_id,*([observed_before] if bounded else []))
-    if not row or sum(int(row[key] or 0) for key in ('active_games','absent_games','unknown_games'))==0:
-        return None
-    active_games, absent_games = int(row['active_games'] or 0), int(row['absent_games'] or 0)
-    evidence={key:candidate[key] for key in ('player','status','position','team','relationship','unit')}
-    window = _sample_window(row, cutoff)
-    if window is not None:
-        evidence['sample_window'] = window
-    return evidence | dict(active=_summary(active_games,row['active_mean'],int(row['active_hits'] or 0)),
-        absent=_summary(absent_games,row['absent_mean'],int(row['absent_hits'] or 0)),
-        unknown_games=int(row['unknown_games'] or 0),evidence_version='recorded-participation-v2',
-        source='nba_final_box_scores',participation='recorded minutes')
+    _has_observation_cutoff(observed_before)
+    from sportsbet.prop.nba_participation_evidence import nba_participation_split
+    return await nba_participation_split(conn,player_id,season,cutoff,prop_type,
+        line,direction,candidate,observed_before)
 
 
 async def historical_availability_splits(pool, *, context: dict | None, subject_team: str,

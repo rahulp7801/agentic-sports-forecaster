@@ -1,0 +1,7 @@
+# Game-log explorer individual-rate identity
+
+The public game-log explorer searched up to 40 recent rows by name, then computed a displayed over frequency across every returned row. A broad or ambiguous search could mix athletes with different stable IDs; namesakes make a name-only filter insufficient. The table already carried sport-specific player IDs in the restricted dashboard view, but the client display parser discarded them.
+
+The client now retains the validated public ID, groups shown rows by that ID, and requires an explicit athlete choice when several IDs appear. A single identified athlete is selected automatically. Rows without a stable ID remain browsable before athlete selection but cannot enter an individual rate. Selecting an athlete focuses the visible table on that ID, so the shown-row denominator matches the visible sample. The displayed denominator is only that athlete's shown rows; missing stats and ties remain excluded as before. Names, teams and IDs in the chooser distinguish namesakes and team changes. This is descriptive history, not a forecast or proof of edge.
+
+Verification: a focused fixture with two same-name athletes, one changed team/name, and an unidentified row proves the rate groups stay separate. Full frontend suite: 305 passed. Changed-file ESLint, TypeScript and Next production build passed. Backend model, qualification, quote collection and frozen evaluation did not change.

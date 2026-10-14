@@ -1,36 +1,24 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { ArrowRight, ArrowUpRight, Check, Database, Eye, Layers3, ShieldCheck, Sparkles } from 'lucide-react';
 import { motion, useReducedMotion } from 'motion/react';
-import { marketFreshness, type MarketFreshness } from '@/lib/marketFreshness';
-import { replicatedReceptionEvidence } from '@/lib/publicBenchmarks';
 import HistoricalFlowDemo from './HistoricalFlowDemo';
-import ForecastBaselines from './ForecastBaselines';
+import WaitlistForm from './WaitlistForm';
 import ResponsibleUse from './ResponsibleUse';
 import ThemeToggle from './ThemeToggle';
 import styles from './LandingPage.module.css';
 
-type Pulse = {
-  games: number | null;
-  props: number | null;
-  twoSided: number | null;
-  capturedAt: string | null;
-  freshness: MarketFreshness;
-  scan: string;
+const DEMO_PULSE = {
+  games: 3, props: 24, twoSided: 12,
   sources: {
-    sportsbook: { count: number | null; label: string; observed: boolean };
-    kalshi: { count: number | null; label: string; observed: boolean };
-    prizepicks: { count: number | null; label: string; observed: boolean };
-  };
+    sportsbook: {count: null, label: 'Sample', observed: false},
+    kalshi: {count: null, label: 'Sample', observed: false},
+    prizepicks: {count: null, label: 'Sample', observed: false},
+  },
 };
-
-const emptySources: Pulse['sources'] = {
-  sportsbook: { count: null, label: 'Checking', observed: false },
-  kalshi: { count: null, label: 'Checking', observed: false },
-  prizepicks: { count: null, label: 'Checking', observed: false },
-};
+type Pulse = typeof DEMO_PULSE;
 
 const method = [
   { icon: Eye, title: 'Observe the offer', copy: 'Capture the line, price, event, player identity, and provider timestamp as one piece of evidence.' },
@@ -39,80 +27,18 @@ const method = [
   { icon: ShieldCheck, title: 'Gate the result', copy: 'Freshness, fees, liquidity, rules, and settlement coverage decide what reaches the dashboard.' },
 ];
 
-const resultPeriods = [replicatedReceptionEvidence.prior, replicatedReceptionEvidence.current];
-
-function percent(value: number) {
-  return `${(value * 100).toFixed(1)}%`;
-}
-
-function count(value: unknown) {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null;
-}
-
-function sourceState(value: unknown) {
-  const source = value && typeof value === 'object' ? value as Record<string, unknown> : {};
-  const status = typeof source.status === 'string' ? source.status : 'unavailable';
-  const reason = typeof source.reason === 'string' ? source.reason : null;
-  const labels: Record<string, string> = {
-    observed: 'Observed',
-    not_requested: 'Not requested',
-    unavailable: reason === 'access_denied' ? 'Access denied' : 'Unavailable',
-  };
-  return { count: count(source.count), label: labels[status] ?? 'Unavailable', observed: status === 'observed' };
-}
-
-function useMarketPulse() {
-  const [pulse, setPulse] = useState<Pulse>({ games: null, props: null, twoSided: null, capturedAt: null, freshness: 'unavailable', scan: 'Checking model scan', sources: emptySources });
-
-  useEffect(() => {
-    const controller = new AbortController();
-    const load = () => {
-      Promise.allSettled([
-        fetch('/api/markets?sport=nfl', { cache: 'no-store', signal: controller.signal }).then(async response => response.ok ? response.json() : Promise.reject()),
-        fetch('/api/games?sport=nfl', { cache: 'no-store', signal: controller.signal }).then(async response => response.ok ? response.json() : Promise.reject()),
-        fetch('/api/scans', { cache: 'no-store', signal: controller.signal }).then(async response => response.ok ? response.json() : Promise.reject()),
-      ]).then(([markets, games, scans]) => {
-        if (controller.signal.aborted) return;
-        const market = markets.status === 'fulfilled' ? markets.value : null;
-        const coverage = market?.sources?.kalshi?.coverage;
-        const capturedAt = typeof market?.captured_at === 'string' ? market.captured_at : null;
-        setPulse({
-          games: games.status === 'fulfilled' && Array.isArray(games.value.games) ? games.value.games.length : null,
-          props: count(coverage?.prop_linked_markets),
-          twoSided: count(coverage?.prop_two_sided_quote_markets),
-          capturedAt,
-          freshness: marketFreshness(capturedAt),
-          scan: scans.status === 'fulfilled' ? scans.value?.nfl?.label ?? 'Model state unavailable' : 'Model state unavailable',
-          sources: {
-            sportsbook: sourceState(market?.sources?.sportsbook),
-            kalshi: sourceState(market?.sources?.kalshi),
-            prizepicks: sourceState(market?.sources?.prizepicks),
-          },
-        });
-      });
-    };
-    load();
-    const timer = window.setInterval(load, 120_000);
-    return () => { controller.abort(); window.clearInterval(timer); };
-  }, []);
-
-  return pulse;
-}
-
 function MarketPulse({ pulse }: { pulse: Pulse }) {
-  const evidenceLabel = pulse.freshness === 'current' ? 'Current evidence'
-    : pulse.freshness === 'stale' ? 'Last published evidence' : 'Evidence unavailable';
   return (
     <div className={styles.pulseCard}>
-      <div className={styles.pulseHeader}><span><i data-current={pulse.freshness === 'current'} /> {evidenceLabel}</span><span>NFL</span></div>
+      <div className={styles.pulseHeader}><span><i /> Illustrative preview</span><span>NFL</span></div>
       <div className={styles.pulseStats}>
         <div><strong>{pulse.games ?? '—'}</strong><span>games in view</span></div>
         <div><strong>{pulse.props ?? '—'}</strong><span>linked Kalshi props</span></div>
         <div><strong>{pulse.twoSided ?? '—'}</strong><span>two-sided markets</span></div>
       </div>
       <div className={styles.pulseFoot}>
-        <span>{pulse.scan}</span>
-        <span>{pulse.capturedAt ? new Date(pulse.capturedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : 'Awaiting capture'}</span>
+        <span>Private dashboard</span>
+        <span>Sample layout · not live data</span>
       </div>
     </div>
   );
@@ -127,14 +53,14 @@ function ProductFrame({ pulse }: { pulse: Pulse }) {
 
   return (
     <div className={styles.productFrame}>
-      <div className={styles.frameBar}><span /><span /><span /><b>linework / live markets</b></div>
+      <div className={styles.frameBar}><span /><span /><span /><b>linework / product preview</b></div>
       <div className={styles.frameBody}>
         <div className={styles.frameSide}>
           <div className={styles.miniBrand}>L</div>
           <span className={styles.activeNav} /><span /><span /><span /><span />
         </div>
         <div className={styles.frameMain}>
-          <div className={styles.frameTitle}><span>{pulse.freshness === 'current' ? 'Current NFL coverage' : 'Last published NFL coverage'}</span><strong>Every state has a reason.</strong></div>
+          <div className={styles.frameTitle}><span>Illustrative NFL coverage</span><strong>Every state has a reason.</strong></div>
           <div className={styles.frameMetrics}><div><span>Games</span><b>{pulse.games ?? '—'}</b></div><div><span>Markets</span><b>{pulse.props ?? '—'}</b></div><div><span>Two-sided</span><b>{pulse.twoSided ?? '—'}</b></div></div>
           <div className={styles.frameGrid}>
             <div className={styles.frameList}><span>VENUE STATUS</span>{venueRows.map(([name, source]) => <p key={name}><i className={source.observed ? styles.green : undefined} />{name} <b>{source.label}{source.count === null ? '' : ` · ${source.count}`}</b></p>)}</div>
@@ -149,7 +75,7 @@ function ProductFrame({ pulse }: { pulse: Pulse }) {
 export default function LandingPage() {
   const root = useRef<HTMLDivElement>(null);
   const reduceMotion = Boolean(useReducedMotion());
-  const pulse = useMarketPulse();
+  const pulse = DEMO_PULSE;
 
   useEffect(() => {
     if (reduceMotion || !root.current) return;
@@ -184,7 +110,7 @@ export default function LandingPage() {
     <div className={styles.page} ref={root}>
       <header className={styles.nav}>
         <Link className={styles.brand} href="/"><span>L</span><strong>Linework</strong></Link>
-            <nav aria-label="Landing navigation"><a href="#results">Results</a><a href="#platform">Platform</a><a href="#demo">Demo</a><a href="#method">Method</a><ThemeToggle /><Link href="/terminal" className={styles.navButton} aria-label="Open dashboard"><span>Open dashboard</span><ArrowUpRight size={15} /></Link></nav>
+            <nav aria-label="Landing navigation"><a href="#results">Results</a><a href="#platform">Platform</a><a href="#backtest-demo">Demo</a><a href="#method">Method</a><ThemeToggle /><a href="#waitlist" className={styles.navButton}><span>Join waitlist</span><ArrowUpRight size={15} /></a></nav>
       </header>
 
       <main>
@@ -194,44 +120,20 @@ export default function LandingPage() {
             <div className={styles.eyebrow}><Sparkles size={14} /> Evidence-first sports intelligence</div>
             <h1>Forecasts you<br />can <span>inspect.</span></h1>
             <p>One clear view of sportsbook prices, prediction markets, player projections, and model evidence—built to show what is live, what is stale, and what is still unknown.</p>
-            <div className={styles.heroActions}><a href="#demo" aria-label="Try the Week 1 demo"><span aria-hidden="true">▶</span> Try the demo <ArrowRight size={17} /></a><Link href="/terminal">Open dashboard <ArrowUpRight size={17} /></Link></div>
+            <div className={styles.heroActions}><a href="#backtest-demo" aria-label="Try the Week 1 demo"><span aria-hidden="true">▶</span> Try the demo <ArrowRight size={17} /></a><a href="#waitlist">Get early access <ArrowUpRight size={17} /></a></div>
           </motion.div>
           <motion.div className={styles.heroPulse} initial={reduceMotion ? false : { opacity: 0, y: 35 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: .28, duration: .8 }}><MarketPulse pulse={pulse} /></motion.div>
           <div className={styles.heroFine}><span>NBA + NFL + CFB</span><span>Sportsbooks · Kalshi · PrizePicks</span><span>Pregame research only</span></div>
         </section>
 
         <section className={styles.results} id="results" aria-labelledby="results-title">
-          <div className={styles.resultsIntro}>
-            <div>
-              <span>Retrospective accuracy in context</span>
-              <h2 id="results-title">{percent(replicatedReceptionEvidence.prior.hit_rate)}.<br />Then {percent(replicatedReceptionEvidence.current.hit_rate)}.</h2>
-            </div>
-            <div className={styles.resultsSummary}>
-              <div><ShieldCheck size={18} /><strong>Compare with constant directions</strong></div>
-              <p>The model trailed always choosing Under in 2025 and scored higher in 2026 on the same selected records. These historical comparisons do not establish a profitable edge.</p>
-            </div>
-          </div>
-
+          <div className={styles.resultsIntro}><div><span>Built for clear decisions</span><h2 id="results-title">Context.<br />With receipts.</h2></div><div className={styles.resultsSummary}><strong>A research workspace you can inspect.</strong><p>See what changed, which sources support it, and how a forecast compares with the actual market. The live workspace is in private preview. Explore retained past-game examples below.</p></div></div>
           <div className={styles.resultsGrid}>
-            {resultPeriods.map(period => (
-              <article className={styles.resultCard} key={period.label}>
-                <span>{period.label}</span>
-                <strong>{percent(period.hit_rate)}</strong>
-                <p>{period.correct} correct <i>/</i> {period.sample} model calls</p>
-                <ForecastBaselines {...period} />
-                <dl>
-                  <div><dt>Games</dt><dd>{period.game_count}</dd></div>
-                  <div><dt>95% game-cluster interval</dt><dd>{percent(period.game_cluster_interval[0])}–{percent(period.game_cluster_interval[1])}</dd></div>
-                </dl>
-              </article>
-            ))}
+            <article className={styles.resultCard}><span>01 / Player context</span><strong>Form</strong><p>Recent games, role, opportunity and available teammate evidence in one view.</p></article>
+            <article className={styles.resultCard}><span>02 / Market context</span><strong>Price</strong><p>Exact lines and contracts with source timestamps, freshness and availability.</p></article>
+            <article className={styles.resultCard}><span>03 / Evidence context</span><strong>Proof</strong><p>Retain the forecast before the game and compare it with a verified result.</p></article>
           </div>
-
-          <div className={styles.resultsFoot}>
-            <p><strong>Rule:</strong> at least {percent(replicatedReceptionEvidence.called_side_minimum)} probability on the called side of a fixed {replicatedReceptionEvidence.research_threshold} reception threshold, using only prior games.</p>
-            <p>Both constant directions use the same retrospectively selected records and fixed threshold. Archived sportsbook prices are unavailable; prospective profitability remains unproven.</p>
-            <Link href="/terminal#nfl/backtest">Inspect every forecast <ArrowUpRight size={16} /></Link>
-          </div>
+          <div className={styles.resultsFoot}><p>Demo replays are historical examples, including misses. They do not establish a profitable edge or promise a win rate.</p><a href="#backtest-demo">Inspect the demo <ArrowUpRight size={16} /></a></div>
         </section>
 
         <section className={styles.story} id="platform">
@@ -266,14 +168,14 @@ export default function LandingPage() {
           <div className={styles.checks}><span><Check /> No order execution</span><span><Check /> Immutable evidence</span><span><Check /> Explicit provider health</span></div>
         </section>
 
-        <section className={styles.finalCta}>
-          <div><span>Ready when the data is.</span><h2>Read the market<br />with context.</h2></div>
-          <Link href="/terminal">Open the dashboard <ArrowUpRight /></Link>
+        <section className={styles.finalCta} id="waitlist" aria-labelledby="waitlist-title">
+          <div><span>Private preview · opening in stages</span><h2 id="waitlist-title">Get a clearer<br />view of the game.</h2></div>
+          <WaitlistForm />
         </section>
       </main>
 
       <ResponsibleUse />
-      <footer className={styles.footer}><Link href="/" className={styles.brand}><span>L</span><strong>Linework</strong></Link><p>Sports market intelligence with source, time, and uncertainty attached.</p><span>Research only · {new Date().getFullYear()}</span></footer>
+      <footer className={styles.footer}><Link href="/" className={styles.brand}><span>L</span><strong>Linework</strong></Link><p>Sports market intelligence with source, time, and uncertainty attached.</p><Link href="/login">Owner sign-in</Link><span>Research only · {new Date().getFullYear()}</span></footer>
     </div>
   );
 }

@@ -1,3 +1,4 @@
+import {requireOwner} from '../../../lib/ownerAccess.ts';
 import { snapshot } from '@/lib/database';
 import { NextResponse } from 'next/server';
 import { publicMarkets } from '@/lib/publicMarkets';
@@ -5,6 +6,7 @@ import {NO_STORE_HEADERS,PUBLIC_CACHE_HEADERS} from '@/lib/publicCache';
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request) {
+  const denied=await requireOwner(request); if(denied) return denied;
   const sport = new URL(request.url).searchParams.get('sport');
   if (sport !== 'nfl' && sport !== 'nba' && sport !== 'cfb') return NextResponse.json({error:'Invalid sport'}, {status:400,headers:NO_STORE_HEADERS});
   try {

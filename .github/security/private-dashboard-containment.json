@@ -1,0 +1,55 @@
+{
+  "id": "rule_close_live_dashboard_pending_owner_o_auth_release_bX0AvG",
+  "name": "Close live dashboard pending owner OAuth release",
+  "conditionGroup": [
+    {
+      "conditions": [
+        {
+          "op": "pre",
+          "neg": false,
+          "value": "/api/",
+          "type": "path"
+        },
+        {
+          "op": "pre",
+          "neg": true,
+          "value": "/api/auth/",
+          "type": "path"
+        },
+        {
+          "op": "eq",
+          "neg": true,
+          "value": "/api/waitlist",
+          "type": "path"
+        }
+      ]
+    },
+    {
+      "conditions": [
+        {
+          "op": "pre",
+          "neg": false,
+          "value": "/terminal",
+          "type": "path"
+        }
+      ]
+    },
+    {
+      "conditions": [
+        {
+          "op": "re",
+          "neg": false,
+          "value": "[.]json($|/)",
+          "type": "path"
+        }
+      ]
+    }
+  ],
+  "description": "Temporary privacy containment. Landing and demo remain public. Remove only after reviewed owner authentication release is verified.",
+  "active": true,
+  "action": {
+    "mitigate": {
+      "action": "deny"
+    }
+  }
+}

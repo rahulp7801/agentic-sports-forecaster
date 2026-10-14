@@ -86,7 +86,7 @@ async def test_context_agent_returns_situational_params() -> None:
         context_fn = make_context_agent(
             pool=mock_pool,  # type: ignore[arg-type]
             api_key="test-key",
-            daily_credit_cap=100,
+            daily_credit_cap=20,
         )
         result = await context_fn(state)  # type: ignore[arg-type]
 

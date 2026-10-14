@@ -1,0 +1,3 @@
+ops/private-pre-push.sh text eol=lf
+# Preserve the exact bytes of the frozen, hash-pinned model artifact.
+src/sportsbet/quant/nfl_stat_only_params.json -text whitespace=cr-at-eol

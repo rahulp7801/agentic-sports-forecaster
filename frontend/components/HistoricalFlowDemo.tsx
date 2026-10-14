@@ -1,9 +1,8 @@
 'use client';
 import {useState} from 'react';
 import Image from 'next/image';
-import Link from 'next/link';
 import {motion,useReducedMotion} from 'motion/react';
-import {WEEK_ONE_DEMO,demoResult,demoHistory,DEFAULT_DEMO_INDEX} from '@/lib/weekOneDemo';
+import {WEEK_ONE_DEMO,demoResult,demoHistory,DEFAULT_DEMO_INDEX,DEMO_HISTORY_CAPTURED_AT} from '@/lib/weekOneDemo';
 import styles from './HistoricalFlowDemo.module.css';
 
 export default function HistoricalFlowDemo() {
@@ -27,26 +26,26 @@ export default function HistoricalFlowDemo() {
           <a href={`https://site.api.espn.com/apis/site/v2/sports/football/nfl/summary?event=${record.event}`} target="_blank" rel="noreferrer">View final-stat source ↗</a>
         </div>
       </div>
-      <div className={styles.metrics}><div><span>Model baseline</span><strong>{(record.probability*100).toFixed(1)}%</strong><small>Above the research threshold</small></div>
+      <div className={styles.metrics}><div><span>Recorded model baseline</span><strong>{(record.probability*100).toFixed(1)}%</strong><small>Above the research threshold</small></div>
         <div><span>History behind it</span><strong>{record.sample} games</strong><small>Before the target game date</small></div>
         <div><span>Evidence</span><strong>Final stat verified</strong><small>Exact player and game match</small></div></div>
-      <div className={styles.reason}><span className={styles.eyebrow}>WHY THE MODEL LEANED OVER</span>
+      <div className={styles.reason}><span className={styles.eyebrow}>HISTORY IN THIS REPLAY</span>
         <p><strong>{record.player} exceeded {record.threshold} yards in {history.above} of {record.sample} prior games.</strong> The median was {history.median} yards, {(history.median-record.threshold).toFixed(1)} above the threshold.</p>
       </div>
       <details className={styles.explanation}><summary>See the history behind the forecast</summary>
         <div className={styles.historyStats}><p><strong>{history.above} above / {history.below} below</strong><br />{(history.above/record.sample*100).toFixed(1)}% observed rate across the full sample.</p>
-          <p><strong>{history.recentAbove} of {history.recent.length} most recent games above</strong><br />{history.recentAbove/history.recent.length<history.above/record.sample ? 'Recent results were weaker than the full history.' : 'Recent results supported the historical lean.'}</p></div>
+          <p><strong>{history.recentAbove} of {history.recent.length} latest prior games above</strong><br />{history.recentAbove/history.recent.length<history.above/record.sample ? 'These games had a lower observed rate than the full sample.' : 'These games had a higher observed rate than the full sample.'}</p></div>
         <table className={styles.historyTable}><caption>Latest five games before {record.date} / newest first</caption><thead><tr><th scope="col">Date</th><th scope="col">Opponent</th><th scope="col">Passing yards</th><th scope="col">vs {record.threshold}</th></tr></thead>
           <tbody>{history.recent.map(game=><tr key={game.date}><td>{game.date}</td><td>{game.opponent}</td><td>{game.yards}</td><td className={game.yards>record.threshold ? styles.correct : styles.missed}>{game.yards>record.threshold ? 'Above' : 'Below'}</td></tr>)}</tbody></table>
-        <p>The model smooths the observed rate to {(record.probability*100).toFixed(1)}% using ({history.above} + 0.5) / ({record.sample} + 1). This is a historical-frequency baseline; it did not add an opponent, injury or teammate adjustment to this replay.</p>
-        <a href={`/api/gamelogs?sport=nfl&exact=1&limit=40&before=${record.date}&player=${encodeURIComponent(record.player)}`} target="_blank" rel="noreferrer">Inspect published prior-game stats</a>
+        <p>This replay retains a model baseline of {(record.probability*100).toFixed(1)}%. Observed history and model probability are separate measurements. No opponent, injury or teammate adjustment was retained for this example.</p>
+        <p>History covered {history.first_date} through {history.last_date}, and was retrieved on {DEMO_HISTORY_CAPTURED_AT}, after the target game. These older games do not describe current form.</p>
         <details className={styles.methodology}><summary>Replay method and limitations</summary>
-          <p>The retained replay used games from the 2024 season onward, an exclusive game-date cutoff and up to 40 prior games. The target game&apos;s final stat was used only for grading. This is a retrospective research threshold, not a recorded pregame sportsbook recommendation.</p>
+          <p>This walkthrough displays a fixed forecast from a replay assembled after the game. Its descriptive history contains only games dated before the target; the target game&apos;s final stat grades the forecast. No timestamped pregame sportsbook recommendation was retained.</p>
           <p>Historical sportsbook prices, a retained uncertainty interval and timestamped injury evidence are absent, so this replay cannot establish betting value, stake, ROI or CLV. Demo records remain separate from live picks and performance totals.</p>
           <small>Retained final-stat source commitment</small><code>{record.source_sha256}</code>
         </details>
       </details>
     </motion.div>
-    <footer><span>Retrospective research replay · September 10–13, 2026</span><Link href="/terminal#nfl/props">Explore current forecasts →</Link></footer>
+    <footer><span>Retrospective research replay · September 10–13, 2026</span><a href="#waitlist">Join the waitlist →</a></footer>
   </section>;
 }

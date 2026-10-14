@@ -1,11 +1,12 @@
 """Daily read-only orchestration: refresh histories, collect markets, evaluate props."""
 from __future__ import annotations
 
-from sportsbet.config import DEFAULT_DAILY_CREDIT_LIMIT
+from sportsbet.config import DEFAULT_DAILY_CREDIT_LIMIT, settings
 
 import argparse
 import asyncio
 import json
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -16,8 +17,9 @@ from langgraph.graph import END, START, StateGraph
 from sportsbet.dashboard import load_snapshot, publish_snapshot
 from sportsbet.diagnostics import error_fields
 from sportsbet.market_watch import run as watch, DEFAULT_GAME_LIMIT
-from sportsbet.ledger import Ledger
-from sportsbet.model_contract import MODEL_VERSION, model_version_for
+from sportsbet.nba_source_asof import ReleaseLedger as Ledger
+from sportsbet.model_contract import MODEL_VERSION
+from sportsbet.nba_source_asof import model_version_for
 from sportsbet.picks import build_pick_board
 from sportsbet.refresh import refresh_history
 from sportsbet.scan import run as scan, timestamp, prop_credit_holdback, MARKETS
@@ -69,6 +71,11 @@ def reusable_public_market(snapshot: object, sport: str, mode: str,
         return False
     expected={'sportsbook':'not_requested','kalshi':'observed',
               'prizepicks':'observed' if mode=='public_daily' else 'not_requested'}
+    # A complete daily capture is a recent superset of the monitor's sources.
+    # Reusing it avoids fetching the same public quotes in adjacent cron slots.
+    if (mode=='public_monitor' and isinstance(sources['prizepicks'],dict)
+            and sources['prizepicks'].get('status')=='observed'):
+        expected['prizepicks']='observed'
     return all(isinstance(sources[name],dict)
                and sources[name].get('status')==status
                and sources[name].get('partial_coverage') is (status=='not_requested')
@@ -154,6 +161,7 @@ def create_daily_graph():
         held=prop_credit_holdback(state['sports'],state['daily_credit_limit'])
         market_holdback=held+max(len(MARKETS[s]) for s in state['sports']) if held else 0
         for sport in state['sports']:
+            pair_state='market_unavailable' if state['mode']=='public_daily' and sport=='nfl' else None
             try:
                 public_provider='public' if state['mode']=='public_daily' else 'kalshi'
                 cached=None
@@ -164,9 +172,41 @@ def create_daily_graph():
                         pass  # A failed cache read must not hide source availability.
                 if reusable_public_market(cached,sport,state['mode'],datetime.now(timezone.utc)):
                     summary=cached
+                    if pair_state is not None:
+                        pair_state='market_reused'
                 else:
-                    summary,_=await watch(sport,state['daily_credit_limit'],DEFAULT_GAME_LIMIT,True,
+                    summary,archive=await watch(sport,state['daily_credit_limit'],DEFAULT_GAME_LIMIT,True,
                         **({'provider':public_provider} if public else {'credit_holdback':market_holdback,'sportsbook_cadence_hours':6}))
+                    if pair_state is not None:
+                        source_dir=os.environ.get('KALSHI_PAIR_SOURCE_DIR')
+                        output=os.environ.get('KALSHI_PAIR_OUTPUT')
+                        if archive is None:
+                            pair_state='archive_unavailable'
+                        elif not source_dir or not output:
+                            pair_state='not_configured'
+                        elif (manifest_path:=Path(source_dir)/'source-manifest.json').is_symlink() or not manifest_path.is_file():
+                            pair_state='source_unavailable'
+                        else:
+                            # This private research receipt is made at the free
+                            # capture, before NBA refresh/settlement can age it out.
+                            # A failure cannot change public data or consumer picks.
+                            try:
+                                from sportsbet.quant.kalshi_pair_capture import capture, save_pair
+                                from sportsbet.quant.kalshi_ask_policy import freeze as freeze_ask_policy
+                                from sportsbet.quant.kalshi_prior20_ask_policy import freeze as freeze_prior20_policy
+                                market_archive=json.loads(Path(archive).read_text(encoding='utf-8'))
+                                manifest=json.loads(manifest_path.read_text(encoding='utf-8'))
+                                pair=await asyncio.to_thread(capture,market_archive,Path(source_dir),
+                                    started_at=datetime.now(timezone.utc),source_manifest=manifest)
+                                pair['ask_policy']=freeze_ask_policy(pair)
+                                pair['prior20_ask_policy']=freeze_prior20_policy(pair)
+                                save_pair(pair,Path(output))
+                                pair_state='captured_local'
+                            except Exception as exc:
+                                pair_state='capture_failed'
+                                import structlog
+                                structlog.get_logger().warning('kalshi_pair_unavailable',
+                                    error_type=type(exc).__name__)
                 requested=[source for source in summary['sources'].values() if source['status']!='not_requested']
                 complete = bool(requested) and all(
                     source['status']=='observed' and not source.get('partial_coverage',True)
@@ -177,8 +217,13 @@ def create_daily_graph():
                     status='observed' if summary['sources'].get('kalshi',{}).get('status')=='observed' else 'degraded'
                 results[sport]=dict(status=status,
                     sources=summary['sources'],captured_at=summary['captured_at'])
+                if pair_state is not None:
+                    # Aggregate diagnostics only; the player-level receipt stays private.
+                    results[sport]['research_pair_status']=pair_state
             except Exception as exc:
                 results[sport]=dict(status='failed',error_type=type(exc).__name__)
+                if pair_state is not None:
+                    results[sport]['research_pair_status']=pair_state
         return {'markets':results}
 
     async def props(state):
@@ -200,6 +245,46 @@ def create_daily_graph():
                         finished_at=datetime.now(timezone.utc).isoformat(),execution_ready=False)
                     publish_snapshot('scan:'+sport,result)
                     results[sport]=result
+        if 'nfl' in ready and isinstance(results.get('nfl'),dict) and results['nfl'].get('scan_id'):
+            from sportsbet.db.connection import create_async_pool
+            from sportsbet.quant import nfl_corrected_workload_paper as workload_paper
+            from sportsbet.quant import nfl_stat_only_paper as stat_only_paper
+            research = (
+                ('stat-only', stat_only_paper),
+                ('corrected-workload', workload_paper),
+            )
+            pool=None
+            try:
+                pool=await create_async_pool(max_size=2)
+                for label,paper in research:
+                    capture_key=f'research:{label}-capture:nfl'
+                    report_key=f'{label}-shadow-validation:nfl'
+                    try:
+                        captured=(results['nfl'].get('stat_only_capture')
+                                  if label=='stat-only' else None)
+                        if captured is None:
+                            captured=await paper.capture(pool,results['nfl']['scan_id'])
+                        publish_snapshot(capture_key,captured)
+                        publish_snapshot(report_key,await paper.report(pool))
+                    except Exception as exc:
+                        try:
+                            publish_snapshot(capture_key,
+                                dict(status='unavailable',error_type=type(exc).__name__))
+                        except Exception:
+                            pass
+            except Exception as exc:
+                for label,_ in research:
+                    try:
+                        publish_snapshot(f'research:{label}-capture:nfl',
+                            dict(status='unavailable',error_type=type(exc).__name__))
+                    except Exception:
+                        pass
+            finally:
+                if pool is not None:
+                    try:
+                        await pool.close()
+                    except Exception:
+                        pass
         return {'props':results}
 
     async def settlements(state):
@@ -273,7 +358,11 @@ def create_daily_graph():
 
 
 async def run(sports: list[str], mode: str, daily_credit_limit: int):
-    if not sports or len(sports)!=len(set(sports)) or any(s not in ('nba','nfl','cfb') for s in sports) or mode not in MODES or daily_credit_limit<1 or (mode.startswith('public_') and 'cfb' in sports):
+    if (not sports or len(sports)!=len(set(sports)) or any(s not in ('nba','nfl','cfb') for s in sports)
+            or mode not in MODES or type(daily_credit_limit) is not int or daily_credit_limit<1
+            or (not mode.startswith('public_') and
+                (daily_credit_limit>DEFAULT_DAILY_CREDIT_LIMIT or settings.odds_rolling_credit_limit>450))
+            or (mode.startswith('public_') and 'cfb' in sports)):
         raise ValueError('Invalid pipeline request')
     return (await create_daily_graph().ainvoke(dict(sports=sports,mode=mode,daily_credit_limit=daily_credit_limit)))['report']
 

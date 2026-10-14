@@ -1,0 +1,150 @@
+{
+  "kind": "retrospective_display",
+  "history_captured_at": "2026-09-18",
+  "records": [
+    {
+      "player": "Matthew Stafford",
+      "team": "LAR",
+      "opponent": "SF",
+      "athlete": "12483",
+      "event": "401872657",
+      "date": "2026-09-10",
+      "threshold": 200.5,
+      "probability": 0.720588,
+      "sample": 33,
+      "actual": 155,
+      "source_sha256": "1cefdae759629bef7ec6345d4f9e87edcdee907a934f0c04503297c414ebff13",
+      "history": {
+        "above": 24,
+        "below": 9,
+        "median": 260,
+        "recentAbove": 5,
+        "recent": [
+          {
+            "date": "2026-01-04",
+            "opponent": "ARI",
+            "yards": 259
+          },
+          {
+            "date": "2025-12-29",
+            "opponent": "ATL",
+            "yards": 269
+          },
+          {
+            "date": "2025-12-18",
+            "opponent": "SEA",
+            "yards": 457
+          },
+          {
+            "date": "2025-12-14",
+            "opponent": "DET",
+            "yards": 368
+          },
+          {
+            "date": "2025-12-07",
+            "opponent": "ARI",
+            "yards": 281
+          }
+        ],
+        "first_date": "2024-09-08",
+        "last_date": "2026-01-04"
+      }
+    },
+    {
+      "player": "Brock Purdy",
+      "team": "SF",
+      "opponent": "LAR",
+      "athlete": "4361741",
+      "event": "401872657",
+      "date": "2026-09-10",
+      "threshold": 200.5,
+      "probability": 0.7,
+      "sample": 24,
+      "actual": 205,
+      "source_sha256": "1cefdae759629bef7ec6345d4f9e87edcdee907a934f0c04503297c414ebff13",
+      "history": {
+        "above": 17,
+        "below": 7,
+        "median": 268.5,
+        "recentAbove": 3,
+        "recent": [
+          {
+            "date": "2026-01-03",
+            "opponent": "SEA",
+            "yards": 127
+          },
+          {
+            "date": "2025-12-28",
+            "opponent": "CHI",
+            "yards": 303
+          },
+          {
+            "date": "2025-12-22",
+            "opponent": "IND",
+            "yards": 295
+          },
+          {
+            "date": "2025-12-14",
+            "opponent": "TEN",
+            "yards": 295
+          },
+          {
+            "date": "2025-11-30",
+            "opponent": "CLE",
+            "yards": 168
+          }
+        ],
+        "first_date": "2024-09-09",
+        "last_date": "2026-01-03"
+      }
+    },
+    {
+      "player": "Aaron Rodgers",
+      "team": "PIT",
+      "opponent": "ATL",
+      "athlete": "8439",
+      "event": "401872658",
+      "date": "2026-09-13",
+      "threshold": 200.5,
+      "probability": 0.632353,
+      "sample": 33,
+      "actual": 221,
+      "source_sha256": "d9809ccb7867c49f53a53ddd00b9249eba6cc9e21cb4af1ec8fcd1cc29b95a4d",
+      "history": {
+        "above": 21,
+        "below": 12,
+        "median": 224,
+        "recentAbove": 4,
+        "recent": [
+          {
+            "date": "2026-01-04",
+            "opponent": "BAL",
+            "yards": 294
+          },
+          {
+            "date": "2025-12-28",
+            "opponent": "CLE",
+            "yards": 168
+          },
+          {
+            "date": "2025-12-21",
+            "opponent": "DET",
+            "yards": 266
+          },
+          {
+            "date": "2025-12-15",
+            "opponent": "MIA",
+            "yards": 224
+          },
+          {
+            "date": "2025-12-07",
+            "opponent": "BAL",
+            "yards": 284
+          }
+        ],
+        "first_date": "2024-09-09",
+        "last_date": "2026-01-04"
+      }
+    }
+  ]
+}

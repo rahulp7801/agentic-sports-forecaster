@@ -1,6 +1,8 @@
-"""Sleeper free API client for NFL/NBA player injury and status data.
+"""Legacy Sleeper client for noncommercial research only.
 
-No authentication required. The Sleeper API is publicly accessible.
+Sleeper documents free API use for noncommercial purposes; a consumer service
+requires commercial licensing. Keep this module out of deployed graph routes.
+See https://docs.sleeper.com/ . No authentication is required by this API.
 
 fetch_sleeper_team_injuries() fetches all active players for a sport, filters
 by team abbreviation, and returns injury-status dicts compatible with the

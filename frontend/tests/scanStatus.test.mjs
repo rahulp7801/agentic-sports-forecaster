@@ -174,3 +174,25 @@ test('failed or contradictory reports cannot promise a reserve release',()=>{
     {finished_at:'2026-09-11T14:00:00Z'},{budget_reasons:{pregame_credit_reserve:1}},
     {budget_reasons:{rolling_credit_limit:2}}])assert.equal(scanStatus({...reservePlan,...patch},now).reserve_release_at,null);
 });
+
+
+test('rolling allowance estimate is bounded, conditional and tied to a valid scan',()=>{
+  const limited={...completed,status:'degraded',completed_events:0,budget_skipped_events:2,
+    budget_reasons:{rolling_credit_limit:2},coverage:{},
+    next_rolling_allowance_at:'2026-09-13T00:00:00+00:00'};
+  const status=scanStatus(limited,now);
+  assert.equal(status.rolling_release_at,limited.next_rolling_allowance_at);
+  assert.equal(status.rolling_release_passed,false);
+  assert.equal(scanStatus(limited,Date.parse('2026-09-13T00:00:00Z')).rolling_release_passed,true);
+  assert.equal(scanStatus(limited,now+49*3600000).rolling_release_at,null);
+  for(const patch of [
+    {budget_reasons:{pregame_credit_reserve:2}},
+    {budget_reasons:{rolling_credit_limit:1}},
+    {status:'failed'},
+    {failures:[{}]},
+    {eligible_events:1},
+    {next_rolling_allowance_at:'2026-09-13T00:00:00'},
+    {next_rolling_allowance_at:'2026-09-13T01:00:00Z'},
+    {next_rolling_allowance_at:'2026-10-20T00:00:00Z'},
+  ]) assert.equal(scanStatus({...limited,...patch},now).rolling_release_at,null);
+});

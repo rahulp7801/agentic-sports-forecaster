@@ -1,6 +1,5 @@
 """Database guard for CFB source refresh chronology."""
 import os
-from datetime import datetime, timezone
 
 import pytest
 
@@ -21,7 +20,7 @@ def test_identical_cfb_refresh_retains_first_observation_and_correction_archives
                 +','.join(['%s']*len(row))+')',tuple(row.values()))
             original=conn.execute('SELECT source_observed_at,source_sha256,rushing_yards '
                 'FROM public.cfb_player_gamelogs WHERE athlete_id=%s AND game_id=%s',identity).fetchone()
-            later=datetime.now(timezone.utc)
+            later=conn.execute('SELECT clock_timestamp()').fetchone()[0]
             repeat=conn.execute('UPDATE public.cfb_player_gamelogs SET source_observed_at=%s, '
                 'source_sha256=%s WHERE athlete_id=%s AND game_id=%s',
                 (later,'f'*64,*identity))

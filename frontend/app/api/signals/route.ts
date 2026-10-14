@@ -1,3 +1,4 @@
+import {requireOwner} from '../../../lib/ownerAccess.ts';
 import { NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
@@ -5,7 +6,7 @@ import {createHash} from 'crypto';
 import {BoundedReadCache} from '@/lib/boundedReadCache';
 import {databaseQuery,hosted} from '@/lib/database';
 import {forecastPage,forecastRequest,FORECAST_PAGE_QUERY,type ForecastPageInput} from '@/lib/forecastPage';
-import {NO_STORE_HEADERS,signalCacheHeaders} from '@/lib/publicCache';
+import {NO_STORE_HEADERS,liveCacheHeadersUntil,signalCacheHeaders} from '@/lib/publicCache';
 
 export const dynamic='force-dynamic';
 
@@ -22,6 +23,7 @@ async function cachedForecastPage(pattern:string,profileKeys:string[],view:strin
 }
 
 export async function GET(request:Request) {
+  const denied=await requireOwner(request); if(denied) return denied;
   let options:ReturnType<typeof forecastRequest>;
   try {options=forecastRequest(new URL(request.url));}
   catch {return NextResponse.json({error:'Unsupported forecast request.'},{status:400,headers:NO_STORE_HEADERS});}
@@ -50,7 +52,12 @@ export async function GET(request:Request) {
     if(options.revision && options.revision!==data.revision) {
       return NextResponse.json({error:'Forecasts changed during browsing. Refresh to reload.'},{status:409,headers:NO_STORE_HEADERS});
     }
-    return NextResponse.json(forecastPage(data,options),{headers:signalCacheHeaders(options.view)});
+    const now=Date.now(),page=forecastPage(data,options,now);
+    const deadlines=options.view==='qualified' ? page.signals.flatMap(signal=>[
+      Date.parse(signal.game_start_time ?? '')-3_600_000,Date.parse(signal.snapped_at)+300_000,
+      Date.parse(signal.availability?.captured_at ?? '')+3_600_000]) : [];
+    return NextResponse.json(page,{headers:options.view==='qualified'
+      ? liveCacheHeadersUntil(deadlines,now) : signalCacheHeaders(options.view)});
   } catch {
     return NextResponse.json({error:'Results are temporarily unavailable.',signals:[]},{status:503,headers:NO_STORE_HEADERS});
   }

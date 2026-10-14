@@ -1,0 +1,11 @@
+{
+  "kickoff": "2026-10-05T00:20:00+00:00",
+  "local_hashed_at": "2026-10-04T23:10:02.242248+00:00",
+  "protocol": "kalshi-fixed-prelock-private-anchor-v1",
+  "receipt_sha256": {
+    "stat-only-prelock-20261005T0020-report.json": "bb6a2a9ee800d265a779b31319593d8b416901b3beb9288a3eb291b19a914e2f",
+    "stat-only-prelock-20261005T0020.json": "a7150782b5e292b2ae4b319d7dbd8258ce340a0a0b29996b95e63329fa66b9b6",
+    "stat-only-prelock-fees-20261005T0020-report.json": "a607af4744601ed47647c7fc92c4090f468e4224bed8abadc0a90d0953ace219",
+    "stat-only-prelock-fees-20261005T0020.json": "772a85576b5348707f35add18e1bade2115f31ea7394bf2d3754523b60464c58"
+  }
+}

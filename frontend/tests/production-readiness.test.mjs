@@ -1,253 +1,58 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-
-import {
-  paidPipelinePaths,
-  publicSecurityProbes,
-  publicPipelinePaths,
-  requiredCssMarkers,
-  requiredHtmlMarkers,
-  readinessStatuses,
-  verifyProduction,
-  verifyProductionWithRetry,
-  verifySecurityHeaders,
-} from '../scripts/verify-production.mjs';
-
-// Independent example of the current server-rendered landing contract. Do not
-// synthesize this fixture from the verifier's own required marker array.
-const deploymentHtml = `<html><head><link rel="stylesheet" href="/app.css"></head><body>
-<section id="results"><p>Compare with constant directions</p>
-<table aria-label="Same-record direction comparison"><tr><th>Model</th><td>84.5%</td></tr><tr><th>Always Under</th><td>85.0%</td></tr><tr><th>Always Over</th><td>15.0%</td></tr></table>
-<table aria-label="Same-record direction comparison"><tr><th>Model</th><td>82.0%</td></tr><tr><th>Always Under</th><td>77.0%</td></tr><tr><th>Always Over</th><td>23.0%</td></tr></table>
-<p>Archived sportsbook prices are unavailable; prospective profitability remains unproven.</p>
-</section></body></html>`;
-const deploymentCss = requiredCssMarkers.join(' ');
-const securityHeaderValues = {
-  'x-content-type-options': 'nosniff',
-  'x-frame-options': 'DENY',
-  'referrer-policy': 'strict-origin-when-cross-origin',
-  'cross-origin-opener-policy': 'same-origin',
-  'cross-origin-resource-policy': 'same-origin',
-  'x-dns-prefetch-control': 'off',
-  'origin-agent-cluster': '?1',
-  'x-permitted-cross-domain-policies': 'none',
-  'cache-control': 'no-store',
-  'strict-transport-security': 'max-age=63072000; includeSubDomains',
-  'permissions-policy': 'camera=(), microphone=()',
-  'content-security-policy': "default-src 'self'; script-src 'self' 'nonce-YWJjZA==' 'strict-dynamic'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
+import {livePaths,requiredCssMarkers,requiredHtmlMarkers,publicSecurityProbes,verifyProduction,verifyProductionWithRetry,verifyPublishedCaptures} from '../scripts/verify-production.mjs';
+import {hosted_read_dsn} from '../scripts/verify-published-config.mjs';
+const origin='https://example.test';
+const html='<html><link rel="stylesheet" href="/app.css"><body><section id="waitlist">Private preview Join the waitlist</section><section id="backtest-demo">Illustrative preview Sample layout</section><a href="/login">Owner sign-in</a></body></html>';
+const headers={
+ 'x-content-type-options':'nosniff','x-frame-options':'DENY','referrer-policy':'strict-origin-when-cross-origin',
+ 'cross-origin-opener-policy':'same-origin','cross-origin-resource-policy':'same-origin','x-dns-prefetch-control':'off',
+ 'origin-agent-cluster':'?1','x-permitted-cross-domain-policies':'none','cache-control':'no-store',
+ 'strict-transport-security':'max-age=63072000; includeSubDomains','permissions-policy':'camera=(), microphone=()',
+ 'content-security-policy':"default-src 'self'; script-src 'self' 'nonce-YWJjZA==' 'strict-dynamic'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
 };
-const securityHeaders = { get: name => securityHeaderValues[name.toLowerCase()] ?? null };
+function fetcher(change=()=>null) {return async(url,options={})=>{
+ const parsed=new URL(url),path=parsed.pathname+parsed.search;
+ const altered=change(path,options);if(altered)return altered;
+ const opts={headers};
+ if(parsed.pathname==='/')return new Response(html,opts);
+ if(path==='/app.css')return new Response(requiredCssMarkers.join(' '),opts);
+ if(path==='/login')return new Response('Owner access',opts);
+ if(parsed.pathname==='/terminal' || parsed.pathname.startsWith('/terminal/'))return new Response(null,{status:307,headers:{...headers,location:'/login'}});
+ if(path==='/api/auth/csrf')return Response.json({csrfToken:'test'},opts);
+ if(path==='/.env')return new Response(null,{status:404,headers});
+ const probe=publicSecurityProbes.find(item=>item.path===path && (item.options?.method ?? 'GET')===(options.method ?? 'GET') && JSON.stringify(item.options?.headers ?? {})===JSON.stringify(options.headers ?? {}));
+ if(probe)return Response.json({error:'Request rejected.'},{status:probe.statuses[0],headers});
+ return Response.json({error:'Owner authentication required.'},{status:401,headers});
+};}
 
-function securityProbeStatus(path, options = {}) {
-  const method = (options.method ?? 'GET').toUpperCase();
-  const headers = new Headers(options.headers);
-  const probe = publicSecurityProbes.find(candidate => candidate.path === path
-    && (candidate.options?.method ?? 'GET') === method
-    && Object.entries(candidate.options?.headers ?? {}).every(([name, value]) => headers.get(name) === value));
-  return probe?.statuses[0];
-}
-
-test('production security policy requires nonce scripts and isolation headers', () => {
-  assert.doesNotThrow(() => verifySecurityHeaders(securityHeaders));
-  assert.throws(() => verifySecurityHeaders({ get: name => name === 'content-security-policy'
-    ? "default-src 'self'; script-src 'self' 'unsafe-inline'" : securityHeaders.get(name) }), /CSP/);
+test('production release requires a public demo, owner redirect and anonymous denial across every live route',async()=>{
+ await verifyProduction({base:origin,fetchImpl:fetcher()});
+ for(const sport of ['nfl','nba','cfb'])assert.ok(livePaths.some(path=>path.includes('sport='+sport)));
+ for(const path of livePaths)await assert.rejects(verifyProduction({base:origin,fetchImpl:fetcher(target=>target===path?new Response('{}',{status:200,headers}):null)}),/unexpected HTTP 200/);
 });
-
-test('public pipeline makes public endpoints mandatory without requiring paid endpoints', () => {
-  const flags = { paidEnabled: false, publicEnabled: true };
-  for (const path of publicPipelinePaths) assert.deepEqual(readinessStatuses(path, flags), [200]);
-  for (const path of paidPipelinePaths) assert.deepEqual(readinessStatuses(path, flags), [200, 503]);
+test('release cannot pass with a cached denial, broken owner redirect, missing login setup or stale public UI',async()=>{
+ for(const marker of requiredHtmlMarkers)await assert.rejects(verifyProduction({base:origin,fetchImpl:fetcher(path=>path.startsWith('/?')?new Response(html.replace(marker,''),{headers}):null)}),/landing is stale/);
+ await assert.rejects(verifyProduction({base:origin,fetchImpl:fetcher(path=>path==='/api/scans'?Response.json({error:'Owner authentication required.'},{status:401,headers:{...headers,'cache-control':'public, max-age=30'}}):null)}),/may be cached/);
+ await assert.rejects(verifyProduction({base:origin,fetchImpl:fetcher(path=>path==='/terminal'?new Response(null,{status:307,headers:{...headers,location:'/open'}}):null)}),/login redirect missing/);
+ await assert.rejects(verifyProduction({base:origin,fetchImpl:fetcher(path=>path==='/api/auth/csrf'?new Response('{}',{status:503,headers}):null)}),/unexpected HTTP 503/);
 });
-
-test('paid pipeline makes all data endpoints mandatory', () => {
-  const flags = { paidEnabled: true, publicEnabled: false };
-  for (const path of [...paidPipelinePaths, ...publicPipelinePaths]) {
-    assert.deepEqual(readinessStatuses(path, flags), [200]);
-  }
+test('publication verification keeps exact source capture identity without an owner login cookie',async()=>{
+ const captured_at='2026-10-06T20:00:00Z';const report={markets:{nfl:{captured_at}},schedules:{nba:{captured_at}}};
+ const seen=[];await verifyPublishedCaptures(report,async key=>{seen.push(key);return {captured_at};});assert.deepEqual(seen,['markets:nfl','schedule:nba']);
+ await assert.rejects(verifyPublishedCaptures(report,async()=>({captured_at:'other'})),/does not match/);
+ await assert.rejects(verifyPublishedCaptures({},async()=>null),/No capture receipts/);
+ await verifyProduction({base:origin,fetchImpl:fetcher(),expectedPublicReport:report,readSnapshot:async()=>({captured_at})});
 });
-
-test('production verification rejects unavailable public data when its pipeline is enabled', async () => {
-  const fetchImpl = async (url, options = {}) => {
-    const path = new URL(url).pathname + new URL(url).search;
-    if (path === '/app.css') return { status: 200, text: async () => deploymentCss };
-    const status = path === '/api/markets?sport=nfl' ? 503 : securityProbeStatus(path, options)
-      ?? (path === '/.env' || path === '/signals_cache.json' ? 404 : 200);
-    return {
-      status,
-      headers: securityHeaders,
-      text: async () => deploymentHtml,
-    };
-  };
-
-  await assert.rejects(
-    verifyProduction({ base: 'https://example.test', fetchImpl, paidEnabled: false, publicEnabled: true }),
-    /\/api\/markets\?sport=nfl: unexpected HTTP 503/,
-  );
+test('release retries stay bounded and recheck the complete private boundary',async()=>{
+ let homes=0;const waits=[];
+ const fetchImpl=fetcher(path=>path.startsWith('/?') && ++homes===1?new Response(null,{status:503,headers}):null);
+ await verifyProductionWithRetry({base:origin,fetchImpl},{attempts:2,delayMs:50,wait:async delay=>waits.push(delay),log:()=>{}});
+ assert.deepEqual(waits,[50]);assert.equal(homes,2);
 });
-
-test('production verification binds public endpoints to the current collection report', async () => {
-  const expectedPublicReport = {
-    markets: { nfl: { captured_at: '2026-09-12T23:14:02Z' } },
-    schedules: { nfl: { captured_at: '2026-09-12T23:13:52Z' } },
-  };
-  const fetchImpl = async (url, options = {}) => {
-    const parsed = new URL(url);
-    const path = parsed.pathname + parsed.search;
-    if (path === '/app.css') return { status: 200, text: async () => deploymentCss };
-    const captured_at = path === '/api/markets?sport=nfl'
-      ? '2026-09-12T23:14:02Z'
-      : path === '/api/games?sport=nfl'
-        ? '2026-09-12T23:13:52Z'
-        : undefined;
-    return {
-      status: securityProbeStatus(path, options) ?? (path === '/.env' || path === '/signals_cache.json' ? 404 : 200),
-      headers: securityHeaders,
-      text: async () => deploymentHtml,
-      json: async () => ({ captured_at }),
-    };
-  };
-
-  await verifyProduction({
-    base: 'https://example.test',
-    fetchImpl,
-    paidEnabled: false,
-    publicEnabled: true,
-    expectedPublicReport,
-  });
-
-  expectedPublicReport.markets.nfl.captured_at = '2026-09-12T23:15:02Z';
-  await assert.rejects(
-    verifyProduction({
-      base: 'https://example.test',
-      fetchImpl,
-      paidEnabled: false,
-      publicEnabled: true,
-      expectedPublicReport,
-    }),
-    /deployed capture does not match this collection run/,
-  );
-});
-
-test('production verification rejects a stale or incomplete stylesheet bundle', async () => {
-  const fetchImpl = async (url, options = {}) => {
-    const path = new URL(url).pathname + new URL(url).search;
-    if (path === '/app.css') return { status: 200, text: async () => ':root{--accent-mint:#00e5a0}' };
-    return {
-      status: securityProbeStatus(path, options) ?? (path === '/.env' || path === '/signals_cache.json' ? 404 : 200),
-      headers: securityHeaders,
-      text: async () => deploymentHtml,
-      json: async () => ({}),
-    };
-  };
-
-  await assert.rejects(
-    verifyProduction({ base: 'https://example.test', fetchImpl }),
-    /Production stylesheet is stale or incomplete/,
-  );
-});
-
-test('production verification retries a transient deployment propagation mismatch', async () => {
-  let stylesheetRequests = 0;
-  const fetchImpl = async (url, options = {}) => {
-    const path = new URL(url).pathname + new URL(url).search;
-    if (path === '/app.css') {
-      stylesheetRequests += 1;
-      return { status: 200, text: async () => stylesheetRequests === 1 ? ':root{}' : deploymentCss };
-    }
-    return {
-      status: securityProbeStatus(path, options) ?? (path === '/.env' || path === '/signals_cache.json' ? 404 : 200),
-      headers: securityHeaders,
-      text: async () => deploymentHtml,
-      json: async () => ({}),
-    };
-  };
-
-  const waits = [];
-  await verifyProductionWithRetry(
-    { base: 'https://example.test', fetchImpl },
-    { attempts: 2, delayMs: 25, wait: async delay => waits.push(delay), log: () => {} },
-  );
-  assert.equal(stylesheetRequests, 2);
-  assert.deepEqual(waits, [25]);
-});
-
-
-test('capture retries wait for exact identity without repeating security or healthy endpoints', async () => {
-  const expected='2026-09-24T18:05:50.066420+00:00';
-  const counts=new Map();let waited=0;
-  const fetchImpl=async(url,options={})=>{
-    const parsed=new URL(url),path=parsed.pathname+parsed.search;
-    counts.set(path,(counts.get(path)??0)+1);
-    if(path==='/app.css')return {status:200,text:async()=>deploymentCss};
-    if(path==='/api/markets?sport=nfl') {
-      assert.equal(options.cache,'no-store');assert.equal(options.headers['cache-control'],'no-cache');
-    }
-    return {status:securityProbeStatus(path,options)??(['/.env','/signals_cache.json'].includes(path)?404:200),
-      headers:securityHeaders,text:async()=>deploymentHtml,
-      json:async()=>({captured_at:path==='/api/markets?sport=nfl' && waited===0 ? '2026-09-24T17:52:17Z' : expected})};
-  };
-  await verifyProduction({base:'https://example.test',fetchImpl,paidEnabled:false,publicEnabled:true,
-    expectedPublicReport:{markets:{nfl:{captured_at:expected}},schedules:{nba:{captured_at:expected}}},
-    captureAttempts:3,captureDelayMs:5000,captureWait:async delay=>{assert.equal(delay,5000);waited++;}});
-  assert.equal(waited,1);assert.equal(counts.get('/api/markets?sport=nfl'),2);
-  assert.equal(counts.get('/api/games?sport=nba'),1);
-  assert.equal(counts.get('/api/scan'),1);assert.equal(counts.get('/app.css'),1);
-});
-
-for(const observed of ['2026-09-24T17:00:00Z','2026-09-24T19:00:00Z',undefined]) {
-  test(`capture retries fail closed for persistently different identity: ${observed}`,async()=>{
-    let reads=0,waits=0;
-    const fetchImpl=async(url,options={})=>{
-      const parsed=new URL(url),path=parsed.pathname+parsed.search;
-      if(path==='/app.css')return {status:200,text:async()=>deploymentCss};
-      if(path==='/api/markets?sport=nfl')reads++;
-      return {status:securityProbeStatus(path,options)??(['/.env','/signals_cache.json'].includes(path)?404:200),
-        headers:securityHeaders,text:async()=>deploymentHtml,json:async()=>({captured_at:observed})};
-    };
-    await assert.rejects(verifyProduction({base:'https://example.test',fetchImpl,
-      expectedPublicReport:{markets:{nfl:{captured_at:'2026-09-24T18:05:50.066420+00:00'}}},
-      captureAttempts:3,captureDelayMs:0,captureWait:async()=>{waits++;}}),/deployed capture does not match/);
-    assert.equal(reads,3);assert.equal(waits,2);
-  });
-}
-
-test('public capture retry settings are bounded before any requests',async()=>{
-  for(const patch of [{captureAttempts:0},{captureAttempts:38},{captureAttempts:1.5},
-    {captureDelayMs:-1},{captureDelayMs:5001},{captureDelayMs:NaN}]) {
-    await assert.rejects(verifyProduction({...patch,fetchImpl:async()=>{assert.fail('must not request');}}),/retry bounds/);
-  }
-});
-
-
-test('production readiness covers CFB consumer forecasts, replay, slate and history',()=>{
-  for(const path of ['/api/signals?sport=cfb&limit=12','/api/signals?sport=cfb&view=qualified',
-    '/api/picks?sport=cfb','/api/metrics?sport=cfb','/api/metrics?sport=cfb&cohort=recommendations']) {
-    assert.ok(paidPipelinePaths.includes(path));
-    assert.deepEqual(readinessStatuses(path,{paidEnabled:true,publicEnabled:true}),[200]);
-  }
-  for(const path of ['/api/slate?sport=cfb','/api/gamelogs?sport=cfb&player_id=1&exact=1&limit=1','/api/benchmarks?sport=cfb']) {
-    assert.ok(publicPipelinePaths.includes(path));
-    assert.deepEqual(readinessStatuses(path,{paidEnabled:false,publicEnabled:true}),[200]);
-  }
-});
-
-
-test('current baseline-aware landing contract passes the complete readiness check',async()=>{
-  const fetchImpl=async(url,options={})=>{
-    const parsed=new URL(url),path=parsed.pathname+parsed.search;
-    return {status:securityProbeStatus(path,options)??(['/.env','/signals_cache.json'].includes(path)?404:200),
-      headers:securityHeaders,text:async()=>path==='/app.css'?deploymentCss:deploymentHtml};
-  };
-  await verifyProduction({base:'https://example.test',fetchImpl,paidEnabled:true,publicEnabled:true});
-});
-
-test('readiness rejects legacy accuracy copy and each missing comparison or disclosure',async()=>{
-  const legacy='<section id="results">Above 60% in both periods 84.5% 82.0% not betting profit</section>';
-  for(const html of [legacy,...requiredHtmlMarkers.map(marker=>deploymentHtml.replaceAll(marker,''))]) {
-    let reads=0;
-    await assert.rejects(verifyProduction({base:'https://example.test',fetchImpl:async()=>{
-      reads++;return {status:200,headers:securityHeaders,text:async()=>html};
-    }}),/Production landing evidence is stale or incomplete/);
-    assert.equal(reads,1);
-  }
+test('private receipt read preserves certificate verification and rejects duplicate TLS modes',()=>{
+ const dsn='postgresql+psycopg://reader:fixture@aws-1-us-east-1.pooler.supabase.com:5432/postgres?sslmode=verify-full';
+ const config=hosted_read_dsn(dsn,'fixture-ca');assert.equal(new URL(config.connectionString).port,'6543');assert.deepEqual(config.ssl,{ca:'fixture-ca',rejectUnauthorized:true});
+ assert.equal(new URL(config.connectionString).searchParams.has('sslmode'),false);
+ for(const value of [undefined,dsn.replace('verify-full','require'),dsn+'&sslmode=require'])assert.throws(()=>hosted_read_dsn(value));
 });

@@ -1,6 +1,7 @@
 """NFL Next Gen Stats source validation and provenance."""
 import hashlib
 import io
+from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -51,6 +52,35 @@ def test_normalize_ngs_excludes_summary_and_commits_exact_source() -> None:
     assert record["source_record_sha256"] == row_sha256(evidence)
     assert record["source_provider"] == "nflverse_ngs"
     assert record["source_observed_at"] == observed
+
+
+def test_tracking_commitment_survives_actual_database_numeric_precision():
+    from sportsbet.db.models import NgsStats
+    source = passing_rows()[1] | {
+        'avg_time_to_throw': 2.765, 'avg_completed_air_yards': 6.234567,
+        'avg_intended_air_yards': 7.123456, 'aggressiveness': 14.56789,
+        'passer_rating': 97.23456,
+    }
+    payload = parquet([source])
+    record = normalize_asset(payload, 2026, 'passing',
+        datetime(2026, 10, 8, tzinfo=timezone.utc))[0][0]
+    stored = {key:value for key,value in record.items() if not key.startswith('source_')}
+    for key,value in stored.items():
+        scale = getattr(NgsStats.__table__.c[key].type, 'scale', None)
+        if value is not None and scale is not None:
+            stored[key] = Decimal(str(value)).quantize(Decimal(1).scaleb(-scale), rounding=ROUND_HALF_UP)
+    assert record['source_sha256'] == hashlib.sha256(payload).hexdigest()
+    assert row_sha256(stored) == record['source_record_sha256']
+
+
+@pytest.mark.parametrize('field,value',[
+    ('avg_time_to_throw',999.995),('avg_intended_air_yards',999.9995),
+    ('attempts',32768),('attempts',True),
+])
+def test_tracking_storage_overflow_rejects_before_a_write(field,value):
+    payload=parquet([passing_rows()[1] | {field:value}])
+    with pytest.raises(ValueError):
+        normalize_asset(payload,2026,'passing',datetime(2026,10,8,tzinfo=timezone.utc))
 
 
 def test_normalize_ngs_rejects_schema_duplicates_and_nonfinite_values() -> None:

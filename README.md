@@ -51,7 +51,7 @@ uv run python -m sportsbet.refresh --sport cfb --backfill
 
 `refresh` selects season years from the current date, uses regular-season samples, and upserts stats to apply provider corrections. Initial NFL and CFB backfills cover three season years; NBA covers current/prior season. Daily refresh covers the active season. NFL schedules must be present for pre-game cutoffs. CFB history comes from the public versioned SportsDataverse ESPN player-box and schedule releases and needs no additional API key. CFB uses exact ESPN athlete/game IDs and never reads NFL player tables.
 
-The **Live paid market data** Actions workflow offers `daily`, `monitor`, `public_daily`, `public_monitor`, `scan`, `watch`, `refresh`, and `backfill` dispatches. With `DATA_PIPELINE_ENABLED=true`, daily and half-hour scan attempts include NBA, NFL and CFB (`all`). The free NFL history/NGS refresh is scheduled for 10:29 and 22:29 UTC. GitHub scheduling is best-effort. Scans share a persistent 20-credit daily limit, 450-credit rolling limit and recommendation-exposure ledger. Keep the staged pregame reserve enabled and use only existing free API-key quota; do not purchase credits, activate billing, raise these limits or clear usage records. No redundant quote collection is needed to refresh the dashboard. Published quotes older than five minutes cannot recommend a stake. A completed worker with partial provider/model coverage leaves a GitHub warning and keeps the published dashboard state degraded; crashes, configuration errors, schema drift, and evidence-scan failures still fail the workflow.
+The **Live paid market data** Actions workflow offers `daily`, `monitor`, `public_daily`, `public_monitor`, `scan`, `watch`, `refresh`, and `backfill` dispatches. With `DATA_PIPELINE_ENABLED=true`, the 12:17 UTC daily run and 00:19, 16:19 and 20:19 UTC scan attempts include NBA, NFL and CFB (`all`). Free NFL history/NGS recovery is scheduled for 10:29 UTC on Tuesday and Friday. GitHub scheduling is best-effort. Scans share a persistent 20-credit daily limit, 450-credit rolling limit and recommendation-exposure ledger. Keep the staged pregame reserve enabled and use only existing free API-key quota; do not purchase credits, activate billing, raise these limits or clear usage records. No redundant quote collection is needed to refresh the dashboard. Published quotes older than five minutes cannot recommend a stake. A completed worker with partial provider/model coverage leaves a GitHub warning and keeps the published dashboard state degraded; crashes, configuration errors, schema drift, and evidence-scan failures still fail the workflow.
 
 Each successful scan also publishes a bounded pregame pick board from immutable accepted prediction rows. Before one hour to kickoff, the board retains the newest approved capture per player and labels its recorded price for repricing. Exactly 60 minutes before kickoff, that selection freezes; captures after the cutoff and all in-game lines are excluded. The separate **Past results** view starts only with these prospective records and shows a win, loss or push only after the existing source-bound final-stat verifier reproduces it. Missing or unverified results, including voids without reproducible final-stat evidence, stay pending. The public API recomputes record identities, lock times, eligibility, totals and win rate before displaying them.
 
@@ -205,7 +205,7 @@ prove that the upstream provider has supplied every recently completed game.
 For an explicitly planned collection run, the local equivalent is `uv run python -m sportsbet.daily --sport all --mode daily`; it shares the same quota and must not duplicate scheduled collection.
 Per-stage results are persisted for diagnosis; degraded coverage makes the worker
 exit unsuccessfully. Manual `scan` remains a maintenance operation that bypasses
-the refresh-age gate. Production daily and half-hour scan attempts are enabled. For a new deployment, verify hosted database access and a manual production run before enabling its schedule.
+the refresh-age gate. Production daily and three pregame scan attempts are enabled. For a new deployment, verify hosted database access and a manual production run before enabling its schedule.
 
 The independent `public_daily` and `public_monitor` operations use the same graph
 without sportsbook requests or prop recommendations. Both publish ESPN schedules
@@ -216,12 +216,14 @@ season readiness. Provider failures still exit unsuccessfully.
 
 After both manual public operations pass, set the repository variable
 `PUBLIC_DATA_PIPELINE_ENABLED=true`. The independent **Public market data**
-workflow attempts `public_daily` at 13:17 and 13:47 UTC and `public_monitor` at
-:07/:22/:37/:52 each hour. It has its own concurrency queue, receives only the
-restricted database credentials, and does not reference the Odds API or Kalshi
-trading secrets. The redundant attempts reduce the chance that GitHub scheduler
-delays leave the 90-minute snapshot window uncovered; they do not make GitHub
-Actions a guaranteed or low-latency scheduler. The separate **Live paid market data**
+workflow attempts `public_daily` at 12:07 and 13:37 UTC; its other slots
+attempt `public_monitor`. The 16 scheduled captures are 90 minutes apart across
+UTC. It has its own concurrency queue, receives only the restricted database
+credentials, and does not reference the Odds API or Kalshi trading secrets.
+GitHub can delay or drop scheduled runs; the dashboard marks the snapshot stale
+when the 90-minute freshness limit is crossed. The reduced private-hosted
+cadence leaves room under a $0 account budget at observed typical job durations,
+but does not guarantee available monthly minutes or continuous freshness. The separate **Live paid market data**
 schedule depends only on `DATA_PIPELINE_ENABLED=true` and retains the paid
 provider path. The public flag cannot enable sportsbook, PrizePicks, prop scans,
 or paid polling. Each successful public job also requires production to expose

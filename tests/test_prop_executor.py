@@ -22,6 +22,7 @@ PROP-04 (Plan 02):
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
@@ -31,6 +32,7 @@ import pytest
 from sportsbet.graph.models import PropParams, PropResult
 from sportsbet.kinematic.models import KinematicAnalysis
 from sportsbet.prop.agents import _apply_kinematic_adjustment
+from sportsbet.ingestion.provenance import stat_row_sha256
 
 try:
     from sportsbet.prop.executor import MIN_PROP_SAMPLE_SIZE, run_prop_query
@@ -114,6 +116,42 @@ def test_adequate_sample() -> None:
     assert lo < hi, "CI lower must be less than upper"
     assert result.true_probability == Decimal("0.598039"), "Jeffreys mean for 30/50"
     assert isinstance(result.mean_stat, Decimal), "mean_stat must be Decimal (not float)"
+    assert result.history_source_verified is False
+
+
+@pytest.mark.parametrize('verified', [False, True])
+def test_core_source_proof_is_carried_without_changing_probability(verified):
+    history=[{'player_id':'00-0033873','season':2023,'week':week,'team':'KC',
+        'passing_yards':240,'rushing_yards':15,'receiving_yards':0,'receptions':0}
+        for week in range(1,41)]
+    for stat in history:
+        stat['source_record_sha256']=stat_row_sha256('nfl',stat)
+    row={"total":40,"successes":28,"pushes":0,"mean_val":245.6,
+        "history_source_verified":verified,"history_source_rows":json.dumps(history)}
+    result=asyncio.run(run_prop_query(_make_mock_pool(row),_valid_prop_params()))
+    assert result.history_source_verified is verified
+    assert result.sample_size==40
+    assert result.true_probability==Decimal('0.695122')
+
+    history[0]['passing_yards']=400
+    row['history_source_rows']=json.dumps(history)
+    tampered=asyncio.run(run_prop_query(_make_mock_pool(row | {'history_source_verified':True}),
+        _valid_prop_params()))
+    assert tampered.history_source_verified is False
+    assert tampered.true_probability==result.true_probability
+
+
+def test_core_source_proof_accepts_legacy_nonreception_hash_and_rejects_missing_rows():
+    stat={'player_id':'00-0033873','season':2023,'week':1,'team':'KC',
+        'passing_yards':240,'rushing_yards':15,'receiving_yards':0,'receptions':3}
+    stat['source_record_sha256']=stat_row_sha256('nfl',stat,legacy_nfl=True)
+    row={'total':1,'successes':0,'pushes':0,'mean_val':240,
+        'history_source_verified':True,'history_source_rows':[stat]}
+    params=_valid_prop_params(last_n_games=40)
+    result=asyncio.run(run_prop_query(_make_mock_pool(row),params))
+    assert result.history_source_verified is True
+    row['history_source_rows']=[]
+    assert asyncio.run(run_prop_query(_make_mock_pool(row),params)).history_source_verified is False
 
 
 def test_insufficient_sample() -> None:
