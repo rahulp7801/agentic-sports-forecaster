@@ -65,6 +65,7 @@ jobs:
         run: uv run --locked python -m sportsbet.quant.kalshi_pair_sources --output-dir "$RUNNER_TEMP/nfl-role-sources"
       - name: Update public market data
         if: env.SPORT != 'cfb'
+        id: public_update
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DATABASE_URL_ASYNC: ${{ secrets.DATABASE_URL_ASYNC }}
@@ -92,12 +93,13 @@ jobs:
           ANALYTICS_DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: uv run --locked python -m sportsbet.cfb_public_settlement
       - name: Update source-backed player profiles
-        if: env.SPORT != 'cfb' && env.OPERATION == 'public_daily'
+        if: always() && !cancelled() && steps.worker_config.outcome == 'success' && steps.schema.outcome == 'success' && steps.public_update.outcome == 'success' && env.SPORT != 'cfb' && env.OPERATION == 'public_daily'
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DATABASE_URL_ASYNC: ${{ secrets.DATABASE_URL_ASYNC }}
         run: uv run --locked python -m sportsbet.player_profiles --sport "$SPORT"
       - name: Verify private access and published snapshot receipt
+        if: always() && !cancelled() && steps.worker_config.outcome == 'success' && steps.schema.outcome == 'success' && ((env.SPORT != 'cfb' && steps.public_update.outcome == 'success') || (env.SPORT == 'cfb' && steps.cfb_schedule.outcome == 'success'))
         env:
           DATA_PIPELINE_ENABLED: 'false'
           PUBLIC_DATA_PIPELINE_ENABLED: 'true'

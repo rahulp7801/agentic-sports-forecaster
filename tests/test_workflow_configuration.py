@@ -250,6 +250,38 @@ def test_cfb_publication_has_an_independent_exact_receipt_gate_and_private_readi
     assert 'continue-on-error' not in proof
 
 
+def test_successful_public_updates_keep_profiles_and_readiness_independent_of_cfb_settlement() -> None:
+    public = PUBLIC_WORKFLOW.read_text(encoding="utf-8")
+    update = _step(public, "Update public market data")
+    profiles = _step(public, "Update source-backed player profiles")
+    readiness = _step(public, "Verify private access and published snapshot receipt")
+    settlement = _step(public, "Settle CFB from free final sources")
+    assert 'id: public_update' in update
+    prerequisites = (
+        "if: always() && !cancelled() && steps.worker_config.outcome == 'success' "
+        "&& steps.schema.outcome == 'success' && "
+    )
+    profile_guard = re.search(r'^\s*(if: .+)$', profiles, re.MULTILINE)
+    readiness_guard = re.search(r'^\s*(if: .+)$', readiness, re.MULTILINE)
+    # Explicit status functions avoid the implicit success() that previously
+    # skipped these independent operations after degraded CFB settlement.
+    assert profile_guard is not None and profile_guard.group(1) == prerequisites + (
+        "steps.public_update.outcome == 'success' && env.SPORT != 'cfb' "
+        "&& env.OPERATION == 'public_daily'"
+    )
+    assert readiness_guard is not None and readiness_guard.group(1) == prerequisites + (
+        "((env.SPORT != 'cfb' && steps.public_update.outcome == 'success') "
+        "|| (env.SPORT == 'cfb' && steps.cfb_schedule.outcome == 'success'))"
+    )
+    # Both branches admit only their own successful producer. CFB-only runs
+    # still skip the absent NFL/NBA report and retain the live-site access gate.
+    assert 'if [ "$SPORT" != cfb ]; then' in readiness
+    assert 'PUBLIC_DATA_REPORT_PATH= node frontend/scripts/verify-production.mjs' in readiness
+    for step in (profiles, readiness, settlement):
+        assert 'continue-on-error' not in step
+    assert 'python -m sportsbet.cfb_public_settlement' in settlement
+
+
 def test_paid_collection_reports_degraded_coverage_without_masking_fatal_errors() -> None:
     paid = WORKFLOW.read_text(encoding="utf-8")
     step = _step(paid, "Collect live market data")
