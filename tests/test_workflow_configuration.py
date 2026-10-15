@@ -229,6 +229,27 @@ def test_provider_credentials_are_scoped_to_the_steps_that_need_them() -> None:
     assert "ODDS_API_KEY" not in public
 
 
+def test_cfb_publication_has_an_independent_exact_receipt_gate_and_private_readiness() -> None:
+    public = PUBLIC_WORKFLOW.read_text(encoding="utf-8")
+    update = _step(public, "Update CFB schedule without consuming odds credits")
+    proof = _step(public, "Verify exact published CFB slate receipt")
+    readiness = _step(public, "Verify private access and published snapshot receipt")
+    assert 'id: cfb_schedule' in update
+    assert '--sport cfb --report-output "$RUNNER_TEMP/cfb-slate-report.json"' in update
+    assert "if: always() && !cancelled() && steps.cfb_schedule.outcome == 'success'" in proof
+    assert 'PUBLIC_DATA_REPORT_PATH: ${{ runner.temp }}/cfb-slate-report.json' in proof
+    assert 'verify-published-snapshots.py' in proof
+    assert re.findall(r'secrets\.([A-Z_]+)', proof) == ['DATABASE_URL']
+    assert public.index(update) < public.index(proof) < public.index(readiness)
+    # CFB-only runs have no NFL/NBA report, but must still verify their slate
+    # and the deployed owner-access contract. A proof failure is never ignored.
+    assert "if: env.SPORT != 'cfb'" not in readiness
+    assert 'if [ "$SPORT" != cfb ]; then' in readiness
+    assert readiness.index('verify-published-snapshots.py') < readiness.index('fi\n')
+    assert readiness.index('fi\n') < readiness.index('node frontend/scripts/verify-production.mjs')
+    assert 'continue-on-error' not in proof
+
+
 def test_paid_collection_reports_degraded_coverage_without_masking_fatal_errors() -> None:
     paid = WORKFLOW.read_text(encoding="utf-8")
     step = _step(paid, "Collect live market data")

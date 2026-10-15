@@ -94,7 +94,7 @@ export function verifySecurityHeaders(headers) {
 /** Assert source publication through restricted DB reads; never export an owner cookie to CI. */
 export async function verifyPublishedCaptures(report,read) {
   const entries=[];
-  for(const sport of ['nfl','nba','cfb']) for(const [category,prefix] of [['markets','markets'],['schedules','schedule']]) {
+  for(const sport of ['nfl','nba','cfb']) for(const [category,prefix] of [['markets','markets'],['schedules','schedule'],['slates','slate']]) {
     const captured=report?.[category]?.[sport]?.captured_at;
     if(captured!==undefined) {
       if(typeof captured!=='string' || !Number.isFinite(Date.parse(captured))) throw Error('Invalid capture receipt');

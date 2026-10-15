@@ -44,6 +44,36 @@ test('publication verification keeps exact source capture identity without an ow
  await assert.rejects(verifyPublishedCaptures({},async()=>null),/No capture receipts/);
  await verifyProduction({base:origin,fetchImpl:fetcher(),expectedPublicReport:report,readSnapshot:async()=>({captured_at})});
 });
+test('CFB-only publication verification reads the exact slate key and capture',async()=>{
+ const captured_at='2026-10-15T17:00:00+00:00';
+ const report={slates:{cfb:{status:'complete',captured_at}}};const seen=[];
+ await verifyPublishedCaptures(report,async key=>{seen.push(key);return key==='slate:cfb'?{captured_at}:null;});
+ assert.deepEqual(seen,['slate:cfb']);
+ await verifyProduction({base:origin,fetchImpl:fetcher(),expectedPublicReport:report,
+  readSnapshot:async key=>key==='slate:cfb'?{captured_at}:null});
+});
+test('mixed publication verification retains all four NFL/NBA receipts and verifies the CFB slate',async()=>{
+ const captured_at='2026-10-15T17:00:00+00:00';
+ const report={markets:{nfl:{captured_at},nba:{captured_at}},
+  schedules:{nfl:{captured_at},nba:{captured_at}},slates:{cfb:{captured_at}}};
+ const seen=[];
+ await verifyPublishedCaptures(report,async key=>{seen.push(key);return {captured_at};});
+ assert.deepEqual(seen,['markets:nfl','schedule:nfl','markets:nba','schedule:nba','slate:cfb']);
+});
+test('matching NFL/NBA receipts cannot hide missing, stale or incorrectly keyed CFB publication',async()=>{
+ const captured_at='2026-10-15T17:00:00+00:00';
+ const report={markets:{nfl:{captured_at},nba:{captured_at}},
+  schedules:{nfl:{captured_at},nba:{captured_at}},slates:{cfb:{captured_at}}};
+ const matching={'markets:nfl':{captured_at},'schedule:nfl':{captured_at},
+  'markets:nba':{captured_at},'schedule:nba':{captured_at}};
+ for(const cfb of [{},{'slate:cfb':{captured_at:'2026-10-14T17:00:00+00:00'}},
+  {'schedule:cfb':{captured_at}},{'slate:cfb':{}}]) {
+  const rows={...matching,...cfb};const seen=[];
+  await assert.rejects(verifyPublishedCaptures(report,async key=>{seen.push(key);return rows[key];}),
+   /slate:cfb: published capture does not match this run/);
+  assert.deepEqual(seen,['markets:nfl','schedule:nfl','markets:nba','schedule:nba','slate:cfb']);
+ }
+});
 test('release retries stay bounded and recheck the complete private boundary',async()=>{
  let homes=0;const waits=[];
  const fetchImpl=fetcher(path=>path.startsWith('/?') && ++homes===1?new Response(null,{status:503,headers}):null);

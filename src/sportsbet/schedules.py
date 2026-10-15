@@ -2,6 +2,8 @@
 import argparse
 import asyncio
 from datetime import datetime, timedelta, timezone
+import json
+from pathlib import Path
 import re
 from zoneinfo import ZoneInfo
 
@@ -82,10 +84,13 @@ async def collect(sport: str, now: datetime | None = None, *, offsets: tuple[int
         games=games,partial=bool(failures),failures=failures,sources=sources)
 
 
-async def publish_slate(sport: str, now: datetime | None = None) -> str:
-    """Publish current and upcoming games; started games remain visibly locked."""
+async def publish_slate(sport: str, now: datetime | None = None, *,
+                        receipt: dict[str,str] | None = None) -> str:
+    """Publish current/upcoming games and optionally retain original capture metadata."""
     if sport not in SPORTS:
         raise ValueError('Unsupported sport')
+    if receipt is not None:
+        receipt.clear()
     from sportsbet.dashboard import load_snapshot, publish_snapshot
     now=now or datetime.now(timezone.utc)
     today=str(now.astimezone(ZoneInfo('America/New_York')).date())
@@ -94,6 +99,8 @@ async def publish_slate(sport: str, now: datetime | None = None) -> str:
         age=now-datetime.fromisoformat(previous['captured_at'].replace('Z','+00:00'))
         if (previous.get('as_of_date')==today and previous.get('status') in ('complete','partial')
                 and timedelta(0)<=age<=timedelta(minutes=10)):
+            if receipt is not None:
+                receipt['captured_at']=previous['captured_at']
             return 'cached'
     except (KeyError,ValueError,TypeError,AttributeError):
         pass
@@ -106,21 +113,45 @@ async def publish_slate(sport: str, now: datetime | None = None) -> str:
         status='partial'
     bounded={**slate,'games':games[:100],'partial':status=='partial','status':status}
     if status in ('complete','partial'):
+        captured=bounded['captured_at']
         publish_snapshot('slate:'+sport,bounded)
+        if receipt is not None:
+            receipt['captured_at']=captured
     return status
+
+
+def _write_slate_receipt(path: str, sport: str, receipt: dict[str,str]) -> None:
+    captured=receipt.get('captured_at')
+    if set(receipt)!={'captured_at'} or not isinstance(captured,str):
+        raise ValueError('Invalid schedule publication receipt')
+    parsed=datetime.fromisoformat(captured.replace('Z','+00:00'))
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError('Schedule receipt lacks timezone')
+    destination=Path(path)
+    destination.parent.mkdir(parents=True,exist_ok=True)
+    temporary=destination.with_name(destination.name+'.tmp')
+    temporary.write_text(json.dumps({'slates':{sport:{'captured_at':captured}}},
+                                   separators=(',',':'))+'\n',encoding='utf-8')
+    temporary.replace(destination)
 
 
 def main() -> None:
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--sport',choices=sorted(SPORTS),required=True)
+    parser.add_argument('--report-output',help='Write the original slate publication receipt to this file')
     args=parser.parse_args()
     try:
-        status=asyncio.run(publish_slate(args.sport))
+        receipt={}
+        status=asyncio.run(publish_slate(args.sport,receipt=receipt)
+                           if args.report_output else publish_slate(args.sport))
         if status not in ('complete','partial','cached','unavailable'):
             raise ValueError('Invalid schedule publication status')
-        print(status)
         if status=='unavailable':
+            print(status)
             raise SystemExit(2)
+        if args.report_output:
+            _write_slate_receipt(args.report_output,args.sport,receipt)
+        print(status)
     except Exception as exc:
         raise SystemExit(f'Schedule publication unavailable ({type(exc).__name__})') from None
 

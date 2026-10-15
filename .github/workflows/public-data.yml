@@ -74,9 +74,16 @@ jobs:
         run: uv run --locked python -m sportsbet.daily --sport "$SPORT" --mode "$OPERATION" --report-output "$RUNNER_TEMP/public-report.json"
       - name: Update CFB schedule without consuming odds credits
         if: always() && !cancelled() && steps.worker_config.outcome == 'success' && steps.schema.outcome == 'success' && (github.event_name == 'schedule' || env.SPORT == 'cfb')
+        id: cfb_schedule
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: uv run --locked python -m sportsbet.schedules --sport cfb
+        run: uv run --locked python -m sportsbet.schedules --sport cfb --report-output "$RUNNER_TEMP/cfb-slate-report.json"
+      - name: Verify exact published CFB slate receipt
+        if: always() && !cancelled() && steps.cfb_schedule.outcome == 'success'
+        env:
+          PUBLIC_DATA_REPORT_PATH: ${{ runner.temp }}/cfb-slate-report.json
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run --locked python .github/scripts/verify-published-snapshots.py
       - name: Settle CFB from free final sources
         if: always() && !cancelled() && steps.worker_config.outcome == 'success' && steps.schema.outcome == 'success' && env.OPERATION == 'public_daily' && (env.SPORT == 'both' || env.SPORT == 'cfb')
         env:
@@ -91,7 +98,6 @@ jobs:
           DATABASE_URL_ASYNC: ${{ secrets.DATABASE_URL_ASYNC }}
         run: uv run --locked python -m sportsbet.player_profiles --sport "$SPORT"
       - name: Verify private access and published snapshot receipt
-        if: env.SPORT != 'cfb'
         env:
           DATA_PIPELINE_ENABLED: 'false'
           PUBLIC_DATA_PIPELINE_ENABLED: 'true'
@@ -106,7 +112,9 @@ jobs:
           PUBLIC_READINESS_503_ATTEMPTS: '3'
           PUBLIC_READINESS_503_DELAY_MS: '5000'
         run: |
-          uv run --locked python .github/scripts/verify-published-snapshots.py
+          if [ "$SPORT" != cfb ]; then
+            uv run --locked python .github/scripts/verify-published-snapshots.py
+          fi
           PUBLIC_DATA_REPORT_PATH= node frontend/scripts/verify-production.mjs
       - name: Stage public evidence without configured provider credentials
         if: always()
