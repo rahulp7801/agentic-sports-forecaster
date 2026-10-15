@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
+import json
 import sys
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 import httpx
 import pytest
 from sportsbet import schedules
@@ -131,7 +132,8 @@ def test_schedule_cli_accepts_published_or_recent_slate(monkeypatch,capsys,statu
     assert capsys.readouterr().out==status+'\n'
 
 
-def test_schedule_cli_reports_unavailable_as_failure(monkeypatch,capsys):
+@pytest.mark.parametrize('with_receipt',[False,True])
+def test_schedule_cli_reports_unavailable_as_failure(monkeypatch,capsys,tmp_path,with_receipt):
     stored={}
     monkeypatch.setattr(schedules,'collect',AsyncMock(return_value={
         'sport':'cfb','captured_at':'2026-09-19T20:00:00+00:00',
@@ -140,7 +142,11 @@ def test_schedule_cli_reports_unavailable_as_failure(monkeypatch,capsys):
         'sources':[]}))
     monkeypatch.setattr('sportsbet.dashboard.load_snapshot',lambda key:None)
     monkeypatch.setattr('sportsbet.dashboard.publish_snapshot',lambda key,value:stored.update({key:value}))
-    monkeypatch.setattr(sys,'argv',['schedules','--sport','cfb'])
+    output=tmp_path/'receipt.json'
+    args=['schedules','--sport','cfb']
+    if with_receipt:
+        args+=['--report-output',str(output)]
+    monkeypatch.setattr(sys,'argv',args)
 
     with pytest.raises(SystemExit) as error:
         schedules.main()
@@ -148,6 +154,8 @@ def test_schedule_cli_reports_unavailable_as_failure(monkeypatch,capsys):
     assert error.value.code==2
     assert capsys.readouterr().out=='unavailable\n'
     assert stored=={}
+    assert not output.exists()
+    assert not output.with_name(output.name+'.tmp').exists()
 
 
 @pytest.mark.parametrize('status',[None,'unknown',{'status':'complete'}])
@@ -158,4 +166,83 @@ def test_schedule_cli_rejects_invalid_publication_status(monkeypatch,capsys,stat
     with pytest.raises(SystemExit,match='Schedule publication unavailable'):
         schedules.main()
 
+    assert capsys.readouterr().out==''
+
+
+@pytest.mark.parametrize('source_status,cached',[
+    ('complete',False),('partial',False),('complete',True),('partial',True),
+])
+def test_schedule_cli_receipt_binds_original_published_or_cached_capture(
+        monkeypatch,capsys,tmp_path,source_status,cached):
+    now=datetime(2026,9,19,20,tzinfo=timezone.utc)
+    captured='2026-09-19T15:59:55.123456-04:00'
+    original={'sport':'cfb','captured_at':captured,'as_of_date':'2026-09-19',
+              'status':source_status,'partial':source_status=='partial',
+              'games':[],'failures':[],'sources':['espn']}
+    collect=AsyncMock(return_value=original)
+    read=Mock(return_value=original if cached else None)
+    write=Mock()
+    monkeypatch.setattr(schedules,'collect',collect)
+    monkeypatch.setattr('sportsbet.dashboard.load_snapshot',read)
+    monkeypatch.setattr('sportsbet.dashboard.publish_snapshot',write)
+    publish=schedules.publish_slate
+
+    async def publish_at_fixed_time(sport,*,receipt):
+        return await publish(sport,now,receipt=receipt)
+
+    monkeypatch.setattr(schedules,'publish_slate',publish_at_fixed_time)
+    output=tmp_path/'nested'/'receipt.json'
+    monkeypatch.setattr(sys,'argv',['schedules','--sport','cfb','--report-output',str(output)])
+
+    schedules.main()
+
+    assert json.loads(output.read_text(encoding='utf-8'))=={
+        'slates':{'cfb':{'captured_at':captured}}}
+    assert not output.with_name(output.name+'.tmp').exists()
+    assert capsys.readouterr().out==('cached' if cached else source_status)+'\n'
+    read.assert_called_once_with('slate:cfb')
+    if cached:
+        collect.assert_not_awaited()
+        write.assert_not_called()
+    else:
+        collect.assert_awaited_once_with('cfb',now,offsets=tuple(range(7)))
+        write.assert_called_once()
+        assert write.call_args.args[0]=='slate:cfb'
+        assert write.call_args.args[1]['captured_at']==captured
+
+
+@pytest.mark.parametrize('captured',[None,'2026-09-19T20:00:00','private-invalid-timestamp'])
+def test_schedule_cli_refuses_invalid_receipt_without_echo(monkeypatch,capsys,tmp_path,captured):
+    async def publish(sport,*,receipt):
+        receipt['captured_at']=captured
+        return 'complete'
+
+    monkeypatch.setattr(schedules,'publish_slate',publish)
+    output=tmp_path/'receipt.json'
+    monkeypatch.setattr(sys,'argv',['schedules','--sport','cfb','--report-output',str(output)])
+
+    with pytest.raises(SystemExit) as error:
+        schedules.main()
+
+    assert error.value.code=='Schedule publication unavailable (ValueError)'
+    assert not output.exists()
+    assert capsys.readouterr().out==''
+
+
+def test_schedule_cli_receipt_write_failure_is_redacted(monkeypatch,capsys,tmp_path):
+    async def publish(sport,*,receipt):
+        receipt['captured_at']='2026-09-19T20:00:00+00:00'
+        return 'complete'
+
+    monkeypatch.setattr(schedules,'publish_slate',publish)
+    blocked=tmp_path/'private-path'
+    blocked.write_text('not a directory',encoding='utf-8')
+    output=blocked/'receipt.json'
+    monkeypatch.setattr(sys,'argv',['schedules','--sport','cfb','--report-output',str(output)])
+
+    with pytest.raises(SystemExit) as error:
+        schedules.main()
+
+    assert error.value.code=='Schedule publication unavailable (FileExistsError)'
+    assert not output.exists()
     assert capsys.readouterr().out==''

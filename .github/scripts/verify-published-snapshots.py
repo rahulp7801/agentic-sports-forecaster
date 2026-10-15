@@ -11,7 +11,7 @@ import psycopg
 def receipt_entries(report):
     entries = []
     for sport in ('nfl', 'nba', 'cfb'):
-        for category, prefix in (('markets', 'markets'), ('schedules', 'schedule')):
+        for category, prefix in (('markets', 'markets'), ('schedules', 'schedule'), ('slates', 'slate')):
             captured = report.get(category, {}).get(sport, {}).get('captured_at')
             if captured is None:
                 continue
