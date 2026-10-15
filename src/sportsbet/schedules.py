@@ -115,7 +115,12 @@ def main() -> None:
     parser.add_argument('--sport',choices=sorted(SPORTS),required=True)
     args=parser.parse_args()
     try:
-        print(asyncio.run(publish_slate(args.sport)))
+        status=asyncio.run(publish_slate(args.sport))
+        if status not in ('complete','partial','cached','unavailable'):
+            raise ValueError('Invalid schedule publication status')
+        print(status)
+        if status=='unavailable':
+            raise SystemExit(2)
     except Exception as exc:
         raise SystemExit(f'Schedule publication unavailable ({type(exc).__name__})') from None
 

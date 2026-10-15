@@ -288,3 +288,68 @@ def test_generic_cli_exception_cannot_log_credentials(capsys,monkeypatch):
     with pytest.raises(SystemExit) as stopped:runpy.run_path('ops/provision_waitlist.py',run_name='__main__')
     captured=capsys.readouterr()
     assert stopped.value.code==1 and 'DO-NOT-LOG' not in captured.err and 'failed' in captured.err
+
+
+@pytest.mark.parametrize("operation,status,label", [
+    ("team", 401, "team attestation"),
+    ("project", 403, "project attestation"),
+    ("entries", 404, "environment metadata"),
+    ("create", 409, "environment creation"),
+    ("create", 503, "environment creation"),
+    ("unknown", 500, "API"),
+    ("unknown", "private-status", "API"),
+])
+def test_http_errors_identify_operation_without_reading_or_exposing_provider_data(operation,status,label):
+    from io import BytesIO
+    import json
+    import traceback
+    from urllib.error import HTTPError
+
+    private = "private-provider-" + uuid.uuid4().hex
+    body = BytesIO(private.encode())
+    calls = []
+    class Opener:
+        def open(self,request,timeout):
+            calls.append(request)
+            if operation == "project" and len(calls) == 1:
+                return BytesIO(json.dumps({"id":provisioner.TEAM,"billing":{"plan":"hobby"}}).encode())
+            code = private if status == "private-status" else status
+            raise HTTPError("https://api.vercel.com/"+private,code,private,{"X-Private":private},body)
+    provider = provisioner.Vercel(private)
+    provider.opener = Opener()
+    with pytest.raises(provisioner.ProvisionError) as stopped:
+        if operation in ("team","project"):
+            provider.attest()
+        elif operation == "entries":
+            provider.entries()
+        elif operation == "create":
+            provider.create(private,provisioner.MARKER+"a"*64)
+        else:
+            provider.request("/"+private)
+    expected_status = "unknown" if status == "private-status" else status
+    assert str(stopped.value) == f"Provider {label} request rejected (HTTP {expected_status}); response body withheld"
+    assert private not in "".join(traceback.format_exception(stopped.value))
+    assert stopped.value.__suppress_context__ is True
+    assert body.tell() == 0
+    # In particular, ambiguous secret creation is never retried.
+    assert len(calls) == (2 if operation == "project" else 1)
+
+
+def test_http_cli_error_is_actionable_without_echoing_provider_credentials(capsys,monkeypatch):
+    from io import BytesIO
+    import runpy
+    from urllib.error import HTTPError
+    private = "private-provider-" + uuid.uuid4().hex
+    body = BytesIO(private.encode())
+    class Opener:
+        def open(self,request,timeout):
+            raise HTTPError("https://api.vercel.com/"+private,403,private,{"X-Private":private},body)
+    monkeypatch.setattr(os,"environ",ENV)
+    monkeypatch.setattr("sys.argv",["ops/provision_waitlist.py"])
+    monkeypatch.setattr("urllib.request.build_opener",lambda *_:Opener())
+    with pytest.raises(SystemExit) as stopped:
+        runpy.run_path("ops/provision_waitlist.py",run_name="__main__")
+    captured=capsys.readouterr()
+    assert stopped.value.code == 1
+    assert "team attestation" in captured.err and "HTTP 403" in captured.err
+    assert private not in captured.out+captured.err and body.tell() == 0

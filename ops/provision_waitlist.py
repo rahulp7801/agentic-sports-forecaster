@@ -100,8 +100,19 @@ class Vercel:
                 if len(body) > 2_000_000:
                     fail("Provider response exceeds limit")
                 return json.loads(body)
-        except HTTPError:
-            fail("Provider request rejected; no response body logged")
+        except HTTPError as error:
+            # Use only fixed operation names and a bounded status. Provider
+            # URLs, reasons, headers and bodies can contain credentials.
+            operation = {
+                ("GET", f"/v2/teams/{TEAM}"): "team attestation",
+                ("GET", f"/v9/projects/{PROJECT}?teamId={TEAM}"): "project attestation",
+                ("GET", f"/v10/projects/{PROJECT}/env?teamId={TEAM}&decrypt=false"): "environment metadata",
+                ("POST", f"/v10/projects/{PROJECT}/env?teamId={TEAM}"): "environment creation",
+            }.get((request.get_method(), path), "API")
+            status = error.code if type(error.code) is int and 100 <= error.code <= 599 else "unknown"
+            raise ProvisionError(
+                f"Provider {operation} request rejected (HTTP {status}); response body withheld"
+            ) from None
 
     def attest(self):
         team = self.request("/v2/teams/" + TEAM)

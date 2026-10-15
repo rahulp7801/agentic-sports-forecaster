@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import sys
 from unittest.mock import AsyncMock
 import httpx
 import pytest
@@ -116,3 +117,45 @@ async def test_schedule_partial_failure_retains_available_dates(monkeypatch):
     result=await schedules.collect('nfl',datetime(2026,9,11,18,tzinfo=timezone.utc))
     assert result['status']=='partial' and len(result['games'])==1
     assert len(result['sources'])==2 and result['failures'][0]['date']=='20260912'
+
+
+@pytest.mark.parametrize('status',['complete','partial','cached'])
+def test_schedule_cli_accepts_published_or_recent_slate(monkeypatch,capsys,status):
+    publish=AsyncMock(return_value=status)
+    monkeypatch.setattr(schedules,'publish_slate',publish)
+    monkeypatch.setattr(sys,'argv',['schedules','--sport','cfb'])
+
+    schedules.main()
+
+    publish.assert_awaited_once_with('cfb')
+    assert capsys.readouterr().out==status+'\n'
+
+
+def test_schedule_cli_reports_unavailable_as_failure(monkeypatch,capsys):
+    stored={}
+    monkeypatch.setattr(schedules,'collect',AsyncMock(return_value={
+        'sport':'cfb','captured_at':'2026-09-19T20:00:00+00:00',
+        'as_of_date':'2026-09-19','status':'unavailable','partial':True,
+        'games':[],'failures':[{'date':'20260919','error_type':'HTTPStatusError'}],
+        'sources':[]}))
+    monkeypatch.setattr('sportsbet.dashboard.load_snapshot',lambda key:None)
+    monkeypatch.setattr('sportsbet.dashboard.publish_snapshot',lambda key,value:stored.update({key:value}))
+    monkeypatch.setattr(sys,'argv',['schedules','--sport','cfb'])
+
+    with pytest.raises(SystemExit) as error:
+        schedules.main()
+
+    assert error.value.code==2
+    assert capsys.readouterr().out=='unavailable\n'
+    assert stored=={}
+
+
+@pytest.mark.parametrize('status',[None,'unknown',{'status':'complete'}])
+def test_schedule_cli_rejects_invalid_publication_status(monkeypatch,capsys,status):
+    monkeypatch.setattr(schedules,'publish_slate',AsyncMock(return_value=status))
+    monkeypatch.setattr(sys,'argv',['schedules','--sport','cfb'])
+
+    with pytest.raises(SystemExit,match='Schedule publication unavailable'):
+        schedules.main()
+
+    assert capsys.readouterr().out==''
