@@ -63,6 +63,37 @@ empty slate and an event with no usable provider quotes remain separate states.
 
 Cut over only after a hosted public monitor and daily refresh both pass, their archives replay, production matches the captures, and an automatic host-triggered run is observed. Then unset `PUBLIC_DATA_PIPELINE_ENABLED` in GitHub to stop duplicate scheduled collection; keep manual Actions runs available for recovery. Keep `DATA_PIPELINE_ENABLED` off until full-provider readiness is verified. Roll back by disabling the new schedule before restoring the public GitHub flag.
 
+## Inspect provider configuration without collecting quotes
+
+The manual **Read-only provider readiness** workflow runs only from this
+repository's protected `master`, using the existing production worker database
+and Odds API key. It shares the paid worker's concurrency group, has no schedule,
+and does not enable `DATA_PIPELINE_ENABLED`.
+
+The CLI is also available on an existing configured worker:
+
+```sh
+python -m sportsbet.provider_readiness --daily-credit-limit 20
+```
+
+It requires explicit `ANALYTICS_DATABASE_URL` and rejects the historically
+exposed key before database or provider access. It reads the hosted credit ledger
+in a read-only transaction and makes at most one bounded sports-list request.
+The provider documents [`GET /v4/sports/`](https://the-odds-api.com/liveapi/guides/v4/#get-sports)
+as consuming zero usage credits and returning the remaining, used and last-call
+cost headers. The probe requires valid usage headers and a last-call cost of zero.
+It collects no odds, reserves no credits, writes no cache or database rows, and
+uploads no files. Provider bodies, authenticated URLs and credentials are never
+included in its report or failure messages.
+
+A successful observation establishes only the recorded key acceptance, sport
+metadata, provider allowance and local ledger totals at that time. It does not
+verify free-plan or billing status, future prop coverage, event-specific pregame
+reserve availability, or permission to activate collection. Keep the existing
+20-credit daily and 450-credit rolling caps and all scan qualification gates.
+Unavailable configuration, provider evidence or ledger data remains explicit;
+do not use another collection operation as a substitute for this probe.
+
 ## Hosting decision remains open
 
 No new service, billing plan or credential transfer has been activated by this change. A portable image can run on an existing server or a managed container host. As a possible managed option, [Render cron jobs](https://render.com/docs/cronjobs) support Docker and prevent overlap within one job; that guarantee does not serialize two separate jobs. Render currently bills for active compute with a $1/month minimum **per cron service**, plus any applicable workspace/platform charges. A continuously running background worker has different costs. Confirm the selected design and total cost before activation.
