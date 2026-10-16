@@ -69,8 +69,8 @@ async def run(sports):
                     value=profile(context,player,player_id,datetime.now(timezone.utc))
                     if value: profiles.setdefault(player,value)
                     else: failures+=1
-            # A provider failure must not erase the last successful metadata capture.
-            if profiles or not rows:
+            # Empty inputs and provider failures must retain the last capture and its timestamps.
+            if profiles:
                 publish_snapshot('player-profiles:'+sport,dict(sport=sport,
                     captured_at=datetime.now(timezone.utc).isoformat(),profiles=list(profiles.values())))
             results[sport]=dict(profiles=len(profiles),unavailable=failures)

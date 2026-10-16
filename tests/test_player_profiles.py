@@ -71,6 +71,41 @@ async def test_scheduled_profile_refresh_uses_recorded_slate_without_new_quotes(
     assert publications==[]  # Provider failure cannot overwrite the last capture.
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('sport', ['nfl', 'nba'])
+async def test_empty_recent_identities_preserve_original_profile_capture(monkeypatch, sport):
+    stamp='2026-10-01T12:00:00+00:00'
+    key='player-profiles:'+sport
+    stored={key:dict(sport=sport,captured_at=stamp,profiles=[dict(
+        player='Archive Player',player_id='123',team='BUF',captured_at=stamp,
+        image_url='https://a.espncdn.com/i/headshots/'+sport+'/players/full/123.png',
+        source_url='https://site.api.espn.com/apis/site/v2/sports/roster',
+        source_sha256='a'*64)])}
+    original=deepcopy(stored); publications=[]
+    class Connection:
+        async def fetch(self,sql,*args):
+            assert 'dashboard_snapshots' in sql and args==('signals:'+sport+':%',)
+            return []
+        async def __aenter__(self): return self
+        async def __aexit__(self,*args): pass
+    class Pool:
+        closed=False
+        def acquire(self): return Connection()
+        async def close(self): self.closed=True
+    pool=Pool()
+    async def create_pool(): return pool
+    async def unexpected_collection(*args,**kwargs):
+        pytest.fail('Empty identity inputs must not collect new provider evidence')
+    def publish(snapshot_key,payload):
+        publications.append(snapshot_key)
+        stored[snapshot_key]=payload
+    monkeypatch.setattr('sportsbet.player_profiles.create_async_pool',create_pool)
+    monkeypatch.setattr('sportsbet.player_profiles.fetch_event_availability',unexpected_collection)
+    monkeypatch.setattr('sportsbet.player_profiles.publish_snapshot',publish)
+    assert await run([sport])=={sport:dict(profiles=0,unavailable=0)}
+    assert publications==[] and stored==original and pool.closed
+
+
 @pytest.mark.parametrize('portraits',[{}, {'Player': {'jersey': '0'}}, {'Player': {'player_id': '123', 'player_image_url': 'wrong'}}])
 def test_verified_roster_without_valid_photo_does_not_crash_profile_refresh(portraits):
     now,data=context()
