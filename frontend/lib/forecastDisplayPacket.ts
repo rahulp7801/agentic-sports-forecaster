@@ -45,8 +45,8 @@ export const canonicalForecastDisplayJson=(value:unknown)=>forecastDisplayJsonUs
 
 export function validForecastDisplayRequest(value:unknown):value is ForecastDisplayRequest {
   if(!object(value)||Object.keys(value).length!==6
-    ||(value.sport!==null&&!['nba','nfl','cfb'].includes(String(value.sport)))
-    ||!['library','qualified','candidates'].includes(String(value.view))||!count(value.offset,999)
+    ||(value.sport!==null&&(typeof value.sport!=='string'||!['nba','nfl','cfb'].includes(value.sport)))
+    ||typeof value.view!=='string'||!['library','qualified','candidates'].includes(value.view)||!count(value.offset,999)
     ||!count(value.limit,100)||value.limit===0||(value.revision!==null&&!digest(value.revision))
     ||typeof value.player!=='string'||value.player!==value.player.trim()||value.player!==value.player.normalize('NFC')
     ||(value.player!==''&&!/^[\p{L}\p{M}.'\u2019 -]{1,80}$/u.test(value.player))
