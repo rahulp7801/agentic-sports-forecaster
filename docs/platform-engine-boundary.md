@@ -10,6 +10,21 @@ This adapter is prepared for integration. Existing live routes have not been
 switched to it, no engine origin or credential has been provisioned, and the
 current frontend is not yet a clean public export.
 
+## Current repository identity
+
+Keep `rahulp7801/agentic-sports-forecaster` public at its current URL and repository
+ID `1199906339`. The owner's October 14 approval covers the existing repository
+and current content. The earlier private-rename/new-public-repository proposal is
+superseded; it does not gate ordinary reviewed fixes to this repository. Existing
+public disclosures cannot be made secret retroactively.
+
+Future alpha belongs in a separately reviewed private engine. Its destination,
+initial content and activation require approval before any repository handoff or
+additional private research publication. Raw evidence stays local. Keep frozen
+study implementations, original source receipts and existing anchors unchanged;
+an alternative future publisher needs separate protocol/destination review and
+cannot retroactively qualify an unanchored cohort.
+
 ## Public historical walkthrough
 
 The landing walkthrough now selects fixed records from
@@ -122,14 +137,38 @@ version, not a statement of predictive performance.
 
 The adapter accepts only a direct HTTP 200 JSON response, with a maximum body of
 one MiB. An eight-second deadline covers fetch and streamed body reads; caller
-cancellation also stops reads. Protocol, resource, revision, timestamp shape,
+cancellation also stops reads. The explicit asynchronous projection path shares
+that deadline instead of starting another budget after the read. Protocol,
+resource, revision, timestamp shape,
 future clock bound and unexpired display lifetime are checked before projection.
 Expiry is checked again before replying. The required projection validates the
 resource schema and returns an explicit allowlisted plain JSON object or array;
-`null`, missing data, asynchronous results, getters, nonfinite numbers, exotic
+`null`, missing data, getters, nonfinite numbers, exotic
 objects, excessive nesting, exceptions, serialization errors and oversized results fail
 closed. The configured service credential is also barred from the serialized
 reply.
+
+The existing synchronous entry point continues to reject asynchronous results.
+The separate asynchronous entry point admits native Promise projections, races
+them against the original deadline/caller cancellation, and contains late
+rejections. Its resource, revision, timestamps and request URL are snapshotted
+before projection; later mutation cannot replace those envelope bindings.
+
+### Prepared asynchronous signals bridge
+
+`engineSignals.ts` connects the asynchronous public forecast packet decoder to
+the bounded transport without importing private forecast or qualification code.
+It snapshots the canonical signal request and packet before asynchronous digest
+verification, then matches the packet request, pagination revision and display
+revision to the requested resource and outer engine revision. Resource-specific
+request admission runs after owner admission and before configuration/network
+access. Invalid or incomplete packets remain unavailable.
+
+This prepares engine-to-public display validation. Existing live API routes and
+`fetchForecasts` keep their current packet contract; they are not switched to the
+engine envelope by this increment. A configured private producer, real reader
+integration, reviewed route/envelope handling and complete bundle/import audit
+remain requirements before activation.
 
 Projections must preserve original source timestamps, capture dates, model
 versions, uncertainty and evidence status. They must exclude raw evidence,
@@ -308,8 +347,9 @@ Before switching a live route or publishing a clean platform export:
    CI artifacts for private code, research records and model artifacts.
 4. Verify real owner OAuth, durable waitlist behavior, API containment and
    display expiry against the configured engine.
-5. Pass the existing CI, schema and deployment gates. Follow the reviewed
-   repository identity handoff before publishing at the original URL.
+5. Pass the existing CI, schema and deployment gates. Preserve the current public
+   repository identity and obtain separate review for a future private-engine
+   destination and activation.
 
 The adapter tests use synthetic upstream responses and real encrypted local
 owner-session fixtures. They perform no live quote reads, collection, purchases

@@ -8,6 +8,11 @@ export type EngineDisplayResource=typeof ENGINE_DISPLAY_RESOURCES[number];
 export type EngineReadConfig={origin:string|undefined;token:string|undefined};
 export type EngineReadOptions={authorize:(request:Request)=>Promise<Response|null>;
   config:()=>EngineReadConfig;transport:typeof fetch;now?:()=>number};
+export type EngineRequestContext=Readonly<{resource:EngineDisplayResource;request_url:string;method:string}>;
+export type EngineProjectionContext=Readonly<EngineRequestContext&{
+  generated_at:string;expires_at:string;revision:string;signal:AbortSignal}>;
+export type EngineAsyncReadOptions=EngineReadOptions&{
+  admit?:(context:EngineRequestContext)=>number|null};
 export type DisplayEnvelope<T>={protocol:typeof ENGINE_DISPLAY_PROTOCOL;resource:EngineDisplayResource;
   generated_at:string;expires_at:string;revision:string;data:T};
 
@@ -82,24 +87,57 @@ function plainDisplay(value:unknown) {
   return true;
 }
 
-/** Read already projected engine output. A domain-specific public projection is mandatory. */
-export async function engineDisplayReply<T>(request:Request,resource:EngineDisplayResource,
-  project:(data:unknown)=>T|null,options:EngineReadOptions):Promise<Response> {
+/** Await only a native Promise, without executing a returned thenable or its getters. */
+function boundedProjection(project:()=>unknown,signal:AbortSignal):Promise<{data:unknown}> {
+  return new Promise((resolve,reject)=>{
+    let settled=false;
+    const finish=(result:{data:unknown}|null)=>{
+      if(settled) return;settled=true;signal.removeEventListener('abort',cancel);
+      if(result===null) reject(new Error('Unavailable'));else resolve(result);
+    };
+    const cancel=()=>finish(null);
+    signal.addEventListener('abort',cancel,{once:true});
+    try {
+      signal.throwIfAborted();
+      const pending=project();
+      if(!pending || typeof pending!=='object' || Object.getPrototypeOf(pending)!==Promise.prototype
+        || Object.hasOwn(pending,'constructor')) {finish(null);return;}
+      // First-party projectors return ordinary native Promises. Observe malformed own-then
+      // output before rejecting it, without invoking that property or dropping its rejection.
+      const invalid=Object.getOwnPropertyNames(pending).length!==0;
+      // Intrinsic then avoids reading an overridden .then; rejection is handled even after abort.
+      Promise.prototype.then.call(pending,(data:unknown)=>finish({data}),()=>finish(null));
+      if(invalid) finish(null);
+      if(signal.aborted) cancel();
+    } catch {finish(null);}
+  });
+}
+
+async function displayReply(request:Request,resource:EngineDisplayResource,
+  project:(data:unknown,context:EngineProjectionContext)=>unknown,
+  options:EngineAsyncReadOptions,asynchronous:boolean):Promise<Response> {
   try {
+    const context=Object.freeze({resource,request_url:request.url,method:request.method});
+    const headers=new Headers(request.headers);
     // Authorization precedes configuration access and every upstream operation.
     const denied=await options.authorize(request);
     if(denied instanceof Response) return denied;
     if(denied!==null) return unavailable();
     if(!ENGINE_DISPLAY_RESOURCES.includes(resource)) return Response.json({error:'Unsupported display resource.'},
       {status:404,headers:NO_STORE_HEADERS});
-    const input=new URL(request.url);
+    const input=new URL(context.request_url);
     if(input.pathname!==`/api/${resource}`) return Response.json({error:'Unsupported display request.'},
       {status:400,headers:NO_STORE_HEADERS});
-    const rejected=publicRequest(request);
+    const rejected=publicRequest({url:context.request_url,method:context.method,headers});
     if(rejected) return Response.json({error:'Request rejected.'},{status:rejected,headers:NO_STORE_HEADERS});
-    if(!['GET','HEAD'].includes(request.method)) return Response.json({error:'Request rejected.'},
+    if(!['GET','HEAD'].includes(context.method)) return Response.json({error:'Request rejected.'},
       {status:405,headers:NO_STORE_HEADERS});
-    const config=options.config(),origin=configuredOrigin(config);
+    if(options.admit) {
+      const rejected=options.admit(context);
+      if(rejected!==null) return Number.isInteger(rejected) && rejected>=400 && rejected<=499
+        ? Response.json({error:'Request rejected.'},{status:rejected,headers:NO_STORE_HEADERS}) : unavailable();
+    }
+    const supplied=options.config(),config={origin:supplied.origin,token:supplied.token},origin=configuredOrigin(config);
     const url=new URL(`/v1/display/${resource}`,origin);url.search=input.search;
     const signal=AbortSignal.any([request.signal,AbortSignal.timeout(TIMEOUT_MS)]);
     signal.throwIfAborted();
@@ -115,9 +153,13 @@ export async function engineDisplayReply<T>(request:Request,resource:EngineDispl
       || Date.parse(envelope.generated_at)>now+60000 || Date.parse(envelope.expires_at)<=now
       || Date.parse(envelope.expires_at)<=Date.parse(envelope.generated_at)
       || typeof envelope.revision!=='string' || !/^[a-f0-9]{64}$/.test(envelope.revision)) return unavailable();
-    const data=project(envelope.data);
+    const projectionContext=Object.freeze({...context,generated_at:envelope.generated_at,
+      expires_at:envelope.expires_at,revision:envelope.revision,signal});
+    const data=asynchronous
+      ? (await boundedProjection(()=>project(envelope.data,projectionContext),signal)).data
+      : project(envelope.data,projectionContext);
     if(data===null || data===undefined || !plainDisplay(data)) return unavailable();
-    const reply:DisplayEnvelope<T>={protocol:ENGINE_DISPLAY_PROTOCOL,resource,
+    const reply:DisplayEnvelope<unknown>={protocol:ENGINE_DISPLAY_PROTOCOL,resource,
       generated_at:envelope.generated_at,expires_at:envelope.expires_at,revision:envelope.revision,data};
     const encoded=JSON.stringify(reply);
     if(new TextEncoder().encode(encoded).byteLength>BODY_BYTES) return unavailable();
@@ -127,7 +169,19 @@ export async function engineDisplayReply<T>(request:Request,resource:EngineDispl
     const repliedAt=(options.now ?? Date.now)();
     if(!Number.isFinite(repliedAt) || Date.parse(envelope.expires_at)<=repliedAt) return unavailable();
     // Neither upstream headers/errors nor credentials are reflected to the caller.
-    return new Response(request.method==='HEAD' ? null : encoded,
+    return new Response(context.method==='HEAD' ? null : encoded,
       {status:200,headers:{...NO_STORE_HEADERS,'Content-Type':'application/json; charset=utf-8'}});
   } catch {return unavailable();}
+}
+
+/** Synchronous projections remain synchronous: Promise output is rejected. */
+export function engineDisplayReply<T>(request:Request,resource:EngineDisplayResource,
+  project:(data:unknown)=>T|null,options:EngineReadOptions):Promise<Response> {
+  return displayReply(request,resource,project,options,false);
+}
+
+/** One deadline covers the upstream read and an explicitly asynchronous public projection. */
+export function engineDisplayReplyAsync<T>(request:Request,resource:EngineDisplayResource,
+  project:(data:unknown,context:EngineProjectionContext)=>Promise<T|null>,options:EngineAsyncReadOptions):Promise<Response> {
+  return displayReply(request,resource,project,options,true);
 }
