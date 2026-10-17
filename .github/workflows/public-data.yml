@@ -72,7 +72,25 @@ jobs:
           ANALYTICS_DATABASE_URL: ${{ secrets.DATABASE_URL }}
           KALSHI_PAIR_SOURCE_DIR: ${{ runner.temp }}/nfl-role-sources
           KALSHI_PAIR_OUTPUT: ${{ runner.temp }}/private-kalshi-pair/pair.json
-        run: uv run --locked python -m sportsbet.daily --sport "$SPORT" --mode "$OPERATION" --report-output "$RUNNER_TEMP/public-report.json"
+        run: |
+          set -euo pipefail
+          report_dir="$(mktemp -d "$RUNNER_TEMP/public-report.XXXXXXXX")"
+          report_path="$report_dir/report.json"
+          started_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          set +e
+          uv run --locked python -m sportsbet.daily --sport "$SPORT" --mode "$OPERATION" --report-output "$report_path"
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ] || [ "$status" -eq 2 ]; then
+            if ! uv run --locked python .github/scripts/validate-public-report.py \
+              --report "$report_path" --mode "$OPERATION" --sport "$SPORT" \
+              --producer-status "$status" --started-at "$started_at"; then
+              if [ "$status" -eq 0 ]; then exit 1; fi
+              exit "$status"
+            fi
+            printf 'report_ready=true\nreport_path=%s\n' "$report_path" >> "$GITHUB_OUTPUT"
+          fi
+          exit "$status"
       - name: Update CFB schedule without consuming odds credits
         if: always() && !cancelled() && steps.worker_config.outcome == 'success' && steps.schema.outcome == 'success' && (github.event_name == 'schedule' || env.SPORT == 'cfb')
         id: cfb_schedule
@@ -93,17 +111,17 @@ jobs:
           ANALYTICS_DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: uv run --locked python -m sportsbet.cfb_public_settlement
       - name: Update source-backed player profiles
-        if: always() && !cancelled() && steps.worker_config.outcome == 'success' && steps.schema.outcome == 'success' && steps.public_update.outcome == 'success' && env.SPORT != 'cfb' && env.OPERATION == 'public_daily'
+        if: always() && !cancelled() && steps.worker_config.outcome == 'success' && steps.schema.outcome == 'success' && env.SPORT != 'cfb' && env.OPERATION == 'public_daily'
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DATABASE_URL_ASYNC: ${{ secrets.DATABASE_URL_ASYNC }}
         run: uv run --locked python -m sportsbet.player_profiles --sport "$SPORT"
       - name: Verify private access and published snapshot receipt
-        if: always() && !cancelled() && steps.worker_config.outcome == 'success' && steps.schema.outcome == 'success' && ((env.SPORT != 'cfb' && steps.public_update.outcome == 'success') || (env.SPORT == 'cfb' && steps.cfb_schedule.outcome == 'success'))
+        if: always() && !cancelled() && steps.worker_config.outcome == 'success' && steps.schema.outcome == 'success' && ((env.SPORT != 'cfb' && steps.public_update.outputs.report_ready == 'true') || (env.SPORT == 'cfb' && steps.cfb_schedule.outcome == 'success'))
         env:
           DATA_PIPELINE_ENABLED: 'false'
           PUBLIC_DATA_PIPELINE_ENABLED: 'true'
-          PUBLIC_DATA_REPORT_PATH: ${{ runner.temp }}/public-report.json
+          PUBLIC_DATA_REPORT_PATH: ${{ steps.public_update.outputs.report_path }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           # Preserve exact capture identity while bounded CDN/server caches refresh.
           # Retry only mismatched public captures, without repeating collection.

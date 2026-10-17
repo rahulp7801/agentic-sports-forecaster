@@ -221,11 +221,11 @@ async def test_prop_inventory_validates_sport_and_milestone_shape():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('change',[{'yes_ask_dollars':'0.4600'},
-    {'custom_strike':{'football_player':'30000000-0000-0000-0000-000000000003',
-        'football_team':'90000000-0000-0000-0000-000000000009'}},
-    {'primary_participant_key':'football_team'}])
-async def test_prop_inventory_rejects_inconsistent_quote_or_structured_identity(change):
+@pytest.mark.parametrize('change,reason',[({'yes_ask_dollars':'0.4600'},'inconsistent_prop_top_of_book'),
+    ({'custom_strike':{'football_player':'30000000-0000-0000-0000-000000000003',
+        'football_team':'90000000-0000-0000-0000-000000000009'}},'invalid_structured_prop_evidence'),
+    ({'primary_participant_key':'football_team'},'invalid_structured_prop_evidence')])
+async def test_prop_inventory_rejects_inconsistent_quote_or_structured_identity(change,reason):
     event='KXNFLPASSYDS-26SEP13ATLPIT';reader=AsyncMock()
     item=market('KXNFLPASSYDS',event,'PLAYER-250')|change
     async def pages(series,**kwargs):
@@ -235,7 +235,8 @@ async def test_prop_inventory_rejects_inconsistent_quote_or_structured_identity(
     assert result['status']=='degraded' and result['partial_coverage'] is True
     assert result['coverage']['structured_quote_markets']==0
     assert result['series']['KXNFLPASSYDS']['status']=='invalid'
-    assert result['failures']==[{'stage':'prop_discovery','series':'KXNFLPASSYDS','error_type':'ValueError'}]
+    assert result['failures']==[{'stage':'prop_discovery','series':'KXNFLPASSYDS',
+        'error_type':'ValueError','reason':reason}]
 
 
 @pytest.mark.asyncio
@@ -250,7 +251,8 @@ async def test_prop_target_failure_retains_quotes_but_blocks_cross_provider_iden
     assert result['coverage']['player_resolved_quote_markets']==0
     assert 'player_name' not in result['quotes'][0]
     assert result['targets']=={}
-    assert result['failures']==[{'stage':'prop_targets','error_type':'ValueError'}]
+    assert result['failures']==[{'stage':'prop_targets','error_type':'ValueError',
+        'reason':'incomplete_structured_target_page'}]
 
 
 @pytest.mark.asyncio

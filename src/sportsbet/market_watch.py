@@ -16,7 +16,7 @@ from sportsbet.config import settings, DEFAULT_DAILY_CREDIT_LIMIT
 from sportsbet.dashboard import publish_snapshot, load_snapshot
 from sportsbet.ingestion.archive import write_archive
 from sportsbet.ingestion.odds_api_credential import require_safe_odds_api_key
-from sportsbet.ingestion.kalshi import KalshiReader
+from sportsbet.ingestion.kalshi import KalshiReader, KalshiReadError
 from sportsbet.ingestion.kalshi_history import SERIES as KALSHI_PROP_SERIES
 from sportsbet.ingestion.prizepicks import PrizePicksUnavailable, capture as capture_projections
 from sportsbet.ledger import Ledger
@@ -30,6 +30,69 @@ MAX_GAME_LIMIT=40
 PROP_PAGE_LIMIT=1000
 MAX_PROP_PAGES=3
 PROP_FEE_CONCURRENCY=8
+KALSHI_FAILURE_STAGES=frozenset(('source','discovery','milestone','event','event_fee','market',
+    'prop_link','prop_discovery','prop_targets','prop_fees'))
+KALSHI_FAILURE_TYPES=frozenset(('KalshiReadError','RuntimeError','ValueError','KeyError','TypeError',
+    'AttributeError','ArithmeticError','InvalidOperation','OverflowError','JSONDecodeError',
+    'UnicodeDecodeError','InvalidCursor','InvalidMilestone','InvalidEvent','ConflictingEvent',
+    'PageLimitExceeded'))
+KALSHI_VALIDATION_REASONS=frozenset(('invalid_market_page','invalid_market_cursor',
+    'invalid_prop_market_identity','repeated_market_cursor','invalid_structured_target_page',
+    'incomplete_structured_target_page','structured_target_mismatch','invalid_structured_prop_evidence',
+    'invalid_fixed_point_quote','invalid_prop_quote','inconsistent_prop_top_of_book',
+    'crossed_prop_top_of_book','missing_prop_settlement_rules'))
+
+
+class _PropValidationError(ValueError):
+    def __init__(self, reason: str, message: str):
+        if reason not in KALSHI_VALIDATION_REASONS:
+            raise ValueError('Invalid prop diagnostic')
+        self.reason=reason
+        super().__init__(message)
+
+
+def kalshi_error_fields(error: Exception) -> dict:
+    """Never derive diagnostics from exception text, URLs or provider bodies."""
+    result={'error_type':'ValueError' if isinstance(error,_PropValidationError) else type(error).__name__}
+    if isinstance(error,KalshiReadError):
+        if error.reason=='transport':
+            result['reason']='transport'
+        elif error.reason=='http_status' and type(error.http_status) is int and 100<=error.http_status<=599:
+            result.update(reason='http_status',http_status=error.http_status)
+    elif isinstance(error,_PropValidationError) and error.reason in KALSHI_VALIDATION_REASONS:
+        result['reason']=error.reason
+    return result
+
+
+def kalshi_failure_counts(source: dict) -> dict:
+    """Finite categorical counts; omit event/player IDs and arbitrary type names."""
+    result=dict(total=0,by_stage={},by_error_type={},by_reason={},by_http_status={})
+    inventory=source.get('prop_inventory')
+    # Prop discovery failures are already included in the source failures. Fee
+    # failures are independent and must not change the existing coverage status.
+    groups=[source.get('failures',[])]
+    if isinstance(inventory,dict):
+        groups.append(inventory.get('fee_failures',[]))
+    for failures in groups:
+        if not isinstance(failures,list):
+            continue
+        for failure in failures:
+            fields=failure if isinstance(failure,dict) else {}
+            stage=fields.get('stage')
+            stage=stage if isinstance(stage,str) and stage in KALSHI_FAILURE_STAGES else 'other'
+            error_type=fields.get('error_type')
+            error_type=error_type if isinstance(error_type,str) and error_type in KALSHI_FAILURE_TYPES else 'OtherError'
+            result['total']+=1
+            for name,value in (('by_stage',stage),('by_error_type',error_type)):
+                result[name][value]=result[name].get(value,0)+1
+            reason=fields.get('reason')
+            if isinstance(reason,str) and reason in KALSHI_VALIDATION_REASONS|{'transport','http_status'}:
+                result['by_reason'][reason]=result['by_reason'].get(reason,0)+1
+                status=fields.get('http_status')
+                if reason=='http_status' and type(status) is int and 100<=status<=599:
+                    key=str(status)
+                    result['by_http_status'][key]=result['by_http_status'].get(key,0)+1
+    return result
 
 
 def digest(value) -> str:
@@ -68,7 +131,7 @@ async def kalshi_prop_fee_contexts(reader: KalshiReader, supported: dict,
             series_data,series_changes=await asyncio.gather(
                 reader.series(series),reader.series_fee_changes(series))
         except Exception as exc:
-            failures.append(dict(stage='prop_fees',series=series,error_type=type(exc).__name__))
+            failures.append(dict(stage='prop_fees',series=series,**kalshi_error_fields(exc)))
             continue
 
         async def capture(event: str):
@@ -81,7 +144,7 @@ async def kalshi_prop_fee_contexts(reader: KalshiReader, supported: dict,
         for event,result in zip(events,results):
             if isinstance(result,Exception):
                 failures.append(dict(stage='prop_fees',series=series,event_ticker=event,
-                    error_type=type(result).__name__))
+                    **kalshi_error_fields(result)))
             else:
                 contexts[event]=result
     return contexts,failures
@@ -134,7 +197,7 @@ async def discover_kalshi_games(reader: KalshiReader, sport: str, now: datetime)
             pages.append(page)
             if not isinstance(page.get('milestones'),list):raise ValueError('Invalid discovery page')
         except Exception as exc:
-            failures.append(dict(stage='discovery',error_type=type(exc).__name__))
+            failures.append(dict(stage='discovery',**kalshi_error_fields(exc)))
             break
         for milestone in page['milestones']:
             try:
@@ -154,7 +217,7 @@ async def discover_kalshi_games(reader: KalshiReader, sport: str, now: datetime)
                         raise ValueError('Conflicting milestone identity')
                 else:eligible[event]=milestone
             except (ValueError,KeyError,TypeError,AttributeError) as exc:
-                failures.append(dict(stage='milestone',error_type=type(exc).__name__))
+                failures.append(dict(stage='milestone',**kalshi_error_fields(exc)))
         cursor=page.get('cursor')
         if cursor is not None and not isinstance(cursor,str):
             failures.append(dict(stage='discovery',error_type='InvalidCursor'))
@@ -217,10 +280,10 @@ async def kalshi_prop_inventory(reader: KalshiReader, sport: str, games: list[di
                 page=await reader.markets(series,limit=PROP_PAGE_LIMIT,cursor=cursor)
                 received_at=datetime.now(timezone.utc)
                 if not isinstance(page,dict) or not isinstance(page.get('markets'),list):
-                    raise ValueError('Invalid market page')
+                    raise _PropValidationError('invalid_market_page','Invalid market page')
                 page_cursor=page.get('cursor')
                 if page_cursor is not None and not isinstance(page_cursor,str):
-                    raise ValueError('Invalid market cursor')
+                    raise _PropValidationError('invalid_market_cursor','Invalid market cursor')
                 pages.append(page)
                 page_sha256=digest(page)
                 for market in page['markets']:
@@ -229,7 +292,7 @@ async def kalshi_prop_inventory(reader: KalshiReader, sport: str, games: list[di
                             or not event.startswith(series+'-') or not ticker.startswith(event+'-')
                             or market.get('status')!='active' or market.get('market_type')!='binary'
                             or Decimal(market['notional_value_dollars'])!=1 or ticker in tickers):
-                        raise ValueError('Invalid prop market identity')
+                        raise _PropValidationError('invalid_prop_market_identity','Invalid prop market identity')
                     tickers.add(ticker);events.add(event)
                     if event in linked_games:
                         linked.add(ticker);linked_event_set.add(event)
@@ -240,17 +303,17 @@ async def kalshi_prop_inventory(reader: KalshiReader, sport: str, games: list[di
                     complete=True
                     break
                 if cursor in seen_cursors:
-                    raise ValueError('Repeated market cursor')
+                    raise _PropValidationError('repeated_market_cursor','Repeated market cursor')
                 seen_cursors.add(cursor)
             if not complete:
                 status='partial'
                 failures.append(dict(stage='prop_discovery',series=series,error_type='PageLimitExceeded'))
         except (KeyError,ValueError,TypeError,ArithmeticError) as exc:
             status='invalid'
-            failures.append(dict(stage='prop_discovery',series=series,error_type=type(exc).__name__))
+            failures.append(dict(stage='prop_discovery',series=series,**kalshi_error_fields(exc)))
         except Exception as exc:
             status='unavailable'
-            failures.append(dict(stage='prop_discovery',series=series,error_type=type(exc).__name__))
+            failures.append(dict(stage='prop_discovery',series=series,**kalshi_error_fields(exc)))
         all_markets.update(tickers);all_events.update(events)
         linked_markets.update(linked);linked_events.update(linked_event_set)
         results[series]=dict(status=status,complete=complete,pages=len(pages),open_markets=len(tickers),
@@ -264,11 +327,11 @@ async def kalshi_prop_inventory(reader: KalshiReader, sport: str, games: list[di
             received_at=datetime.now(timezone.utc)
             targets=target_page['structured_targets']
             if not isinstance(targets,list) or target_page.get('cursor') or len({target['id'] for target in targets})!=len(targets):
-                raise ValueError('Invalid structured target page')
+                raise _PropValidationError('invalid_structured_target_page','Invalid structured target page')
             by_id={str(UUID(target['id'])):target for target in targets}
             expected={quote['player_target_id'] for quote in quotes}
             if set(by_id)!=expected:
-                raise ValueError('Incomplete structured target page')
+                raise _PropValidationError('incomplete_structured_target_page','Incomplete structured target page')
             page_sha256=digest(target_page)
             teams_by_player={}
             for quote in quotes:
@@ -279,15 +342,15 @@ async def kalshi_prop_inventory(reader: KalshiReader, sport: str, games: list[di
                 kind='football' if sport=='nfl' else 'basketball'
                 if (target.get('type')!=kind+'_player' or target['details'].get('league')!=sport.upper()
                         or not name or teams_by_player[target_id]!={team_id}):
-                    raise ValueError('Structured target does not match prop')
+                    raise _PropValidationError('structured_target_mismatch','Structured target does not match prop')
                 target_records[target_id]=dict(player_name=name,team_target_id=team_id,
                     target_sha256=digest(target),
                     target_page_sha256=page_sha256,target_request_started_at=request_started.isoformat(),
                     target_received_at=received_at.isoformat())
         except (KeyError,ValueError,TypeError,AttributeError) as exc:
-            failures.append(dict(stage='prop_targets',error_type=type(exc).__name__))
+            failures.append(dict(stage='prop_targets',**kalshi_error_fields(exc)))
         except Exception as exc:
-            failures.append(dict(stage='prop_targets',error_type=type(exc).__name__))
+            failures.append(dict(stage='prop_targets',**kalshi_error_fields(exc)))
     quote_coverage=kalshi_prop_quote_coverage(quotes)
     coverage=dict(series_expected=len(supported),series_observed=sum(r['status']=='observed' for r in results.values()),
         open_markets=len(all_markets),open_events=len(all_events),linked_markets=len(linked_markets),
@@ -329,7 +392,7 @@ def kalshi_prop_quote(market: dict, series: str, prop_type: str, game: dict,
             or market.get('strike_type')!='greater' or not line.is_finite() or line<0
             or request_started.utcoffset() is None or received_at.utcoffset() is None
             or not request_started<=received_at or len(page_sha256)!=64):
-        raise ValueError('Invalid structured prop evidence')
+        raise _PropValidationError('invalid_structured_prop_evidence','Invalid structured prop evidence')
 
     def ask(side: str) -> dict | None:
         if side=='yes':
@@ -337,23 +400,23 @@ def kalshi_prop_quote(market: dict, series: str, prop_type: str, game: dict,
         else:
             bid_key,size_key,ask_key='yes_bid_dollars','yes_bid_size_fp','no_ask_dollars'
         if not all(isinstance(market.get(key),str) for key in (bid_key,size_key,ask_key)):
-            raise ValueError('Expected fixed-point quote strings')
+            raise _PropValidationError('invalid_fixed_point_quote','Expected fixed-point quote strings')
         bid,size,reported=map(Decimal,(market[bid_key],market[size_key],market[ask_key]))
         if not all(value.is_finite() for value in (bid,size,reported)):
-            raise ValueError('Invalid prop quote')
+            raise _PropValidationError('invalid_prop_quote','Invalid prop quote')
         if bid==0 and size==0 and reported in (0,1):
             return None
         cost=1-bid
         if not 0<bid<1 or size<=0 or reported!=cost:
-            raise ValueError('Inconsistent prop top of book')
+            raise _PropValidationError('inconsistent_prop_top_of_book','Inconsistent prop top of book')
         return dict(cost=str(cost),displayed_size=str(size))
 
     yes_ask,no_ask=ask('yes'),ask('no')
     if yes_ask and no_ask and Decimal(yes_ask['cost'])+Decimal(no_ask['cost'])<1:
-        raise ValueError('Crossed prop top of book')
+        raise _PropValidationError('crossed_prop_top_of_book','Crossed prop top of book')
     rules=dict(primary=market.get('rules_primary'),secondary=market.get('rules_secondary'))
     if not all(isinstance(value,str) and value.strip() for value in rules.values()):
-        raise ValueError('Missing prop settlement rules')
+        raise _PropValidationError('missing_prop_settlement_rules','Missing prop settlement rules')
     terms=classify_prop_settlement_rules(rules,prop_type)
     result=dict(ticker=market['ticker'],event_ticker=market['event_ticker'],series_ticker=series,
         milestone_id=game['id'],scheduled_game_start_time=timestamp(game['start_date']).isoformat(),
@@ -423,7 +486,7 @@ async def kalshi_games(sport: str, now: datetime, limit: int) -> dict:
                     if target_id not in targets:
                         targets[target_id] = await reader.target(target_id)
             except Exception as exc:
-                failures.append(dict(stage='event',event_ticker=identity,error_type=type(exc).__name__))
+                failures.append(dict(stage='event',event_ticker=identity,**kalshi_error_fields(exc)))
                 event_failed_games.add(identity)
                 continue
             fee_context={'status':'unavailable'}
@@ -436,7 +499,7 @@ async def kalshi_games(sport: str, now: datetime, limit: int) -> dict:
                     fee_context=dict(status='unavailable',reason='event_fee_lookup_failed',
                         error_type=type(exc).__name__)
                     failures.append(dict(stage='event_fee',event_ticker=identity,
-                        error_type=type(exc).__name__))
+                        **kalshi_error_fields(exc)))
             snapshots=[]
             omitted_markets+=max(0,len(active)-3)
             for market in active[:3]:
@@ -447,7 +510,7 @@ async def kalshi_games(sport: str, now: datetime, limit: int) -> dict:
                     if snapshot['market'].get('status')!='active':continue
                     snapshots.append(snapshot)
                 except Exception as exc:
-                    failures.append(dict(stage='market',event_ticker=identity,market_ticker=market['ticker'],error_type=type(exc).__name__))
+                    failures.append(dict(stage='market',event_ticker=identity,market_ticker=market['ticker'],**kalshi_error_fields(exc)))
                     market_failed_games.add(identity)
             games.append(dict(milestone=milestone, event=event, snapshots=snapshots,fee_context=fee_context))
     teams = None
@@ -739,6 +802,8 @@ async def run(sport: str, daily_credit_limit: int, game_limit: int, publish: boo
             sources[name]=dict(status='unavailable',partial_coverage=True)
             if isinstance(result,PrizePicksUnavailable):
                 sources[name]['reason']=result.reason
+            if name=='kalshi':
+                sources[name]['failures']=[dict(stage='source',**kalshi_error_fields(result))]
         else:
             sources[name]=result
         if name=='prizepicks' and not isinstance(result,Exception):
@@ -755,7 +820,8 @@ async def run(sport: str, daily_credit_limit: int, game_limit: int, publish: boo
         sources={name:dict(status=source['status'], count=len(source.get('events',source.get('games',source.get('projections',[])))),
             partial_coverage=source.get('partial_coverage',True),
             **({'reason':source['reason']} if 'reason' in source else {}),
-            **({'coverage':source['coverage']} if 'coverage' in source else {})) for name,source in sources.items()},
+            **({'coverage':source['coverage']} if 'coverage' in source else {}),
+            **({'failure_counts':kalshi_failure_counts(source)} if name=='kalshi' else {})) for name,source in sources.items()},
         comparisons=rows, execution_ready=False, realized_profit=None,
         scope='Observed prices only. Gross gaps exclude fees and full settlement states; they are not verified arbitrage or backtest returns.')
     if schedule_status is not None:

@@ -189,12 +189,12 @@ def test_public_collection_verifies_the_deployed_contract_before_success() -> No
     evidence = "name: Stage public evidence without configured provider credentials"
 
     assert public.index(update) < public.index(readiness) < public.index(evidence)
-    assert '--report-output "$RUNNER_TEMP/public-report.json"' in public
+    assert '--report-output "$report_path"' in public
     assert '| tee ' not in _step(public, "Update public market data")
     assert "node frontend/scripts/verify-production.mjs" in public
     assert "DATA_PIPELINE_ENABLED: 'false'" in public
     assert "PUBLIC_DATA_PIPELINE_ENABLED: 'true'" in public
-    assert "PUBLIC_DATA_REPORT_PATH: ${{ runner.temp }}/public-report.json" in public
+    assert "PUBLIC_DATA_REPORT_PATH: ${{ steps.public_update.outputs.report_path }}" in public
     verification = _step(public, "Verify private access and published snapshot receipt")
     assert verification.index('verify-published-snapshots.py') < verification.index('verify-production.mjs')
     assert 'PUBLIC_DATA_REPORT_PATH= node frontend/scripts/verify-production.mjs' in verification
@@ -250,7 +250,7 @@ def test_cfb_publication_has_an_independent_exact_receipt_gate_and_private_readi
     assert 'continue-on-error' not in proof
 
 
-def test_successful_public_updates_keep_profiles_and_readiness_independent_of_cfb_settlement() -> None:
+def test_public_profiles_and_validated_receipts_survive_independent_degradation() -> None:
     public = PUBLIC_WORKFLOW.read_text(encoding="utf-8")
     update = _step(public, "Update public market data")
     profiles = _step(public, "Update source-backed player profiles")
@@ -266,15 +266,25 @@ def test_successful_public_updates_keep_profiles_and_readiness_independent_of_cf
     # Explicit status functions avoid the implicit success() that previously
     # skipped these independent operations after degraded CFB settlement.
     assert profile_guard is not None and profile_guard.group(1) == prerequisites + (
-        "steps.public_update.outcome == 'success' && env.SPORT != 'cfb' "
-        "&& env.OPERATION == 'public_daily'"
+        "env.SPORT != 'cfb' && env.OPERATION == 'public_daily'"
     )
     assert readiness_guard is not None and readiness_guard.group(1) == prerequisites + (
-        "((env.SPORT != 'cfb' && steps.public_update.outcome == 'success') "
+        "((env.SPORT != 'cfb' && steps.public_update.outputs.report_ready == 'true') "
         "|| (env.SPORT == 'cfb' && steps.cfb_schedule.outcome == 'success'))"
     )
-    # Both branches admit only their own successful producer. CFB-only runs
-    # still skip the absent NFL/NBA report and retain the live-site access gate.
+    # A validated report survives intentional producer exit 2. Profiles read
+    # independent stored identities; neither operation needs complete markets.
+    assert 'public_update' not in profile_guard.group(1)
+    assert 'public_update.outcome' not in readiness_guard.group(1)
+    assert 'mktemp -d "$RUNNER_TEMP/public-report.XXXXXXXX"' in update
+    assert 'started_at="$(date -u' in update and 'status=$?' in update
+    assert 'if [ "$status" -eq 0 ] || [ "$status" -eq 2 ]; then' in update
+    assert 'if ! uv run --locked python .github/scripts/validate-public-report.py' in update
+    assert update.index('validate-public-report.py') < update.index('report_ready=true')
+    assert 'if [ "$status" -eq 0 ]; then exit 1; fi' in update
+    assert update.rstrip().endswith('exit "$status"')
+    assert 'continue-on-error' not in update
+    # CFB-only runs skip the absent NFL/NBA report and retain site access checks.
     assert 'if [ "$SPORT" != cfb ]; then' in readiness
     assert 'PUBLIC_DATA_REPORT_PATH= node frontend/scripts/verify-production.mjs' in readiness
     for step in (profiles, readiness, settlement):
