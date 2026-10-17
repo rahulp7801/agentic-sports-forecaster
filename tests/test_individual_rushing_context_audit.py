@@ -1,6 +1,7 @@
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import hashlib
+import json
 
 import pytest
 from tests.test_model_selection_paper import receipt, rows, NOW
@@ -57,7 +58,41 @@ def test_reconstructed_baseline_has_descriptive_recent_and_season_counts_only():
     assert result['recent_games'] == 10 and result['current_season_games'] == 3
     assert result['original_input_receipt'] is False
     assert result['participation_completeness_verified'] is False
+    assert result['current_season_carries'] is None
+    assert result['current_season_carries_verified'] is False
+    assert result['current_season_carries_unavailable_reason'] == 'not_committed_by_stat_row'
     assert args == before
+
+
+@pytest.mark.parametrize('legacy', [False, True])
+@pytest.mark.parametrize('carries', [None, 0, 999, 'unverified', {'unverified': 999}, float('nan')])
+def test_uncommitted_carries_cannot_change_verified_context(legacy, carries):
+    row, selection, receipt, snapshot = fixture()
+    if legacy:
+        for source in snapshot['nfl_base']:
+            source.pop('receptions')
+            source['source_record_sha256'] = stat_row_sha256('nfl', source)
+    args = row, selection, receipt, snapshot
+    original = context(*args)
+    assert original['available']
+    for source in snapshot['nfl_base']:
+        committed = source['source_record_sha256']
+        source['carries'] = deepcopy(carries)
+        assert stat_row_sha256('nfl', source) == committed
+    mutated = deepcopy(args)
+    # No new receipt/hash, fabricated workload, baseline change or input rewrite.
+    assert context(*args) == original
+    assert args == mutated
+    json.dumps(context(*args), allow_nan=False)
+
+
+def test_absent_carries_remain_unavailable_without_implying_zero():
+    args = fixture()
+    original = context(*args)
+    for source in args[3]['nfl_base']:
+        source.pop('carries')
+        assert stat_row_sha256('nfl', source) == source['source_record_sha256']
+    assert context(*args) == original
 
 
 @pytest.mark.parametrize('fault,reason', [
