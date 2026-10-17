@@ -24,6 +24,21 @@ RETRYABLE_READ_STATUS = {429, 500, 502, 503, 504}
 READ_RETRY_DELAYS = (0.25, 0.5)
 
 
+class KalshiReadError(RuntimeError):
+    """A read failure with bounded diagnostics independent of provider content."""
+    def __init__(self, reason: str, http_status: int | None = None):
+        if reason == 'transport' and http_status is None:
+            message = 'Kalshi read failed (transport)'
+        elif (reason == 'http_status' and type(http_status) is int
+                and 100 <= http_status <= 599):
+            message = f'Kalshi read failed (HTTP {http_status})'
+        else:
+            raise ValueError('Invalid Kalshi read diagnostic')
+        self.reason = reason
+        self.http_status = http_status
+        super().__init__(message)
+
+
 def ticker_path(ticker: str) -> str:
     if not re.fullmatch(r'[A-Z0-9_-]{1,150}', ticker):
         raise ValueError('Invalid Kalshi ticker')
@@ -89,12 +104,12 @@ class KalshiReader:
                 response = await self._client.get(path, params=params, headers=headers)
             except httpx.TransportError:
                 if attempt == len(READ_RETRY_DELAYS):
-                    raise RuntimeError('Kalshi read failed (transport)') from None
+                    raise KalshiReadError('transport') from None
             else:
                 if response.status_code == 200:
                     return response.json()
                 if response.status_code not in RETRYABLE_READ_STATUS or attempt == len(READ_RETRY_DELAYS):
-                    raise RuntimeError(f'Kalshi read failed (HTTP {response.status_code})')
+                    raise KalshiReadError('http_status', response.status_code)
             await asyncio.sleep(READ_RETRY_DELAYS[attempt])
         raise AssertionError('unreachable')
 

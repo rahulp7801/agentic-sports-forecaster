@@ -94,6 +94,28 @@ reserve availability, or permission to activate collection. Keep the existing
 Unavailable configuration, provider evidence or ledger data remains explicit;
 do not use another collection operation as a substitute for this probe.
 
+## Verify completed degraded public captures
+
+A public collector can finish, publish its partial observations and write its
+final report while returning exit code 2 for incomplete coverage. The workflow
+keeps that failure and validates the completed report before allowing its exact
+database receipt check. Each invocation uses a fresh report path; malformed,
+stale, wrong-scope or unfinished reports cannot enable verification. Fatal
+collector failures remain failures. Verification reads the captured identities
+without collecting prices again.
+
+The daily profile worker reads its own bounded stored signal identities after
+configuration and schema checks pass. It can run when a market source degrades;
+empty inputs retain the original profile capture and timestamps.
+
+Kalshi summaries retain bounded categorical failure diagnostics for the next
+scheduled capture. They expose controlled stages, error categories and HTTP
+status counts without provider bodies, authenticated URLs, player or event IDs.
+Source status, partial coverage, accepted payloads, model outputs and qualification
+rules retain their existing meaning. A verified publication receipt establishes
+the identity of a stored capture; it does not establish complete coverage or an
+edge.
+
 ## Hosting decision remains open
 
 No new service, billing plan or credential transfer has been activated by this change. A portable image can run on an existing server or a managed container host. As a possible managed option, [Render cron jobs](https://render.com/docs/cronjobs) support Docker and prevent overlap within one job; that guarantee does not serialize two separate jobs. Render currently bills for active compute with a $1/month minimum **per cron service**, plus any applicable workspace/platform charges. A continuously running background worker has different costs. Confirm the selected design and total cost before activation.
