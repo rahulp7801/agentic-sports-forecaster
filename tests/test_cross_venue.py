@@ -151,8 +151,7 @@ def test_handoff_hash_completeness_status_and_age_fail_closed():
         assert result['status'] == 'unavailable' and result['comparisons'] == []
 
 
-@pytest.mark.asyncio
-async def test_salvaged_valid_sibling_remains_partial_through_handoff_and_screen(monkeypatch):
+def _inventory_fixture(monkeypatch):
     import importlib.util
     from pathlib import Path
     from sportsbet import market_watch
@@ -160,13 +159,18 @@ async def test_salvaged_valid_sibling_remains_partial_through_handoff_and_screen
         Path(__file__).with_name('test_kalshi_prop_inventory.py'))
     helpers = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(helpers)
-    game, market, configure_targets = helpers.game, helpers.market, helpers.configure_targets
-
     class CapturedClock(datetime):
         @classmethod
         def now(cls, tz=None):
             return NOW
     monkeypatch.setattr(market_watch, 'datetime', CapturedClock)
+    return market_watch, helpers
+
+
+@pytest.mark.asyncio
+async def test_salvaged_valid_sibling_remains_partial_through_handoff_and_screen(monkeypatch):
+    market_watch, helpers = _inventory_fixture(monkeypatch)
+    game, market, configure_targets = helpers.game, helpers.market, helpers.configure_targets
     series = 'KXNFLPASSYDS'
     event_ticker = series+'-26SEP11KCBUF'
     milestone = game(1, event_ticker)
@@ -202,6 +206,57 @@ async def test_salvaged_valid_sibling_remains_partial_through_handoff_and_screen
     assert projected['evidence']['partial_coverage'] is True
     assert [quote['ticker'] for quote in projected['evidence']['quotes']] == [retained['ticker']]
     assert projected['evidence_sha256'] == digest(projected['evidence'])
+    result = screen(event(), 'nfl', [book()], projected, NOW)
+    assert result['status'] == 'unavailable' and result['reason'] == 'handoff_not_observed'
+    assert result['comparisons'] == [] and result['execution_ready'] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('participant', ['missing', 'null'])
+@pytest.mark.parametrize('target_failure', ['unresolved', 'wrong_type', 'wrong_league', 'wrong_team'])
+async def test_optional_participant_does_not_bypass_bulk_identity_or_consumer_gate(
+        monkeypatch, participant, target_failure):
+    market_watch, helpers = _inventory_fixture(monkeypatch)
+    series = 'KXNFLPASSYDS'
+    event_ticker = series+'-26SEP11KCBUF'
+    milestone = helpers.game(1, event_ticker)
+    milestone['start_date'] = START.isoformat()
+    milestone['details']['main_game_event_ticker'] = 'KXNFLGAME-26SEP11KCBUF'
+    value = helpers.market(series, event_ticker, 'PLAYER-250')
+    value['occurrence_datetime'] = START.isoformat()
+    if participant == 'missing': del value['primary_participant_key']
+    else: value['primary_participant_key'] = None
+    original = deepcopy(value)
+    reader = AsyncMock()
+    helpers.configure_targets(reader)
+    if target_failure == 'unresolved':
+        reader.targets.return_value['structured_targets'] = []
+    elif target_failure == 'wrong_type':
+        reader.targets.return_value['structured_targets'][0]['type'] = 'basketball_player'
+    elif target_failure == 'wrong_league':
+        reader.targets.return_value['structured_targets'][0]['details']['league'] = 'NBA'
+    elif target_failure == 'wrong_team':
+        reader.targets.return_value['structured_targets'][0]['details']['team_id'] = milestone['details']['away_team_id']
+    async def pages(requested_series, *, limit, cursor=None):
+        assert cursor is None
+        return {'markets': [value] if requested_series == series else [], 'cursor': ''}
+    reader.markets.side_effect = pages
+    inventory = await market_watch.kalshi_prop_inventory(reader, 'nfl', [milestone])
+    assert value == original  # Never synthesize a primary key into provider evidence.
+    assert len(inventory['quotes']) == inventory['coverage']['structured_quote_markets'] == 1
+    assert inventory['quotes'][0]['market_sha256'] == digest(original)
+    assert inventory['coverage']['player_resolved_quote_markets'] == 0
+    assert inventory['targets'] == {} and inventory['status'] == 'degraded'
+    assert inventory['partial_coverage'] is True and inventory['coverage']['discovery_complete'] is False
+    reader.targets.assert_awaited_once_with(['30000000-0000-0000-0000-000000000003'])
+    assert inventory['failures'][0]['stage'] == 'prop_targets'
+
+    home, away = milestone['details']['home_team_id'], milestone['details']['away_team_id']
+    source = dict(prop_inventory=inventory, games=[dict(milestone=milestone)],
+                  targets={home:dict(name=event()['home_team']), away:dict(name=event()['away_team'])})
+    projected = market_watch.kalshi_prop_handoff(source, 'nfl', NOW.isoformat())
+    assert projected['status'] == 'degraded' and projected['evidence']['partial_coverage'] is True
+    assert len(projected['evidence']['quotes']) == 1 and projected['execution_ready'] is False
     result = screen(event(), 'nfl', [book()], projected, NOW)
     assert result['status'] == 'unavailable' and result['reason'] == 'handoff_not_observed'
     assert result['comparisons'] == [] and result['execution_ready'] is False

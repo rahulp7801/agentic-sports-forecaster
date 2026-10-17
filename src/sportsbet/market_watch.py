@@ -401,12 +401,13 @@ def kalshi_prop_quote(market: dict, series: str, prop_type: str, game: dict,
     team_ids={str(UUID(game['details'][side+'_team_id'])) for side in ('home','away')}
     line=Decimal(str(market['floor_strike']))
     occurrence=timestamp(market['occurrence_datetime'])
+    participant=market.get('primary_participant_key')  # Optional and nullable in Kalshi's Market schema.
     # Preserve the original short-circuit order and rejection message while
     # identifying the failing predicate without retaining provider field values.
     reason=None
     if series not in KALSHI_PROP_SERIES[game['details']['league'].lower()]:
         reason='prop_series_mismatch'
-    elif market.get('primary_participant_key')!=player_key:
+    elif participant is not None and participant!=player_key:
         reason='prop_participant_mismatch'
     elif team_id not in team_ids:
         reason='prop_team_mismatch'
