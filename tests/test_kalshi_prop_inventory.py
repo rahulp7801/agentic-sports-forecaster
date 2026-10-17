@@ -1,3 +1,4 @@
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
@@ -223,8 +224,8 @@ async def test_prop_inventory_validates_sport_and_milestone_shape():
 @pytest.mark.asyncio
 @pytest.mark.parametrize('change,reason',[({'yes_ask_dollars':'0.4600'},'inconsistent_prop_top_of_book'),
     ({'custom_strike':{'football_player':'30000000-0000-0000-0000-000000000003',
-        'football_team':'90000000-0000-0000-0000-000000000009'}},'invalid_structured_prop_evidence'),
-    ({'primary_participant_key':'football_team'},'invalid_structured_prop_evidence')])
+        'football_team':'90000000-0000-0000-0000-000000000009'}},'prop_team_mismatch'),
+    ({'primary_participant_key':'football_team'},'prop_participant_mismatch')])
 async def test_prop_inventory_rejects_inconsistent_quote_or_structured_identity(change,reason):
     event='KXNFLPASSYDS-26SEP13ATLPIT';reader=AsyncMock()
     item=market('KXNFLPASSYDS',event,'PLAYER-250')|change
@@ -272,3 +273,146 @@ async def test_fee_failure_preserves_quote_inventory_and_is_reported_separately(
     assert result['fee_failures']==[{'stage':'prop_fees','series':'KXNFLPASSYDS',
         'event_ticker':event,'error_type':'RuntimeError'}]
     assert 'private provider detail' not in str(result)
+
+
+def sport_prop(sport, suffix):
+    series=next(iter(market_watch.KALSHI_PROP_SERIES[sport]))
+    event=series+'-MOCK'
+    milestone=game(1,event)
+    milestone['details']['league']=sport.upper()
+    value=market(series,event,suffix)
+    if sport=='nba':
+        value['primary_participant_key']='basketball_player'
+        value['custom_strike']={key.replace('football','basketball'):item
+            for key,item in value['custom_strike'].items()}
+    return series,milestone,value
+
+
+def sport_reader(sport, selected_series, page):
+    reader=AsyncMock()
+    configure_targets(reader)
+    if sport=='nba':
+        target=reader.targets.return_value['structured_targets'][0]
+        target['type']='basketball_player';target['details']['league']='NBA'
+    async def pages(series, *, limit, cursor=None):
+        assert limit==market_watch.PROP_PAGE_LIMIT
+        assert cursor is None  # An invalid page must never advance pagination.
+        return page if series==selected_series else {'markets':[],'cursor':''}
+    reader.markets.side_effect=pages
+    return reader
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('sport',['nfl','nba'])
+@pytest.mark.parametrize('cursor',['','next-page-must-not-be-read'])
+@pytest.mark.parametrize('bad_count',[1,2])
+async def test_invalid_quotes_preserve_valid_siblings_only_on_the_received_page(sport,cursor,bad_count):
+    series,milestone,good=sport_prop(sport,'GOOD')
+    rejected=[]
+    for number in range(bad_count):
+        value=deepcopy(good)
+        value['ticker']=value['event_ticker']+f'-BAD{number}'
+        value['strike_type']='structured'  # Still rejected, never reinterpreted.
+        rejected.append(value)
+    last=deepcopy(good);last['ticker']=last['event_ticker']+'-LAST'
+    page={'markets':rejected[:1]+[good]+rejected[1:]+[last],'cursor':cursor}
+    reader=sport_reader(sport,series,page)
+    result=await market_watch.kalshi_prop_inventory(reader,sport,[milestone])
+    assert result['status']=='degraded' and result['partial_coverage'] is True
+    assert result['coverage']['discovery_complete'] is False
+    assert result['coverage']['series_observed']==len(market_watch.KALSHI_PROP_SERIES[sport])-1
+    assert result['coverage']['open_markets']==result['coverage']['linked_markets']==bad_count+2
+    assert result['coverage']['structured_quote_markets']==result['coverage']['player_resolved_quote_markets']==2
+    assert result['series'][series]==dict(status='invalid',complete=False,pages=1,
+        open_markets=bad_count+2,open_events=1,linked_markets=bad_count+2,linked_events=1,
+        response_sha256=market_watch.digest([page]))
+    assert [quote['ticker'] for quote in result['quotes']]==[good['ticker'],last['ticker']]
+    assert all(quote['execution_ready'] is False and quote['settlement_equivalent'] is False
+        for quote in result['quotes'])
+    assert result['failures']==[dict(stage='prop_discovery',series=series,error_type='ValueError',
+        reason='prop_strike_type_mismatch')]*bad_count
+    assert reader.markets.await_count==len(market_watch.KALSHI_PROP_SERIES[sport])
+    reader.targets.assert_awaited_once_with(['30000000-0000-0000-0000-000000000003'])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('sport',['nfl','nba'])
+@pytest.mark.parametrize('corruption',['duplicate','rejected_duplicate','identity','page','cursor'])
+async def test_page_identity_and_duplicate_corruption_still_abort_immediately(sport,corruption):
+    series,milestone,good=sport_prop(sport,'GOOD')
+    last=deepcopy(good);last['ticker']=last['event_ticker']+'-MUST-NOT-BE-PARSED'
+    if corruption=='duplicate':
+        page={'markets':[good,deepcopy(good),last],'cursor':'must-not-follow'}
+    elif corruption=='rejected_duplicate':
+        rejected=deepcopy(good);rejected['strike_type']='structured'
+        page={'markets':[rejected,good,last],'cursor':'must-not-follow'}
+    elif corruption=='identity':
+        invalid=deepcopy(good);invalid['market_type']='scalar'
+        page={'markets':[invalid,last],'cursor':'must-not-follow'}
+    elif corruption=='page':
+        page={'markets':'invalid-page','cursor':'must-not-follow'}
+    else:
+        page={'markets':[good,last],'cursor':[]}
+    reader=sport_reader(sport,series,page)
+    result=await market_watch.kalshi_prop_inventory(reader,sport,[milestone])
+    assert result['status']=='degraded' and result['partial_coverage'] is True
+    assert result['coverage']['discovery_complete'] is False
+    assert result['series'][series]['status']=='invalid' and result['series'][series]['complete'] is False
+    expected=[good['ticker']] if corruption=='duplicate' else []
+    assert [quote['ticker'] for quote in result['quotes']]==expected
+    reason={'duplicate':'invalid_prop_market_identity','rejected_duplicate':'invalid_prop_market_identity',
+        'identity':'invalid_prop_market_identity',
+        'page':'invalid_market_page','cursor':'invalid_market_cursor'}[corruption]
+    expected_failures=[dict(stage='prop_discovery',series=series,error_type='ValueError',reason=reason)]
+    if corruption=='rejected_duplicate':
+        expected_failures.insert(0,dict(stage='prop_discovery',series=series,error_type='ValueError',
+            reason='prop_strike_type_mismatch'))
+    assert result['failures']==expected_failures
+    assert reader.markets.await_count==len(market_watch.KALSHI_PROP_SERIES[sport])
+    if expected:
+        reader.targets.assert_awaited_once()
+    else:
+        reader.targets.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('sport',['nfl','nba'])
+async def test_target_failure_after_quote_isolation_keeps_valid_quote_partial_and_unresolved(sport):
+    series,milestone,good=sport_prop(sport,'GOOD')
+    bad=deepcopy(good);bad['ticker']=bad['event_ticker']+'-BAD';bad['strike_type']='structured'
+    reader=sport_reader(sport,series,{'markets':[bad,good],'cursor':'must-not-follow'})
+    reader.targets.return_value={'structured_targets':[],'cursor':''}
+    result=await market_watch.kalshi_prop_inventory(reader,sport,[milestone])
+    assert result['status']=='degraded' and result['partial_coverage'] is True
+    assert result['series'][series]['status']=='invalid' and result['series'][series]['complete'] is False
+    assert result['coverage']['discovery_complete'] is False
+    assert result['coverage']['structured_quote_markets']==1
+    assert result['coverage']['player_resolved_quote_markets']==0 and result['targets']=={}
+    assert [quote['ticker'] for quote in result['quotes']]==[good['ticker']]
+    assert result['failures']==[
+        dict(stage='prop_discovery',series=series,error_type='ValueError',reason='prop_strike_type_mismatch'),
+        dict(stage='prop_targets',error_type='ValueError',reason='incomplete_structured_target_page')]
+    assert reader.markets.await_count==len(market_watch.KALSHI_PROP_SERIES[sport])
+    reader.targets.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('sport',['nfl','nba'])
+async def test_unexpected_quote_error_keeps_original_unavailable_abort(monkeypatch,sport):
+    series,milestone,good=sport_prop(sport,'GOOD')
+    later=deepcopy(good);later['ticker']=later['event_ticker']+'-MUST-NOT-BE-PARSED'
+    reader=sport_reader(sport,series,{'markets':[good,later],'cursor':'must-not-follow'})
+    parsed=[]
+    def unexpected(value,*args):
+        parsed.append(value['ticker'])
+        raise RuntimeError('private provider material must not appear')
+    monkeypatch.setattr(market_watch,'kalshi_prop_quote',unexpected)
+    result=await market_watch.kalshi_prop_inventory(reader,sport,[milestone])
+    assert parsed==[good['ticker']]
+    assert result['series'][series]['status']=='unavailable' and result['series'][series]['complete'] is False
+    assert result['status']=='degraded' and result['partial_coverage'] is True
+    assert result['coverage']['discovery_complete'] is False and result['quotes']==[]
+    assert result['failures']==[dict(stage='prop_discovery',series=series,error_type='RuntimeError')]
+    assert 'private provider material' not in str(result)
+    assert reader.markets.await_count==len(market_watch.KALSHI_PROP_SERIES[sport])
+    reader.targets.assert_not_awaited()

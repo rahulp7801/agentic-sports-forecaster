@@ -68,6 +68,37 @@ def test_failure_projection_does_not_trust_exception_attributes_or_message():
     assert market_watch.kalshi_error_fields(typed)=={'error_type':'KalshiReadError'}
 
 
+@pytest.mark.parametrize('mutation,reason',[
+    ('series','prop_series_mismatch'),('participant','prop_participant_mismatch'),
+    ('team','prop_team_mismatch'),('strike','prop_strike_type_mismatch'),
+    ('nan','invalid_prop_line'),('infinite','invalid_prop_line'),('negative','invalid_prop_line'),
+    ('naive_start','invalid_prop_observation_window'),('naive_end','invalid_prop_observation_window'),
+    ('reverse','invalid_prop_observation_window'),('hash','invalid_prop_page_commitment')])
+def test_structured_prop_rejection_identifies_exact_predicate_without_provider_values(mutation,reason):
+    value=dict(custom_strike=dict(football_player='30000000-0000-0000-0000-000000000003',
+        football_team='10000000-0000-0000-0000-000000000001'),floor_strike=249.5,
+        occurrence_datetime=NOW.isoformat(),primary_participant_key='football_player',strike_type='greater')
+    game=dict(details=dict(league='NFL',home_team_id='10000000-0000-0000-0000-000000000001',
+        away_team_id='20000000-0000-0000-0000-000000000002'))
+    series='KXNFLPASSYDS';started=received=NOW;page_hash='a'*64
+    if mutation=='series':series='KXNBAPTS'
+    if mutation=='participant':value['primary_participant_key']=SECRET
+    if mutation=='team':value['custom_strike']['football_team']='90000000-0000-0000-0000-000000000009'
+    if mutation=='strike':value['strike_type']=SECRET
+    if mutation=='nan':value['floor_strike']='NaN'
+    if mutation=='infinite':value['floor_strike']='Infinity'
+    if mutation=='negative':value['floor_strike']=-1
+    if mutation=='naive_start':started=NOW.replace(tzinfo=None)
+    if mutation=='naive_end':received=NOW.replace(tzinfo=None)
+    if mutation=='reverse':started=NOW.replace(second=1)
+    if mutation=='hash':page_hash=SECRET
+    with pytest.raises(ValueError,match='^Invalid structured prop evidence$') as caught:
+        market_watch.kalshi_prop_quote(value,series,'pass_yds',game,started,received,page_hash)
+    fields=market_watch.kalshi_error_fields(caught.value)
+    assert fields==dict(error_type='ValueError',reason=reason)
+    assert SECRET not in json.dumps(fields) and SECRET not in str(caught.value)
+
+
 def test_summary_counts_have_finite_categories_and_do_not_duplicate_prop_failures():
     failures=[dict(stage='prop_discovery',error_type='KalshiReadError',reason='http_status',http_status=401,
         series=SECRET,event_ticker=SECRET,player=SECRET,body=SECRET),

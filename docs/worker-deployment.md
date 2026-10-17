@@ -116,6 +116,17 @@ rules retain their existing meaning. A verified publication receipt establishes
 the identity of a stored capture; it does not establish complete coverage or an
 edge.
 
+When an individually linked prop fails quote validation, the collector can still
+validate the remaining markets on that already received page. It retains only
+quotes that pass the existing identity, chronology, price and settlement-rule
+checks. That series remains invalid and incomplete, the overall capture remains
+degraded, and the collector does not follow that page's cursor. Corrupt page,
+market-identity and duplicate-market evidence retain their immediate aborts.
+This does not add market-page or order-book requests. Retained valid quotes can
+enable the existing single bulk player-target metadata read; missing target
+evidence remains an explicit failure. Controlled validation reasons distinguish
+the existing rejection conditions without retaining rejected provider payloads.
+
 ## Hosting decision remains open
 
 No new service, billing plan or credential transfer has been activated by this change. A portable image can run on an existing server or a managed container host. As a possible managed option, [Render cron jobs](https://render.com/docs/cronjobs) support Docker and prevent overlap within one job; that guarantee does not serialize two separate jobs. Render currently bills for active compute with a $1/month minimum **per cron service**, plus any applicable workspace/platform charges. A continuously running background worker has different costs. Confirm the selected design and total cost before activation.

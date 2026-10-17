@@ -1,6 +1,9 @@
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from unittest.mock import AsyncMock
+
+import pytest
 
 from sportsbet.ingestion.prop_odds import (
     PlayerPropSnapshotCreate,
@@ -146,6 +149,62 @@ def test_handoff_hash_completeness_status_and_age_fail_closed():
     for changed in cases:
         result = screen(event(), 'nfl', [book()], changed, NOW)
         assert result['status'] == 'unavailable' and result['comparisons'] == []
+
+
+@pytest.mark.asyncio
+async def test_salvaged_valid_sibling_remains_partial_through_handoff_and_screen(monkeypatch):
+    import importlib.util
+    from pathlib import Path
+    from sportsbet import market_watch
+    spec = importlib.util.spec_from_file_location('prop_inventory_fixtures',
+        Path(__file__).with_name('test_kalshi_prop_inventory.py'))
+    helpers = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helpers)
+    game, market, configure_targets = helpers.game, helpers.market, helpers.configure_targets
+
+    class CapturedClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW
+    monkeypatch.setattr(market_watch, 'datetime', CapturedClock)
+    series = 'KXNFLPASSYDS'
+    event_ticker = series+'-26SEP11KCBUF'
+    milestone = game(1, event_ticker)
+    milestone['start_date'] = START.isoformat()
+    milestone['details']['main_game_event_ticker'] = 'KXNFLGAME-26SEP11KCBUF'
+    rejected = market(series, event_ticker, 'REJECTED-250')
+    rejected['primary_participant_key'] = 'football_team'
+    rejected['custom_strike']['football_player'] = '30000000-0000-0000-0000-000000000004'
+    retained = market(series, event_ticker, 'RETAINED-250')
+    retained['occurrence_datetime'] = START.isoformat()
+    reader = AsyncMock()
+    configure_targets(reader)
+
+    async def pages(requested_series, *, limit, cursor=None):
+        assert cursor is None  # Never follow the invalid page's advertised cursor.
+        return {'markets': [rejected, retained] if requested_series == series else [],
+                'cursor': 'must-not-follow' if requested_series == series else ''}
+    reader.markets.side_effect = pages
+    inventory = await market_watch.kalshi_prop_inventory(reader, 'nfl', [milestone])
+    assert [quote['ticker'] for quote in inventory['quotes']] == [retained['ticker']]
+    assert inventory['coverage']['structured_quote_markets'] == 1
+    assert inventory['coverage']['player_resolved_quote_markets'] == 1
+    assert inventory['status'] == 'degraded' and inventory['partial_coverage'] is True
+    assert inventory['coverage']['discovery_complete'] is False
+    reader.targets.assert_awaited_once_with(['30000000-0000-0000-0000-000000000003'])
+
+    home = milestone['details']['home_team_id']
+    away = milestone['details']['away_team_id']
+    source = dict(prop_inventory=inventory, games=[dict(milestone=milestone)],
+                  targets={home:dict(name=event()['home_team']), away:dict(name=event()['away_team'])})
+    projected = market_watch.kalshi_prop_handoff(source, 'nfl', NOW.isoformat())
+    assert projected['status'] == 'degraded' and projected['execution_ready'] is False
+    assert projected['evidence']['partial_coverage'] is True
+    assert [quote['ticker'] for quote in projected['evidence']['quotes']] == [retained['ticker']]
+    assert projected['evidence_sha256'] == digest(projected['evidence'])
+    result = screen(event(), 'nfl', [book()], projected, NOW)
+    assert result['status'] == 'unavailable' and result['reason'] == 'handoff_not_observed'
+    assert result['comparisons'] == [] and result['execution_ready'] is False
 
 
 def test_event_requires_one_exact_orientation_and_start():

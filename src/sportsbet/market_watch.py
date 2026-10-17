@@ -39,6 +39,8 @@ KALSHI_FAILURE_TYPES=frozenset(('KalshiReadError','RuntimeError','ValueError','K
 KALSHI_VALIDATION_REASONS=frozenset(('invalid_market_page','invalid_market_cursor',
     'invalid_prop_market_identity','repeated_market_cursor','invalid_structured_target_page',
     'incomplete_structured_target_page','structured_target_mismatch','invalid_structured_prop_evidence',
+    'prop_series_mismatch','prop_participant_mismatch','prop_team_mismatch','prop_strike_type_mismatch',
+    'invalid_prop_line','invalid_prop_observation_window','invalid_prop_page_commitment',
     'invalid_fixed_point_quote','invalid_prop_quote','inconsistent_prop_top_of_book',
     'crossed_prop_top_of_book','missing_prop_settlement_rules'))
 
@@ -286,6 +288,7 @@ async def kalshi_prop_inventory(reader: KalshiReader, sport: str, games: list[di
                     raise _PropValidationError('invalid_market_cursor','Invalid market cursor')
                 pages.append(page)
                 page_sha256=digest(page)
+                invalid_quotes=False
                 for market in page['markets']:
                     event=market['event_ticker'];ticker=market['ticker']
                     if (not isinstance(event,str) or not isinstance(ticker,str)
@@ -296,8 +299,19 @@ async def kalshi_prop_inventory(reader: KalshiReader, sport: str, games: list[di
                     tickers.add(ticker);events.add(event)
                     if event in linked_games:
                         linked.add(ticker);linked_event_set.add(event)
-                        quotes.append(kalshi_prop_quote(market,series,supported[series],linked_games[event],
-                            request_started,received_at,page_sha256))
+                        try:
+                            quote=kalshi_prop_quote(market,series,supported[series],linked_games[event],
+                                request_started,received_at,page_sha256)
+                        except (KeyError,ValueError,TypeError,ArithmeticError) as exc:
+                            invalid_quotes=True
+                            failures.append(dict(stage='prop_discovery',series=series,**kalshi_error_fields(exc)))
+                        else:
+                            quotes.append(quote)
+                if invalid_quotes:
+                    # Finish only this already received page. Valid observations
+                    # remain usable as partial research, never complete coverage.
+                    status='invalid'
+                    break
                 cursor=page_cursor
                 if not cursor:
                     complete=True
@@ -305,7 +319,7 @@ async def kalshi_prop_inventory(reader: KalshiReader, sport: str, games: list[di
                 if cursor in seen_cursors:
                     raise _PropValidationError('repeated_market_cursor','Repeated market cursor')
                 seen_cursors.add(cursor)
-            if not complete:
+            if not complete and status=='observed':
                 status='partial'
                 failures.append(dict(stage='prop_discovery',series=series,error_type='PageLimitExceeded'))
         except (KeyError,ValueError,TypeError,ArithmeticError) as exc:
@@ -387,12 +401,26 @@ def kalshi_prop_quote(market: dict, series: str, prop_type: str, game: dict,
     team_ids={str(UUID(game['details'][side+'_team_id'])) for side in ('home','away')}
     line=Decimal(str(market['floor_strike']))
     occurrence=timestamp(market['occurrence_datetime'])
-    if (series not in KALSHI_PROP_SERIES[game['details']['league'].lower()]
-            or market.get('primary_participant_key')!=player_key or team_id not in team_ids
-            or market.get('strike_type')!='greater' or not line.is_finite() or line<0
-            or request_started.utcoffset() is None or received_at.utcoffset() is None
-            or not request_started<=received_at or len(page_sha256)!=64):
-        raise _PropValidationError('invalid_structured_prop_evidence','Invalid structured prop evidence')
+    # Preserve the original short-circuit order and rejection message while
+    # identifying the failing predicate without retaining provider field values.
+    reason=None
+    if series not in KALSHI_PROP_SERIES[game['details']['league'].lower()]:
+        reason='prop_series_mismatch'
+    elif market.get('primary_participant_key')!=player_key:
+        reason='prop_participant_mismatch'
+    elif team_id not in team_ids:
+        reason='prop_team_mismatch'
+    elif market.get('strike_type')!='greater':
+        reason='prop_strike_type_mismatch'
+    elif not line.is_finite() or line<0:
+        reason='invalid_prop_line'
+    elif (request_started.utcoffset() is None or received_at.utcoffset() is None
+            or not request_started<=received_at):
+        reason='invalid_prop_observation_window'
+    elif len(page_sha256)!=64:
+        reason='invalid_prop_page_commitment'
+    if reason is not None:
+        raise _PropValidationError(reason,'Invalid structured prop evidence')
 
     def ask(side: str) -> dict | None:
         if side=='yes':
