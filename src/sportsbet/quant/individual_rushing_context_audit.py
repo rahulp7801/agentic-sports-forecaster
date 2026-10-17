@@ -97,7 +97,10 @@ def reconstructed_context(row, selection, receipt, snapshot, history):
             'current_season_games': len(current), 'older_games': older,
             'current_season_hits': sum(hit(r['rushing_yards']) for r in current),
             'current_season_mean_yards': round(sum(r['rushing_yards'] for r in current)/len(current), 2),
-            'current_season_carries': [r.get('carries') for r in current],
+            # Neither supported NFL stat-row hash commits carries. A descriptive
+            # reconstruction cannot authenticate that workload or imply zero.
+            'current_season_carries': None, 'current_season_carries_verified': False,
+            'current_season_carries_unavailable_reason': 'not_committed_by_stat_row',
             'participation_completeness_verified': False}
 
 
@@ -111,6 +114,7 @@ def audit(receipts, predictions, snapshot, now):
               'selections': [], 'coverage': {}, 'limitations': [
                   'Original private hypothetical paper picks, not accepted dashboard picks or bets.',
                   'Retained source rows reproduce the baseline but are not an original rushing-input receipt.',
+                  'NFL stat-row commitments do not authenticate carries; workload counts remain unavailable.',
                   'Rushing participation completeness and current-role probability are not verified.',
                   'Pending outcomes do not count as wins; no individual-pick 75% or edge claim.']}
     if verified['invalid_receipts']:
