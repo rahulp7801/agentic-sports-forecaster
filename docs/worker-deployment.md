@@ -127,6 +127,16 @@ enable the existing single bulk player-target metadata read; missing target
 evidence remains an explicit failure. Controlled validation reasons distinguish
 the existing rejection conditions without retaining rejected provider payloads.
 
+Kalshi's [official Market schema](https://docs.kalshi.com/openapi.yaml) defines
+`primary_participant_key` as optional and nullable. The adapter accepts an absent
+or null value while retaining the required custom player/team UUIDs, exact game
+and team binding, and bulk player-target type, league and team verification.
+A present conflicting value, including an empty string or a non-string value,
+is rejected. Price, strike, settlement-rule and chronology checks still apply;
+missing or conflicting target evidence keeps the handoff incomplete. Supporting
+this documented shape does not establish which participant value a prior
+rejected response contained or prove that live NBA coverage has recovered.
+
 ## Hosting decision remains open
 
 No new service, billing plan or credential transfer has been activated by this change. A portable image can run on an existing server or a managed container host. As a possible managed option, [Render cron jobs](https://render.com/docs/cronjobs) support Docker and prevent overlap within one job; that guarantee does not serialize two separate jobs. Render currently bills for active compute with a $1/month minimum **per cron service**, plus any applicable workspace/platform charges. A continuously running background worker has different costs. Confirm the selected design and total cost before activation.

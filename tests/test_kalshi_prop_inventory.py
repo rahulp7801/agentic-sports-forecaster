@@ -416,3 +416,114 @@ async def test_unexpected_quote_error_keeps_original_unavailable_abort(monkeypat
     assert 'private provider material' not in str(result)
     assert reader.markets.await_count==len(market_watch.KALSHI_PROP_SERIES[sport])
     reader.targets.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('sport',['nfl','nba'])
+@pytest.mark.parametrize('participant',['missing','null','canonical'])
+async def test_optional_participant_metadata_preserves_explicit_custom_and_target_identity(sport,participant):
+    series,milestone,value=sport_prop(sport,'VALID')
+    if participant=='missing':
+        del value['primary_participant_key']
+    elif participant=='null':
+        value['primary_participant_key']=None
+    original=deepcopy(value)
+    page={'markets':[value],'cursor':''}
+    reader=sport_reader(sport,series,page)
+    result=await market_watch.kalshi_prop_inventory(reader,sport,[milestone])
+    assert result['status']=='observed' and result['partial_coverage'] is False
+    assert result['coverage']['discovery_complete'] is True
+    assert result['coverage']['series_observed']==result['coverage']['series_expected']
+    assert result['coverage']['structured_quote_markets']==result['coverage']['player_resolved_quote_markets']==1
+    assert result['failures']==[] and result['series'][series]['complete'] is True
+    quote,=result['quotes']
+    assert quote['player_target_id']=='30000000-0000-0000-0000-000000000003'
+    assert quote['team_target_id']=='10000000-0000-0000-0000-000000000001'
+    assert quote['milestone_id']==milestone['id'] and quote['series_ticker']==series
+    assert quote['market_sha256']==market_watch.digest(original)
+    assert quote['source_page_sha256']==market_watch.digest(page)
+    assert quote['strike_type']=='greater' and quote['execution_ready'] is False
+    assert quote['settlement_equivalent'] is False and value==original
+    assert reader.markets.await_count==len(market_watch.KALSHI_PROP_SERIES[sport])
+    reader.targets.assert_awaited_once_with(['30000000-0000-0000-0000-000000000003'])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('sport',['nfl','nba'])
+@pytest.mark.parametrize('participant',['other_player','',False,0,[],{}])
+async def test_explicit_conflicting_or_malformed_participant_never_defaults_to_player(sport,participant):
+    series,milestone,value=sport_prop(sport,'INVALID')
+    value['primary_participant_key']=participant
+    reader=sport_reader(sport,series,{'markets':[value],'cursor':''})
+    result=await market_watch.kalshi_prop_inventory(reader,sport,[milestone])
+    assert result['status']=='degraded' and result['partial_coverage'] is True
+    assert result['series'][series]['status']=='invalid' and result['series'][series]['complete'] is False
+    assert result['coverage']['discovery_complete'] is False and result['quotes']==[]
+    assert result['failures']==[dict(stage='prop_discovery',series=series,error_type='ValueError',
+        reason='prop_participant_mismatch')]
+    reader.targets.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('sport',['nfl','nba'])
+@pytest.mark.parametrize('participant',['missing','null'])
+@pytest.mark.parametrize('invalid',['custom_missing','player_missing','team_missing','player_uuid','team_uuid','wrong_game_team'])
+async def test_nullable_participant_never_substitutes_for_custom_uuid_and_game_proof(sport,participant,invalid):
+    series,milestone,value=sport_prop(sport,'INVALID')
+    if participant=='missing':
+        del value['primary_participant_key']
+    else:
+        value['primary_participant_key']=None
+    kind='football' if sport=='nfl' else 'basketball'
+    if invalid=='custom_missing':del value['custom_strike']
+    if invalid=='player_missing':del value['custom_strike'][kind+'_player']
+    if invalid=='team_missing':del value['custom_strike'][kind+'_team']
+    if invalid=='player_uuid':value['custom_strike'][kind+'_player']='invalid-player-uuid'
+    if invalid=='team_uuid':value['custom_strike'][kind+'_team']='invalid-team-uuid'
+    if invalid=='wrong_game_team':value['custom_strike'][kind+'_team']='90000000-0000-0000-0000-000000000009'
+    reader=sport_reader(sport,series,{'markets':[value],'cursor':''})
+    result=await market_watch.kalshi_prop_inventory(reader,sport,[milestone])
+    assert result['status']=='degraded' and result['partial_coverage'] is True
+    assert result['series'][series]['status']=='invalid' and result['series'][series]['complete'] is False
+    assert result['coverage']['discovery_complete'] is False
+    assert result['coverage']['structured_quote_markets']==result['coverage']['player_resolved_quote_markets']==0
+    assert result['quotes']==[] and len(result['failures'])==1
+    if invalid=='wrong_game_team':assert result['failures'][0]['reason']=='prop_team_mismatch'
+    reader.targets.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('sport',['nfl','nba'])
+@pytest.mark.parametrize('participant',['missing','null'])
+async def test_nullable_participant_does_not_enable_structured_strike_interpretation(sport,participant):
+    series,milestone,value=sport_prop(sport,'INVALID')
+    if participant=='missing':del value['primary_participant_key']
+    else:value['primary_participant_key']=None
+    value['strike_type']='structured'
+    reader=sport_reader(sport,series,{'markets':[value],'cursor':''})
+    result=await market_watch.kalshi_prop_inventory(reader,sport,[milestone])
+    assert result['status']=='degraded' and result['partial_coverage'] is True and result['quotes']==[]
+    assert result['series'][series]['status']=='invalid' and result['series'][series]['complete'] is False
+    assert result['failures']==[dict(stage='prop_discovery',series=series,error_type='ValueError',
+        reason='prop_strike_type_mismatch')]
+    reader.targets.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('sport',['nfl','nba'])
+@pytest.mark.parametrize('participant',['missing','null'])
+async def test_nullable_participant_target_failure_stays_unresolved_and_incomplete(sport,participant):
+    series,milestone,value=sport_prop(sport,'UNRESOLVED')
+    if participant=='missing':del value['primary_participant_key']
+    else:value['primary_participant_key']=None
+    reader=sport_reader(sport,series,{'markets':[value],'cursor':''})
+    reader.targets.side_effect=RuntimeError('private provider content must not appear')
+    result=await market_watch.kalshi_prop_inventory(reader,sport,[milestone])
+    assert result['status']=='degraded' and result['partial_coverage'] is True
+    assert result['coverage']['discovery_complete'] is False
+    assert result['coverage']['structured_quote_markets']==1
+    assert result['coverage']['player_resolved_quote_markets']==0 and result['targets']=={}
+    assert result['failures']==[dict(stage='prop_targets',error_type='RuntimeError')]
+    assert result['quotes'][0]['execution_ready'] is False
+    assert 'private provider content' not in str(result)
+    reader.targets.assert_awaited_once()
