@@ -214,6 +214,22 @@ def test_public_collection_verifies_the_deployed_contract_before_success() -> No
     assert 'PUBLIC_DATA_REPORT_PATH= node frontend/scripts/verify-production.mjs' in verification
 
 
+def test_public_run_selection_is_recorded_before_credentials_and_collection() -> None:
+    public = PUBLIC_WORKFLOW.read_text(encoding="utf-8")
+    receipt = _step(public, "Record original public run selection")
+    assert "PUBLIC_RUN_SCHEDULE: ${{ github.event.schedule || '' }}" in receipt
+    assert "run: node .github/scripts/public-run-selection.mjs" in receipt
+    assert "secrets." not in receipt and "toJSON(" not in receipt
+    assert "OPERATION:" not in receipt and "SPORT:" not in receipt
+    assert "upload-artifact" not in receipt and "GITHUB_EVENT_PATH" not in receipt
+    assert public.index(receipt) < public.index("      - run: pip install")
+    assert public.index(receipt) < public.index("name: Check worker configuration")
+    assert public.index(receipt) < public.index("name: Update public market data")
+    # The receipt observes the inherited selection. Existing daily/monitor
+    # expressions and all sixteen scheduled slots retain their own tests.
+    assert "PUBLIC_RUN_SCHEDULE:" not in public[:public.index("    steps:")]
+
+
 def test_provider_credentials_are_scoped_to_the_steps_that_need_them() -> None:
     paid = WORKFLOW.read_text(encoding="utf-8")
     public = PUBLIC_WORKFLOW.read_text(encoding="utf-8")
