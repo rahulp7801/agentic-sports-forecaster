@@ -32,3 +32,11 @@ Focused verifier tests cover every protected route returning exposed, app-authen
 The focused public verifier passed 12 tests, the final controller passed 61 tests, and workflow configuration passed 14 tests locally. The combined frontend/release Node test run found one sandbox permission failure in the existing synthetic Git fixture; its complete 15-test file then passed on the ordinary Windows host. The new verifier also passed ESLint. Real required GitHub checks must pass for the final reviewed revision. This note does not substitute for those checks.
 
 Preparing and merging this code does not activate the manual release. Production verification requires a real successful protected workflow and canonical-origin readback. A release does not establish qualified picks, prospective admission, profitability or an edge. Frozen model/evaluation versions, qualification thresholds, collection budgets and original evidence receipts are unchanged.
+
+## API compatibility correction
+
+The first contained public dispatch, run `39124755186`, passed its code and schema gates but stopped at `reviewed_pull_request_missing_or_ambiguous` before the Vercel deployment step. Actual API readback showed that GitHub version `2026-03-10` omits `merge_commit_sha` from both the associated-PR list and individual PR response. GitHub documents this [breaking response change](https://docs.github.com/en/rest/about-the-rest-api/breaking-changes?apiVersion=2026-03-10).
+
+The controller now explicitly pins the supported `2022-11-28` API contract. Actual reads with that version returned the exact merged commit for both endpoints. That contract remains supported until March 10, 2028, according to GitHub's [API version policy](https://docs.github.com/en/rest/about-the-rest-api/api-versions?apiVersion=2026-03-10). The literal request header is tested, and missing merge-SHA fields still fail closed. A closed PR, merge timestamp, matching tree or successful check alone never replaces the exact merge identity. No deployment or firewall mutation occurred during the failed prerequisite check; it is not an ambiguous deployment to retry.
+
+The compatibility revision passed all 64 focused controller tests and independent review. It changes the fixed API header, adds explicit missing-field regressions and preserves all merge, tree, CI and containment gates.

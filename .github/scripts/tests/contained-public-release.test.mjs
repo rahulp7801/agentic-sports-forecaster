@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {containedPublicController,executionContext,waitlistConfigured,REPOSITORY,REPOSITORY_ID,
- OWNER_ID,WORKFLOW_ID,WORKFLOW_PATH,REQUIRED_JOBS,ACTION_CHECKS,CHECK_APPS,PUBLIC_REQUIRED_KEYS} from '../contained-public-release.mjs';
+ OWNER_ID,WORKFLOW_ID,WORKFLOW_PATH,GITHUB_API_VERSION,REQUIRED_JOBS,ACTION_CHECKS,CHECK_APPS,PUBLIC_REQUIRED_KEYS} from '../contained-public-release.mjs';
 import {PROJECT,TEAM,ORIGIN,POLICY,PROBE_NAME} from '../private-dashboard-release.mjs';
 
 const current='a'.repeat(40),old='b'.repeat(40),prHead='c'.repeat(40),tree='d'.repeat(40),runId='123456789';
@@ -50,7 +50,7 @@ function fixture({fault=()=>null,access,verify}={}) {
    assert.fail('Unexpected control-plane route');
   }
   if(parsed.origin==='https://api.github.com') {
-   assert.equal(headers.get('x-github-api-version'),'2026-03-10');
+   assert.equal(headers.get('x-github-api-version'),'2022-11-28');
    const prefix='/repos/'+REPOSITORY;
    if(parsed.pathname===prefix)return Response.json(repository);
    if(parsed.pathname===prefix+'/git/ref/heads/master')return Response.json({ref:'refs/heads/master',object:{type:'commit',sha:current}});
@@ -76,6 +76,10 @@ function fixture({fault=()=>null,access,verify}={}) {
   verify:async options=>{verifyCalls++;if(verify)return verify(options);const response=await options.fetchImpl(options.base+'/api/signals');assert.equal(response.status,403);}});
  return {controller,state,repository,run,jobs,checks,prChecks,pr,associated,trees,envs,calls,deploy:()=>{deployed=current;},counts:()=>({accessCalls,verifyCalls})};
 }
+
+test('GitHub API version is fixed to the supported merge-identity contract',()=>{
+ assert.equal(GITHUB_API_VERSION,'2022-11-28');
+});
 
 test('public release requires one explicit owner master dispatch, not pushes, PRs or reruns',()=>{
  assert.deepEqual(executionContext(baseEnv),context);
@@ -174,6 +178,14 @@ for(const fault of ['absent','ambiguous','banned194','unmerged','wrong_merge','b
 test('master without an aggregate is accepted only through its reviewed identical-tree PR aggregate',async()=>{
  const f=fixture();assert.ok(!f.checks.some(check=>check.name==='CodeQL'));
  await f.controller.preflight();assert.ok(f.calls.some(call=>call.url.includes('/commits/'+prHead+'/check-runs')));
+});
+
+for(const endpoint of ['associated','full'])test('missing merge_commit_sha rejects even a merged identical-tree PR: '+endpoint,async()=>{
+ const f=fixture();
+ if(endpoint==='associated')delete f.associated[0].merge_commit_sha;
+ else delete f.pr.merge_commit_sha;
+ await assert.rejects(f.controller.preflight(),endpoint==='associated'?
+  /reviewed_pull_request_missing_or_ambiguous/:/reviewed_pull_request_identity_changed/);
 });
 
 test('manual-run CI checks are pinned by their actual check identities, not an older same-head success',async()=>{
