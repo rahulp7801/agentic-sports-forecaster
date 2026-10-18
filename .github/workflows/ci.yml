@@ -317,7 +317,6 @@ jobs:
     env:
       VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
-      CONTAINED_PUBLIC_RECEIPT: ${{ runner.temp }}/contained-public-release.json
       PUBLIC_LANDING_ONLY: ${{ inputs.public_landing_only }}
       FORCE_FRONTEND_DEPLOY: ${{ inputs.force_frontend_deploy || false }}
     steps:
@@ -333,6 +332,7 @@ jobs:
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CONTAINED_PUBLIC_RECEIPT: ${{ runner.temp }}/contained-public-release.json
         run: node .github/scripts/contained-public-release.mjs preflight
       - name: Deploy public landing with private containment retained
         env:
@@ -342,4 +342,5 @@ jobs:
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CONTAINED_PUBLIC_RECEIPT: ${{ runner.temp }}/contained-public-release.json
         run: node .github/scripts/contained-public-release.mjs finish

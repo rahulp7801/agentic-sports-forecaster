@@ -432,11 +432,11 @@ def test_public_landing_release_is_manual_owner_scoped_and_keeps_all_real_code_g
     assert "persist-credentials: false" in job and "node-version: '24'" in job
     assert "VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}" in job
     assert "VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}" in job
-    assert "CONTAINED_PUBLIC_RECEIPT: ${{ runner.temp }}/contained-public-release.json" in job
     assert "PUBLIC_LANDING_ONLY: ${{ inputs.public_landing_only }}" in job
     assert "FORCE_FRONTEND_DEPLOY: ${{ inputs.force_frontend_deploy || false }}" in job
     before_steps = job[:job.index("    steps:")]
     assert "secrets." not in before_steps and "GITHUB_TOKEN:" not in before_steps
+    assert "runner." not in before_steps and "CONTAINED_PUBLIC_RECEIPT:" not in before_steps
     install = _step(job, "Install pinned Vercel CLI without release credentials")
     preflight = _step(job, "Verify contained public release prerequisites")
     deploy = _step(job, "Deploy public landing with private containment retained")
@@ -447,7 +447,9 @@ def test_public_landing_release_is_manual_owner_scoped_and_keeps_all_real_code_g
     for step, operation in ((preflight, "preflight"), (finish, "finish")):
         assert "VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}" in step
         assert "GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}" in step
+        assert "          CONTAINED_PUBLIC_RECEIPT: ${{ runner.temp }}/contained-public-release.json" in step
         assert f"run: node .github/scripts/contained-public-release.mjs {operation}" in step
+    assert job.count("${{ runner.temp }}") == 2
     assert "VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}" in deploy
     assert "GITHUB_TOKEN" not in deploy
     assert 'run: vercel deploy --yes --prod --force --meta sportsbetCommit="$GITHUB_SHA" --token="$VERCEL_TOKEN"' in deploy
