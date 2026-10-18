@@ -260,7 +260,7 @@ def create_daily_graph():
                     # Aggregate diagnostics only; the player-level receipt stays private.
                     results[sport]['research_pair_status']=pair_state
             except Exception as exc:
-                results[sport]=dict(status='failed',error_type=type(exc).__name__)
+                results[sport]=dict(status='failed',**error_fields(exc))
                 if pair_state is not None:
                     results[sport]['research_pair_status']=pair_state
             if state['mode']=='public_daily':

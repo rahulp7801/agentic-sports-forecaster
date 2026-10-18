@@ -1,6 +1,6 @@
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 import asyncio
 import json
 
@@ -278,6 +278,8 @@ async def test_full_monitor_real_collector_shares_budget_and_preserves_other_ven
     monkeypatch.setattr(daily,'load_snapshot',lambda key:dict(status='complete',finished_at=datetime.now(timezone.utc).isoformat()))
     for module in (daily,market_watch):
         monkeypatch.setattr(module,'publish_snapshot',lambda key,value:stored.update({key:deepcopy(value)}))
+    publish_pairs=Mock(side_effect=lambda pairs:stored.update(deepcopy(dict(pairs))))
+    monkeypatch.setattr(market_watch,'publish_snapshots',publish_pairs)
     def provider(request):
         assert request.method=='GET' and request.url.host=='api.the-odds-api.com'
         requests.append(request)
@@ -299,6 +301,9 @@ async def test_full_monitor_real_collector_shares_budget_and_preserves_other_ven
     assert result['markets']['nfl']['sources']['sportsbook']['status']=='observed'
     assert result['markets']['nba']['sources']['sportsbook']['status']=='budget_exhausted'
     assert all(result['markets'][sport]['sources']['kalshi']['status']=='observed' for sport in ('nfl','nba'))
+    assert publish_pairs.call_count==2
+    assert [tuple(key for key,_ in call.args[0]) for call in publish_pairs.call_args_list]==[
+        ('kalshi-props:nfl','markets:nfl'),('kalshi-props:nba','markets:nba')]
     archives=list((tmp_path/'.local/market-watch').glob('*.json'))
     assert len(archives)==2
     for path in archives:
@@ -332,6 +337,8 @@ async def test_public_modes_use_real_graph_and_collector_without_paid_or_prop_ca
     monkeypatch.delenv('KALSHI_PAIR_OUTPUT',raising=False)
     for module in (daily,refresh_module,market_watch):
         monkeypatch.setattr(module,'publish_snapshot',lambda key,value:stored.update({key:deepcopy(value)}))
+    publish_pairs=Mock(side_effect=lambda pairs:stored.update(deepcopy(dict(pairs))))
+    monkeypatch.setattr(market_watch,'publish_snapshots',publish_pairs)
     def refresh(sport,day,backfill=False):
         refreshed.append(sport)
         return {'provider':'fixture'}
@@ -358,6 +365,9 @@ async def test_public_modes_use_real_graph_and_collector_without_paid_or_prop_ca
         assert 'research_pair_status' not in result['markets']['nfl']
     assert refreshed==(['nfl','nba'] if mode=='public_daily' else [])
     assert kalshi.await_count==2
+    assert publish_pairs.call_count==2
+    assert [tuple(key for key,_ in call.args[0]) for call in publish_pairs.call_args_list]==[
+        ('kalshi-props:nfl','markets:nfl'),('kalshi-props:nba','markets:nba')]
     books.assert_not_called();props.assert_not_called()
     assert prizepicks.await_count==(2 if mode=='public_daily' else 0)
     assert all(value['status']=='not_requested' for value in result['props'].values())
@@ -469,6 +479,42 @@ async def test_public_daily_reports_failed_market_without_private_details(monkey
     assert result['status']=='degraded'
     assert result['markets']['nfl']['research_pair_status']=='market_unavailable'
     assert 'private provider detail' not in str(result)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('sport',['nfl','nba'])
+async def test_actual_market_publication_failure_keeps_sqlstate_without_a_completed_capture(monkeypatch,tmp_path,capsys,sport):
+    from unittest.mock import Mock
+    from psycopg.errors import ConnectionFailure
+    from sqlalchemy.exc import OperationalError
+    from sportsbet import market_watch
+    source=dict(status='observed',partial_coverage=False,games=[],targets={},
+        prop_inventory=dict(status='observed',partial_coverage=False,quotes=[],targets={},coverage={}))
+    failure=OperationalError('INSERT private_sql',{'private_key':'private_value'},
+                             ConnectionFailure('postgres://private_credential'))
+    collect=AsyncMock(return_value=source)
+    archive_write=Mock(wraps=market_watch.write_archive)
+    publication=Mock(side_effect=failure)
+    stored={}
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(daily,'watch',market_watch.run)
+    monkeypatch.setattr(daily,'publish_snapshot',lambda key,value:stored.update({key:deepcopy(value)}))
+    monkeypatch.setattr(market_watch,'kalshi_games',collect)
+    monkeypatch.setattr(market_watch,'write_archive',archive_write)
+    monkeypatch.setattr(market_watch,'publish_snapshots',publication)
+    def forbidden_single(*args): pytest.fail('Kalshi capture pair must not use separate writes')
+    monkeypatch.setattr(market_watch,'publish_snapshot',forbidden_single)
+    result=await daily.run([sport],'public_monitor',20)
+    assert result['status']=='degraded'
+    assert result['markets']=={sport:dict(status='failed',error_type='OperationalError',sqlstate='08006')}
+    assert result['schedules'][sport]['status']=='complete'
+    assert stored['pipeline:public_monitor']['markets']==result['markets']
+    collect.assert_awaited_once();archive_write.assert_called_once();publication.assert_called_once()
+    assert len(list((tmp_path/'.local/market-watch').glob('*.json')))==1
+    diagnostic=json.loads(capsys.readouterr().err)
+    assert diagnostic==dict(schema_version=1,diagnostic_kind='operation_failure',
+        operation='market_watch',stage='publication',error_type='OperationalError',sqlstate='08006')
+    assert 'private_' not in json.dumps(result) and 'postgres://' not in json.dumps(result)
 
 
 @pytest.mark.asyncio

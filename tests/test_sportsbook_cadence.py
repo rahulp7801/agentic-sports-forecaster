@@ -1,6 +1,6 @@
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
@@ -20,6 +20,8 @@ def collector(monkeypatch,tmp_path):
     monkeypatch.setattr(market_watch,'Ledger',lambda:ledger)
     monkeypatch.setattr(market_watch,'load_snapshot',lambda key:deepcopy(stored.get(key)))
     monkeypatch.setattr(market_watch,'publish_snapshot',lambda key,value:stored.update({key:deepcopy(value)}))
+    monkeypatch.setattr(market_watch,'publish_snapshots',Mock(
+        side_effect=lambda pairs:stored.update(deepcopy(dict(pairs)))))
     original=HTTP_CLIENT
     def handle(request):
         requests.append(request)
@@ -141,6 +143,9 @@ async def test_real_market_collector_retains_fresh_kalshi_when_books_are_deferre
     assert summary['sources']['sportsbook']=={'status':'not_requested','count':0,'partial_coverage':True,'reason':'collection_cadence'}
     assert summary['sources']['kalshi']['status']=='observed'
     assert 'kalshi-props:nfl' in stored and 'markets:nfl' in stored
+    market_watch.publish_snapshots.assert_called_once()
+    assert tuple(key for key,_ in market_watch.publish_snapshots.call_args.args[0])==(
+        'kalshi-props:nfl','markets:nfl')
     kalshi.assert_awaited_once()
     assert len(requests)==1
 

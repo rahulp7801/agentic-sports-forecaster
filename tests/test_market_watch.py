@@ -136,23 +136,78 @@ def test_prop_handoff_completeness_is_scoped_to_props_and_required_game_context(
 
 
 @pytest.mark.asyncio
-async def test_publish_writes_separate_prop_handoff_only_when_kalshi_is_requested(monkeypatch,tmp_path):
-    from unittest.mock import AsyncMock
+async def test_publish_writes_atomic_prop_handoff_and_summary_from_one_original_capture(monkeypatch,tmp_path):
+    import json
+    from unittest.mock import AsyncMock, Mock
     from sportsbet import market_watch
     stored={};monkeypatch.chdir(tmp_path)
     source={'status':'observed','partial_coverage':False,'games':[],'targets':{},
         'prop_inventory':{'quotes':[],'targets':{},'coverage':{},
             'partial_coverage':False,'status':'observed'}}
-    monkeypatch.setattr(market_watch,'kalshi_games',AsyncMock(return_value=source))
-    monkeypatch.setattr(market_watch,'publish_snapshot',lambda key,value:stored.update({key:value}))
-    await market_watch.run('nfl',25,1,True,'kalshi')
+    collect=AsyncMock(return_value=source)
+    archive_write=Mock(wraps=market_watch.write_archive)
+    handoff_build=Mock(wraps=market_watch.kalshi_prop_handoff)
+    publish_pair=Mock(side_effect=lambda pairs:stored.update(dict(pairs)))
+    publish_single=Mock(side_effect=lambda key,value:stored.update({key:value}))
+    monkeypatch.setattr(market_watch,'kalshi_games',collect)
+    monkeypatch.setattr(market_watch,'write_archive',archive_write)
+    monkeypatch.setattr(market_watch,'kalshi_prop_handoff',handoff_build)
+    monkeypatch.setattr(market_watch,'publish_snapshots',publish_pair)
+    monkeypatch.setattr(market_watch,'publish_snapshot',publish_single)
+    report,path=await market_watch.run('nfl',25,1,True,'kalshi')
+    collect.assert_awaited_once();archive_write.assert_called_once();handoff_build.assert_called_once()
+    publish_pair.assert_called_once();publish_single.assert_not_called()
     assert set(stored)=={'kalshi-props:nfl','markets:nfl'}
+    assert [key for key,_ in publish_pair.call_args.args[0]]==['kalshi-props:nfl','markets:nfl']
+    archived=json.loads(path.read_text(encoding='utf-8'))
+    assert stored['markets:nfl'] is report
+    assert stored['kalshi-props:nfl']['captured_at']==report['captured_at']==archived['evidence']['captured_at']
+    assert archived['summary']==report and len(list(path.parent.glob('*.json')))==1
     assert stored['kalshi-props:nfl']['evidence_sha256']==market_watch.digest(
         stored['kalshi-props:nfl']['evidence'])
-    stored.clear();monkeypatch.setattr(market_watch,'sportsbooks',AsyncMock(return_value={
+    stored.clear();publish_pair.reset_mock();publish_single.reset_mock()
+    monkeypatch.setattr(market_watch,'sportsbooks',AsyncMock(return_value={
         'status':'observed','events':[]}))
     await market_watch.run('nfl',25,1,True,'sportsbook')
     assert set(stored)=={'markets:nfl'}
+    publish_pair.assert_not_called();publish_single.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_publication_failure_keeps_one_local_archive_and_never_recollects_or_returns_success(monkeypatch,tmp_path,capsys):
+    import json
+    from unittest.mock import AsyncMock, Mock
+    from psycopg.errors import ConnectionFailure
+    from sqlalchemy.exc import OperationalError
+    from sportsbet import market_watch
+    source=dict(status='observed',partial_coverage=False,games=[],targets={},
+        prop_inventory=dict(status='observed',partial_coverage=False,quotes=[],targets={},coverage={}))
+    collect=AsyncMock(return_value=source)
+    archive_write=Mock(wraps=market_watch.write_archive)
+    failure=OperationalError('INSERT private_sql',{'private_key':'private_value'},
+                             ConnectionFailure('postgres://private_credential'))
+    publication=Mock(side_effect=failure)
+    single=Mock(side_effect=AssertionError('The capture pair must have one publication transaction'))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(market_watch,'kalshi_games',collect)
+    monkeypatch.setattr(market_watch,'write_archive',archive_write)
+    monkeypatch.setattr(market_watch,'publish_snapshots',publication)
+    monkeypatch.setattr(market_watch,'publish_snapshot',single)
+    with pytest.raises(OperationalError) as raised:
+        await market_watch.run('nba',20,1,True,'kalshi')
+    assert raised.value is failure
+    collect.assert_awaited_once();archive_write.assert_called_once();publication.assert_called_once()
+    single.assert_not_called()
+    paths=list((tmp_path/'.local/market-watch').glob('*.json'))
+    assert len(paths)==1
+    archive=json.loads(paths[0].read_text(encoding='utf-8'))
+    pair=dict(publication.call_args.args[0])
+    assert pair['markets:nba']==archive['summary']
+    assert pair['kalshi-props:nba']['captured_at']==archive['evidence']['captured_at']
+    diagnostic=json.loads(capsys.readouterr().err)
+    assert diagnostic==dict(schema_version=1,diagnostic_kind='operation_failure',
+        operation='market_watch',stage='publication',error_type='OperationalError',sqlstate='08006')
+    assert 'private_' not in json.dumps(diagnostic)
 
 
 @pytest.mark.asyncio
