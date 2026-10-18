@@ -10,12 +10,33 @@ from uuid import UUID
 from sportsbet.db.connection import create_async_pool
 from sportsbet.dashboard import publish_snapshot
 from sportsbet.prop.availability import fetch_event_availability, player_availability
-from sportsbet.prop.cross_venue import _evidence, _game, _digest, _name, _sha256, _timestamp
+from sportsbet.prop.cross_venue import InvalidHandoff, _evidence, _game, _digest, _name, _sha256, _timestamp
 from sportsbet.model_contract import PROP_MARKETS
 from sportsbet.schedules import SPORTS
 
 MAX_EVENTS, MAX_PLAYERS, MAX_EVENT_PLAYERS = 20, 200, 50
 MAX_PUBLIC_BYTES = 16 * 1024 * 1024
+# Fixed categories only: never report exception text or private identity evidence.
+PUBLIC_INPUT_REJECTIONS = {
+    'snapshots': frozenset(('invalid_set', 'decode')),
+    'capture_pins': frozenset(('shape', 'mismatch')),
+    'handoff': frozenset(('shape', 'status', 'chronology', 'integrity')),
+    'slate': frozenset(('shape', 'chronology', 'sources')),
+    'target': frozenset(('identity', 'receipt', 'chronology')),
+    'event': frozenset(('identity', 'join')),
+    'quote': frozenset(('identity', 'receipt', 'chronology')),
+}
+_INPUT_ERRORS = (KeyError, TypeError, ValueError, AttributeError, RecursionError)
+
+
+class PublicProfileInputError(ValueError):
+    def __init__(self, stage, reason):
+        if reason not in PUBLIC_INPUT_REJECTIONS.get(stage, ()):
+            raise ValueError('Invalid public profile diagnostic') from None
+        super().__init__('Public profile inputs rejected')
+        self.stage, self.reason = stage, reason
+
+
 PUBLIC_IDENTITIES_QUERY = '''SELECT snapshot_key,payload FROM dashboard_snapshots
 WHERE snapshot_key=ANY($1::text[]) AND octet_length(payload::text)<=16777216'''
 
@@ -114,36 +135,66 @@ def _label(value):
 
 def public_profile_identities(handoff, slate, sport, now):
     """Read identities only from exact, fresh, committed public handoff/slate joins."""
+    diagnostic = dict(stage='snapshots', reason='decode')
+    try:
+        return _public_profile_identities(handoff, slate, sport, now, diagnostic)
+    except PublicProfileInputError:
+        raise
+    except _INPUT_ERRORS:
+        raise PublicProfileInputError(**diagnostic) from None
+
+
+def _public_profile_identities(handoff, slate, sport, now, diagnostic):
     if sport not in ('nfl','nba'): raise ValueError('Unsupported profile sport')
     _bounded_public(handoff);_bounded_public(slate)
-    evidence,captured,version = _evidence(handoff,sport,now)
+    diagnostic.update(stage='handoff', reason='shape')
+    try:
+        evidence,captured,version = _evidence(handoff,sport,now)
+    except InvalidHandoff as exc:
+        # Translate only known contract codes to fixed categories. Unknown text
+        # is discarded; it is never a diagnostic value or part of an exception.
+        code = exc.args[0] if len(exc.args) == 1 and type(exc.args[0]) is str else None
+        reason = {'missing_handoff': 'shape', 'handoff_not_observed': 'status',
+            'handoff_future_or_stale': 'chronology',
+            'handoff_incomplete_or_corrupt': 'integrity'}.get(code, 'shape')
+        raise PublicProfileInputError('handoff', reason) from None
+    diagnostic.update(stage='slate', reason='shape')
     if (not isinstance(slate,dict) or slate.get('sport')!=sport
             or slate.get('status') not in ('complete','partial')
             or type(slate.get('games')) is not list or len(slate['games'])>100):
         raise ValueError('Invalid profile schedule')
+    diagnostic['reason']='chronology'
     slate_at=_timestamp(slate.get('captured_at'))
     if not -1 <= (now-slate_at).total_seconds() <= 900:
         raise ValueError('Profile schedule is stale or future')
+    diagnostic['reason']='sources'
     sources=slate.get('sources')
     prefix='https://site.api.espn.com/apis/site/v2/sports/'+SPORTS[sport]+'/scoreboard?dates='
     if (type(sources) is not list or not 0<len(sources)<=8
             or any(not isinstance(url,str) or not re.fullmatch(re.escape(prefix)+r'[0-9]{8}&limit=1000',url) for url in sources)):
         raise ValueError('Invalid profile schedule source')
+    diagnostic.update(stage='handoff', reason='shape')
     if len(evidence['games'])>100 or len(evidence['player_targets'])>1000:
         raise ValueError('Public profile identity count exceeds bounds')
     targets=evidence['player_targets']
     for target_id,target in targets.items():
+        diagnostic.update(stage='target', reason='identity')
         _uuid(target_id);_uuid(target['team_target_id']);_label(target['player_name'])
-        if (not _sha256(target.get('target_sha256')) or not _sha256(target.get('target_page_sha256'))
-                or not _timestamp(target['target_request_started_at'])<=_timestamp(target['target_received_at'])<=captured):
+        diagnostic['reason']='receipt'
+        if not _sha256(target.get('target_sha256')) or not _sha256(target.get('target_page_sha256')):
+            raise ValueError('Invalid public target receipt')
+        diagnostic['reason']='chronology'
+        if not _timestamp(target['target_request_started_at'])<=_timestamp(target['target_received_at'])<=captured:
             raise ValueError('Invalid public target receipt')
     for game in evidence['games']:
+        diagnostic.update(stage='event', reason='identity')
         for key in ('milestone_id','home_team_id','away_team_id'): _uuid(game[key])
         for key in ('home_team_aliases','away_team_aliases'):
             if type(game[key]) is not list or not 0<len(game[key])<=8: raise ValueError('Invalid team aliases')
             for name in game[key]: _label(name)
     games={};seen_ids=set();seen_matches=set()
     for game in slate['games']:
+        diagnostic.update(stage='event', reason='identity')
         event_id=game['provider_event_id'];home=_label(game['home_name']);away=_label(game['away_name'])
         start=_timestamp(game['game_time'])
         if (not isinstance(event_id,str) or not re.fullmatch(r'[1-9][0-9]{0,19}',event_id) or event_id in seen_ids
@@ -156,21 +207,25 @@ def public_profile_identities(handoff, slate, sport, now):
         if game['home_abbr']==game['away_abbr']: raise ValueError('Ambiguous profile teams')
         if game['completed'] or not now<start<=now+timedelta(days=7): continue
         event=dict(id=event_id,home_team=home,away_team=away,commence_time=game['game_time'])
+        diagnostic['reason']='join'
         matched=_game(event,evidence)
         if matched is None: continue
         if matched['milestone_id'] in seen_matches: raise ValueError('Ambiguous profile event join')
         seen_matches.add(matched['milestone_id']);games[matched['milestone_id']]=(game,matched,event)
+    diagnostic.update(stage='target', reason='identity')
     names_by_game={milestone:Counter(_name(item['player_name']) for item in targets.values()
         if item['team_target_id'] in (matched['home_team_id'],matched['away_team_id']))
         for milestone,(_,matched,_) in games.items()}
     result={};tickers=set();slate_sha=_digest(slate)
     for quote in evidence['quotes']:
+        diagnostic.update(stage='quote', reason='identity')
         _uuid(quote['milestone_id']);player_id=_uuid(quote['player_target_id']);team_id=_uuid(quote['team_target_id'])
         ticker=quote.get('ticker')
         if not isinstance(ticker,str) or not ticker or ticker in tickers: raise ValueError('Ambiguous public prop')
         tickers.add(ticker)
         if quote['milestone_id'] not in games: continue
         game,matched,event=games[quote['milestone_id']];start=_timestamp(event['commence_time'])
+        diagnostic['reason']='receipt'
         target=targets.get(player_id)
         if (not isinstance(target,dict) or target['team_target_id']!=team_id
                 or team_id not in (matched['home_team_id'],matched['away_team_id'])
@@ -181,6 +236,7 @@ def public_profile_identities(handoff, slate, sport, now):
                                       for key in ('event_ticker','series_ticker')))
                 or not all(_sha256(quote.get(key)) for key in ('market_sha256','source_page_sha256','rules_sha256'))):
             raise ValueError('Invalid public prop identity receipt')
+        diagnostic['reason']='chronology'
         received,requested=map(_timestamp,(quote['received_at'],quote['request_started_at']))
         if not requested<=received<=captured or received>=start or not -1<=(now-received).total_seconds()<=300:
             raise ValueError('Invalid public prop chronology')
@@ -229,6 +285,7 @@ async def run(sports, *, expected_public_captures=None):
                 rows = await conn.fetch(SIGNAL_IDENTITIES_QUERY, f'signals:{sport}:%')
                 snapshots = await conn.fetch(PUBLIC_IDENTITIES_QUERY,['kalshi-props:'+sport,'slate:'+sport])
                 public=[];public_status='rejected'
+                rejection=dict(stage='snapshots',reason='invalid_set')
                 try:
                     inputs={row['snapshot_key']:row['payload'] for row in snapshots}
                     expected={'kalshi-props:'+sport,'slate:'+sport}
@@ -237,19 +294,27 @@ async def run(sports, *, expected_public_captures=None):
                     if inputs.keys()!=expected:
                         public_status='missing'
                     else:
+                        rejection['reason']='decode'
                         handoff=_public_payload(inputs['kalshi-props:'+sport])
                         slate=_public_payload(inputs['slate:'+sport])
                         if expected_public_captures is not None:
+                            rejection.update(stage='capture_pins',reason='shape')
                             pins=expected_public_captures[sport]
                             if (set(pins)!={'market_captured_at','slate_captured_at'}
                                     or not isinstance(pins['market_captured_at'],str)
-                                    or not isinstance(pins['slate_captured_at'],str)
-                                    or handoff['captured_at']!=pins['market_captured_at']
+                                    or not isinstance(pins['slate_captured_at'],str)):
+                                raise ValueError('Invalid public profile capture pins')
+                            rejection['reason']='mismatch'
+                            if (handoff['captured_at']!=pins['market_captured_at']
                                     or slate['captured_at']!=pins['slate_captured_at']):
                                 raise ValueError('Public profile capture changed')
+                        rejection.update(stage='handoff',reason='shape')
                         public=public_profile_identities(handoff,slate,sport,datetime.now(timezone.utc))
                         public_status='observed'
-                except (KeyError,TypeError,ValueError,AttributeError,RecursionError): pass
+                except PublicProfileInputError as exc:
+                    rejection=dict(stage=exc.stage,reason=exc.reason)
+                except _INPUT_ERRORS:
+                    pass
                 events=bounded_profile_events([*public,*rows])
                 player_ids = {}
                 if sport == 'nfl' and events:
@@ -281,6 +346,8 @@ async def run(sports, *, expected_public_captures=None):
             results[sport]=dict(profiles=len(profiles),unavailable=failures,
                 signal_identities=len(rows),public_identities=len(public),public_input_status=public_status,
                 selected_events=len(events),selected_players=sum(len(event['players']) for event in events))
+            if public_status=='rejected':
+                results[sport].update(rejection_stage=rejection['stage'],rejection_reason=rejection['reason'])
         return results
     finally:
         await pool.close()

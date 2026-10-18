@@ -5,6 +5,7 @@ from sportsbet.config import DEFAULT_DAILY_CREDIT_LIMIT, settings
 
 import argparse
 import asyncio
+import inspect
 import json
 import os
 import re
@@ -15,7 +16,7 @@ from typing import TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from sportsbet.dashboard import load_snapshot, publish_snapshot
-from sportsbet.diagnostics import error_fields
+from sportsbet.diagnostics import error_fields, failure_stage
 from sportsbet.market_watch import run as watch, DEFAULT_GAME_LIMIT
 from sportsbet.nba_source_asof import ReleaseLedger as Ledger
 from sportsbet.model_contract import MODEL_VERSION
@@ -97,6 +98,19 @@ class DailyState(TypedDict, total=False):
     profiles: dict
     profile_readiness: dict
     report: dict
+
+
+def _diagnosed_node(action, stage):
+    # Preserve LangGraph's async/sync execution choice and the original error.
+    if inspect.iscoroutinefunction(action):
+        async def guarded(state):
+            with failure_stage('daily', stage):
+                return await action(state)
+    else:
+        def guarded(state):
+            with failure_stage('daily', stage):
+                return action(state)
+    return guarded
 
 
 def create_daily_graph():
@@ -377,13 +391,13 @@ def create_daily_graph():
         publish_snapshot('pipeline:'+state['mode'],result)
         return {'report':result}
 
-    graph.add_node('initialize',initialize)
-    graph.add_node('histories',histories)
-    graph.add_node('markets',markets)
-    graph.add_node('schedules',schedules)
-    graph.add_node('settlements',settlements)
-    graph.add_node('props',props)
-    graph.add_node('report',report)
+    graph.add_node('initialize',_diagnosed_node(initialize,'initialize'))
+    graph.add_node('histories',_diagnosed_node(histories,'histories'))
+    graph.add_node('markets',_diagnosed_node(markets,'markets'))
+    graph.add_node('schedules',_diagnosed_node(schedules,'schedules'))
+    graph.add_node('settlements',_diagnosed_node(settlements,'settlements'))
+    graph.add_node('props',_diagnosed_node(props,'props'))
+    graph.add_node('report',_diagnosed_node(report,'report'))
     graph.add_edge(START,'initialize')
     graph.add_edge('initialize','histories')
     graph.add_edge('initialize','markets')
@@ -425,7 +439,8 @@ def main():
         sports=['nfl','nba'] if args.sport=='both' else ['nfl','nba','cfb'] if args.sport=='all' else [args.sport]
         report=asyncio.run(run(sports,args.mode,args.daily_credit_limit))
         if args.report_output:
-            _write_report(args.report_output,report)
+            with failure_stage('daily','report_write'):
+                _write_report(args.report_output,report)
         print(json.dumps(report))
         # Degraded provider coverage must remain visible as a failed scheduled run.
         if report['status'] not in ('complete','observed'):

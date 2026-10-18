@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import json
 
 from sportsbet.dashboard import publish_snapshot
+from sportsbet.diagnostics import failure_stage
 from sportsbet.ledger import Ledger
 from sportsbet.model_contract import model_version_for
 from sportsbet.picks import build_pick_board
@@ -20,27 +21,35 @@ def run(now: datetime | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError('An aware settlement time is required')
-    history = refresh_history('cfb', now.date())
+    with failure_stage('cfb_settlement', 'history'):
+        history = refresh_history('cfb', now.date())
     if history['status'] != 'complete':
         report = dict(mode='public_cfb_settlement', sport='cfb', status='blocked',
             reason='history_refresh_unavailable', history=history, execution_ready=False,
             finished_at=datetime.now(timezone.utc).isoformat())
-        publish_snapshot('pipeline:public_cfb_settlement', report)
+        with failure_stage('cfb_settlement', 'report_publish'):
+            publish_snapshot('pipeline:public_cfb_settlement', report)
         return report
 
-    ledger = Ledger()
+    with failure_stage('cfb_settlement', 'ledger'):
+        ledger = Ledger()
     # Match the normal daily catch-up window and retry bounded older pending
     # dates. This fetches only ESPN schedules, never a sportsbook quote.
-    extra = pending_schedule_offsets(ledger, 'cfb', now)
+    with failure_stage('cfb_settlement', 'pending_offsets'):
+        extra = pending_schedule_offsets(ledger, 'cfb', now)
     offsets = tuple(sorted(set(range(-7, 2)) | set(extra)))
-    schedule = asyncio.run(collect_schedule('cfb', now, offsets=offsets))
-    settlement = settle_final_props(ledger, 'cfb', schedule)
-    predictions = ledger.predictions()
+    with failure_stage('cfb_settlement', 'schedules'):
+        schedule = asyncio.run(collect_schedule('cfb', now, offsets=offsets))
+    with failure_stage('cfb_settlement', 'settlement'):
+        settlement = settle_final_props(ledger, 'cfb', schedule)
+    with failure_stage('cfb_settlement', 'predictions'):
+        predictions = ledger.predictions()
     version = model_version_for('cfb')
-    publish_snapshot('metrics:all:cfb', ledger.report(model_version=version, sport='cfb'))
-    publish_snapshot('metrics:recommendations:cfb', ledger.report(True, model_version=version, sport='cfb'))
-    publish_snapshot('picks:cfb', build_pick_board(predictions, 'cfb'))
-    publish_history_shadow(predictions, 'cfb', publish_snapshot)
+    with failure_stage('cfb_settlement', 'publications'):
+        publish_snapshot('metrics:all:cfb', ledger.report(model_version=version, sport='cfb'))
+        publish_snapshot('metrics:recommendations:cfb', ledger.report(True, model_version=version, sport='cfb'))
+        publish_snapshot('picks:cfb', build_pick_board(predictions, 'cfb'))
+        publish_history_shadow(predictions, 'cfb', publish_snapshot)
     # The generic settlement runner can finish successfully while final-game
     # forecasts remain ungraded because its free stat asset is still stale.
     # Surface that source lag without treating nonfinal scheduled games as errors.
@@ -55,7 +64,8 @@ def run(now: datetime | None = None) -> dict:
         final_stat_evidence_pending=final_stat_evidence_pending,
         history=history, schedule_status=schedule['status'], settlement=settlement,
         execution_ready=False, finished_at=datetime.now(timezone.utc).isoformat())
-    publish_snapshot('pipeline:public_cfb_settlement', report)
+    with failure_stage('cfb_settlement', 'report_publish'):
+        publish_snapshot('pipeline:public_cfb_settlement', report)
     return report
 
 

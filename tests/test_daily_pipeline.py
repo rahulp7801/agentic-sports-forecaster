@@ -13,6 +13,48 @@ from sportsbet.config import settings
 
 
 @pytest.mark.asyncio
+async def test_actual_graph_fatal_snapshot_failure_preserves_exception_and_stage(monkeypatch,capsys):
+    from psycopg.errors import ConnectionFailure
+    from sqlalchemy.exc import OperationalError
+    failure=OperationalError('SELECT private_sql',{'private_key':'private_value'},
+                             ConnectionFailure('postgres://private_credential'))
+    published=[]
+    def publish(key,payload):
+        published.append(key)
+        if key=='schedule:nfl':
+            raise failure
+    monkeypatch.setattr(daily,'publish_snapshot',publish)
+    monkeypatch.setattr(daily,'watch',AsyncMock(return_value=({'sources':{
+        'kalshi':{'status':'observed','partial_coverage':False}},
+        'captured_at':datetime.now(timezone.utc).isoformat()},None)))
+    with pytest.raises(OperationalError) as raised:
+        await daily.run(['nfl'],'public_monitor',20)
+    assert raised.value is failure
+    assert published==['schedule:nfl']
+    diagnostic=json.loads(capsys.readouterr().err)
+    assert diagnostic=={'schema_version':1,'diagnostic_kind':'operation_failure',
+        'operation':'daily','stage':'schedules','error_type':'OperationalError','sqlstate':'08006'}
+
+
+@pytest.mark.asyncio
+async def test_diagnosed_nodes_preserve_sync_and_async_execution_and_result(capsys):
+    import inspect
+    seen=[];state={'original':'input'};result={'original':'output'}
+    async def asynchronous(value):
+        seen.append(value)
+        return result
+    def synchronous(value):
+        seen.append(value)
+        return result
+    wrapped_async=daily._diagnosed_node(asynchronous,'markets')
+    wrapped_sync=daily._diagnosed_node(synchronous,'report')
+    assert inspect.iscoroutinefunction(wrapped_async)
+    assert not inspect.iscoroutinefunction(wrapped_sync)
+    assert await wrapped_async(state) is result and wrapped_sync(state) is result
+    assert seen==[state,state] and capsys.readouterr().err==''
+
+
+@pytest.mark.asyncio
 async def test_paid_daily_rejects_raised_caps_before_graph(monkeypatch):
     graph=AsyncMock()
     monkeypatch.setattr(daily,'create_daily_graph',graph)

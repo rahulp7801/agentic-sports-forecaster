@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from pathlib import Path
+import json
 
 import pytest
 
@@ -75,3 +76,41 @@ def test_public_workflow_runs_cfb_settlement_only_on_free_daily_scope():
         assert "always() && !cancelled()" in item
         assert "steps.worker_config.outcome == 'success'" in item
         assert "steps.schema.outcome == 'success'" in item
+
+
+@pytest.mark.parametrize('stage',['history','ledger','pending_offsets','schedules','settlement',
+                                  'predictions','publications','report_publish'])
+def test_cfb_failure_diagnostic_identifies_stage_without_changing_exception(monkeypatch,capsys,stage):
+    from psycopg.errors import ConnectionFailure
+    from sqlalchemy.exc import OperationalError
+    failure=OperationalError('SELECT private_sql',{},ConnectionFailure('postgres://private_credential'))
+    def fail(*args,**kwargs):
+        raise failure
+    class Ledger:
+        def predictions(self):
+            if stage=='predictions':fail()
+            return []
+        def report(self,*args,**kwargs):
+            return {}
+    monkeypatch.setattr(worker,'refresh_history',fail if stage=='history' else lambda *args:{'status':'complete'})
+    monkeypatch.setattr(worker,'Ledger',fail if stage=='ledger' else Ledger)
+    monkeypatch.setattr(worker,'pending_schedule_offsets',fail if stage=='pending_offsets' else lambda *args:())
+    async def collect(*args,**kwargs):
+        if stage=='schedules':fail()
+        return {'status':'complete'}
+    monkeypatch.setattr(worker,'collect_schedule',collect)
+    monkeypatch.setattr(worker,'settle_final_props',fail if stage=='settlement' else lambda *args:{'status':'complete'})
+    def publish(key,value):
+        if (stage=='publications' and key=='metrics:all:cfb') or (
+                stage=='report_publish' and key=='pipeline:public_cfb_settlement'):
+            fail()
+    monkeypatch.setattr(worker,'publish_snapshot',publish)
+    monkeypatch.setattr(worker,'build_pick_board',lambda *args:{})
+    monkeypatch.setattr(worker,'publish_history_shadow',lambda *args:None)
+    with pytest.raises(OperationalError) as raised:
+        worker.run(NOW)
+    assert raised.value is failure
+    captured=capsys.readouterr()
+    assert captured.out=='' and 'private_' not in captured.err
+    assert json.loads(captured.err)=={'schema_version':1,'diagnostic_kind':'operation_failure',
+        'operation':'cfb_settlement','stage':stage,'error_type':'OperationalError','sqlstate':'08006'}
