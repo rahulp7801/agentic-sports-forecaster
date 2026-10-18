@@ -114,6 +114,58 @@ async def test_empty_recent_identities_preserve_original_profile_capture(monkeyp
     assert publications==[] and stored==original and pool.closed
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('fault,category', [
+    ('snapshot_set', ('snapshots', 'invalid_set')),
+    ('decode', ('snapshots', 'decode')),
+    ('pins', ('capture_pins', 'shape')),
+    ('pin_mismatch', ('capture_pins', 'mismatch')),
+    ('handoff', ('handoff', 'shape')),
+])
+async def test_rejected_public_inputs_report_only_fixed_categories_without_collection(monkeypatch, fault, category):
+    import json
+    import sportsbet.player_profiles as profiles
+    captured=datetime.now(timezone.utc).isoformat()
+    handoff=dict(captured_at=captured)
+    slate=dict(captured_at=captured)
+    rows=[dict(snapshot_key='kalshi-props:nba',payload=json.dumps(handoff)),
+        dict(snapshot_key='slate:nba',payload=json.dumps(slate))]
+    pins=dict(market_captured_at=captured,slate_captured_at=captured)
+    if fault=='snapshot_set': rows.append(dict(rows[0]))
+    if fault=='decode': rows[0]['payload']='PRIVATE_PLAYER https://private.example/secret'
+    if fault=='pins': pins.pop('market_captured_at')
+    if fault=='pin_mismatch': pins['market_captured_at']='different-private-capture'
+    if fault=='handoff':
+        def invalid_handoff(*args):
+            raise ValueError('PRIVATE_PLAYER https://private.example/secret')
+        monkeypatch.setattr(profiles,'_evidence',invalid_handoff)
+    class Connection:
+        async def fetch(self,sql,*args):
+            if sql==profiles.PUBLIC_IDENTITIES_QUERY: return rows
+            assert sql==profiles.SIGNAL_IDENTITIES_QUERY
+            return []
+        async def __aenter__(self): return self
+        async def __aexit__(self,*args): pass
+    class Pool:
+        closed=False
+        def acquire(self): return Connection()
+        async def close(self): self.closed=True
+    pool=Pool()
+    async def create_pool(): return pool
+    async def forbidden(*args,**kwargs): pytest.fail('Rejected identity inputs must not collect rosters')
+    def forbidden_publication(*args): pytest.fail('Rejected empty inputs must retain the previous capture')
+    monkeypatch.setattr(profiles,'create_async_pool',create_pool)
+    monkeypatch.setattr(profiles,'fetch_event_availability',forbidden)
+    monkeypatch.setattr(profiles,'publish_snapshot',forbidden_publication)
+    original=deepcopy(rows)
+    result=(await profiles.run(['nba'],expected_public_captures={'nba':pins}))['nba']
+    assert result==dict(profiles=0,unavailable=0,signal_identities=0,public_identities=0,
+        public_input_status='rejected',selected_events=0,selected_players=0,
+        rejection_stage=category[0],rejection_reason=category[1])
+    assert rows==original and pool.closed
+    assert 'PRIVATE_' not in json.dumps(result) and 'https://' not in json.dumps(result)
+
+
 @pytest.mark.parametrize('portraits',[{}, {'Player': {'jersey': '0'}}, {'Player': {'player_id': '123', 'player_image_url': 'wrong'}}])
 def test_verified_roster_without_valid_photo_does_not_crash_profile_refresh(portraits):
     now,data=context()

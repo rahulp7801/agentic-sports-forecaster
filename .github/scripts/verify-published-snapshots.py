@@ -6,6 +6,7 @@ from pathlib import Path
 from datetime import datetime
 
 import psycopg
+from sportsbet.diagnostics import emit_failure
 
 
 def receipt_entries(report):
@@ -36,21 +37,34 @@ def verify_captures(report, read):
 
 
 def main():
-    receipt = Path(os.environ['PUBLIC_DATA_REPORT_PATH'])
-    if receipt.stat().st_size > 1024 * 1024:
-        raise ValueError('Capture report is too large')
-    report = json.loads(receipt.read_text(encoding='utf-8'))
-    spec = importlib.util.spec_from_file_location('transaction_preflight',
-        Path(__file__).with_name('production-transaction-preflight.py'))
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    dsn = module.hosted_read_dsn(os.environ['DATABASE_URL'])
-    with psycopg.connect(dsn, connect_timeout=5, options='-c statement_timeout=5000 -c default_transaction_read_only=on') as conn:
-        def read(key):
-            row = conn.execute('SELECT payload FROM public.dashboard_snapshots WHERE snapshot_key=%s', (key,)).fetchone()
-            return row[0] if row else None
-        count = verify_captures(report, read)
-    print(json.dumps({'verified_snapshot_receipts': count}))
+    stage = 'receipt'
+    try:
+        receipt = Path(os.environ['PUBLIC_DATA_REPORT_PATH'])
+        if receipt.stat().st_size > 1024 * 1024:
+            raise ValueError('Capture report is too large')
+        report = json.loads(receipt.read_text(encoding='utf-8'))
+        stage = 'dsn'
+        spec = importlib.util.spec_from_file_location('transaction_preflight',
+            Path(__file__).with_name('production-transaction-preflight.py'))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        dsn = module.hosted_read_dsn(os.environ['DATABASE_URL'])
+        stage = 'connect'
+        with psycopg.connect(dsn, connect_timeout=5, options='-c statement_timeout=5000 -c default_transaction_read_only=on') as conn:
+            def read(key):
+                nonlocal stage
+                stage = 'snapshot_read'
+                row = conn.execute('SELECT payload FROM public.dashboard_snapshots WHERE snapshot_key=%s', (key,)).fetchone()
+                stage = 'verify'
+                return row[0] if row else None
+            stage = 'verify'
+            count = verify_captures(report, read)
+            stage = 'close'
+        stage = 'output'
+        print(json.dumps({'verified_snapshot_receipts': count}))
+    except Exception as error:
+        emit_failure(error, operation='published_snapshot_receipt', stage=stage)
+        raise
 
 
 if __name__ == '__main__':

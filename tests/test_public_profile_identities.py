@@ -92,7 +92,23 @@ def test_invalid_public_identity_receipts_fail_closed(change):
     elif change=='partial': e['partial_coverage']=True
     elif change=='degraded': handoff['status']='degraded'
     if change!='hash': rehash(handoff)
-    with pytest.raises(ValueError): profiles.public_profile_identities(handoff,slate,'nfl',NOW)
+    categories = {
+        'hash': ('handoff', 'integrity'), 'sport': ('handoff', 'status'),
+        'stale_handoff': ('handoff', 'chronology'), 'future_handoff': ('handoff', 'chronology'),
+        'stale_slate': ('slate', 'chronology'), 'future_slate': ('slate', 'chronology'),
+        'source': ('slate', 'sources'), 'uuid': ('quote', 'identity'),
+        'target_hash': ('target', 'receipt'), 'target_clock': ('target', 'chronology'),
+        'target_team': ('quote', 'receipt'), 'quote_team': ('quote', 'receipt'),
+        'quote_start': ('quote', 'receipt'), 'quote_hash': ('quote', 'receipt'),
+        'quote_clock': ('quote', 'chronology'), 'quote_series': ('quote', 'receipt'),
+        'duplicate_slate_id': ('event', 'identity'), 'duplicate_game': ('event', 'join'),
+        'partial': ('handoff', 'integrity'), 'degraded': ('handoff', 'status'),
+    }
+    with pytest.raises(profiles.PublicProfileInputError) as caught:
+        profiles.public_profile_identities(handoff,slate,'nfl',NOW)
+    assert (caught.value.stage, caught.value.reason) == categories[change]
+    assert str(caught.value) == 'Public profile inputs rejected'
+    assert caught.value.__suppress_context__
 
 
 @pytest.mark.parametrize('change',['ordered_teams','start','completed','started'])
@@ -200,9 +216,14 @@ async def test_refresh_uses_jsonb_handoff_without_signals_and_retains_signal_fal
     monkeypatch.setattr(profiles,'profile',checked_profile)
     monkeypatch.setattr(profiles,'publish_snapshot',lambda *args:published.append(args))
     result=(await profiles.run([sport],expected_public_captures={sport:pins}))[sport]
-    assert result==dict(profiles=1,unavailable=0,signal_identities=len(signals),
+    expected=dict(profiles=1,unavailable=0,signal_identities=len(signals),
         public_identities=1 if public_mode=='valid' else 0,public_input_status='observed' if public_mode=='valid' else 'rejected',
         selected_events=1,selected_players=1)
+    if public_mode!='valid':
+        stage,reason={'invalid':('handoff','integrity'), 'unknown_market':('capture_pins','shape')}.get(
+            public_mode,('capture_pins','mismatch'))
+        expected.update(rejection_stage=stage,rejection_reason=reason)
+    assert result==expected
     assert len(calls)==1 and calls[0][1]==sport and calls[0][2]=={'player_names':{'Player'}}
     assert ids==[None] and pool.closed and len(published)==1
     row=published[0][1]['profiles'][0]
@@ -267,6 +288,7 @@ async def test_reused_six_minute_market_does_not_recollect_or_refresh_stale_publ
     assert result['markets']['nfl']['captured_at']==handoff['captured_at']
     assert result['markets']['nfl']['research_pair_status']=='market_reused'
     assert result['profiles']['nfl']==dict(status='degraded',profiles=0,unavailable=0,signal_identities=0,
-        public_identities=0,public_input_status='rejected',selected_events=0,selected_players=0)
+        public_identities=0,public_input_status='rejected',selected_events=0,selected_players=0,
+        rejection_stage='handoff',rejection_reason='chronology')
     assert result['status']=='degraded'
     watch.assert_not_called();roster_fetch.assert_not_called();publication.assert_not_called()

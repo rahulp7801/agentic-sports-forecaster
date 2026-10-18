@@ -12,6 +12,15 @@ MAX_REPORT_BYTES = 1024 * 1024
 GROUPS = ('histories', 'markets', 'schedules', 'settlements', 'props', 'profiles')
 PROFILE_COUNTS = {'profiles': 1000, 'unavailable': 1000, 'signal_identities': 1000,
                   'public_identities': 5000, 'selected_events': 20, 'selected_players': 1000}
+PROFILE_INPUT_REJECTIONS = {
+    'snapshots': frozenset(('invalid_set', 'decode')),
+    'capture_pins': frozenset(('shape', 'mismatch')),
+    'handoff': frozenset(('shape', 'status', 'chronology', 'integrity')),
+    'slate': frozenset(('shape', 'chronology', 'sources')),
+    'target': frozenset(('identity', 'receipt', 'chronology')),
+    'event': frozenset(('identity', 'join')),
+    'quote': frozenset(('identity', 'receipt', 'chronology')),
+}
 
 
 def _clock(value):
@@ -67,13 +76,21 @@ def _profile_result(value, mode):
                     or not re.fullmatch('[0-9A-Z]{5}', value['sqlstate'])))):
             raise ValueError('Invalid profile failure diagnostic')
         return
-    if (set(value) != {'status', 'public_input_status', *PROFILE_COUNTS}
+    rejected = value.get('public_input_status') == 'rejected'
+    fields = {'status', 'public_input_status', *PROFILE_COUNTS}
+    if rejected:
+        fields |= {'rejection_stage', 'rejection_reason'}
+    if (set(value) != fields
             or any(type(value[key]) is not int or not 0 <= value[key] <= limit
                    for key, limit in PROFILE_COUNTS.items())
             or value['public_input_status'] not in ('observed', 'missing', 'rejected')
             or value['profiles'] + value['unavailable'] > value['selected_players']
             or value['selected_players'] > value['selected_events'] * 50):
         raise ValueError('Invalid profile result counters')
+    if rejected and (type(value['rejection_stage']) is not str
+            or type(value['rejection_reason']) is not str
+            or value['rejection_reason'] not in PROFILE_INPUT_REJECTIONS.get(value['rejection_stage'], ())):
+        raise ValueError('Invalid profile input rejection diagnostic')
     expected = 'complete' if value['public_input_status'] == 'observed' and value['unavailable'] == 0 else 'degraded'
     if status != expected:
         raise ValueError('Profile status contradicts its input or availability')

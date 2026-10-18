@@ -108,11 +108,59 @@ def test_real_degraded_market_retains_its_capture_receipt(report_path):
 def test_profile_failure_keeps_successful_market_receipts_and_degraded_exit(report_path, state):
     report=public_report(mode='public_daily')
     report['status']='degraded'
-    report['profiles']['nba']=(dict(report['profiles']['nba'],status='degraded',public_input_status='rejected')
+    report['profiles']['nba']=(dict(report['profiles']['nba'],status='degraded',public_input_status='rejected',
+        rejection_stage='handoff',rejection_reason='integrity')
         if state=='degraded' else dict(status='failed',error_type='RuntimeError',sqlstate='08006'))
     report_path.write_text(json.dumps(report),encoding='utf-8')
     assert validate(report_path,mode='public_daily',producer_status=2)=={'validated_public_report_receipts':4}
     assert report['markets']['nba']['captured_at']==(NOW-timedelta(minutes=3)).isoformat()
+
+
+def test_profile_rejection_categories_match_the_producer_contract():
+    from sportsbet.player_profiles import PUBLIC_INPUT_REJECTIONS
+    assert validator.PROFILE_INPUT_REJECTIONS==PUBLIC_INPUT_REJECTIONS
+
+
+@pytest.mark.parametrize('stage,reason', [
+    (stage,reason) for stage,reasons in validator.PROFILE_INPUT_REJECTIONS.items() for reason in sorted(reasons)
+])
+def test_fixed_rejection_categories_preserve_successful_capture_receipts(report_path,stage,reason):
+    report=public_report(mode='public_daily')
+    report['status']='degraded'
+    report['profiles']['nba']=dict(status='degraded',profiles=0,unavailable=0,
+        signal_identities=0,public_identities=0,public_input_status='rejected',
+        selected_events=0,selected_players=0,rejection_stage=stage,rejection_reason=reason)
+    original=deepcopy(report)
+    report_path.write_text(json.dumps(report),encoding='utf-8')
+    assert validate(report_path,mode='public_daily',producer_status=2)=={'validated_public_report_receipts':4}
+    assert json.loads(report_path.read_text(encoding='utf-8'))==original
+
+
+@pytest.mark.parametrize('change', ['missing_stage','missing_reason','unknown_stage','unknown_reason',
+    'wrong_pair','sensitive_stage','sensitive_reason','large_reason','object_stage','list_reason',
+    'extra_text','observed_diagnostic','missing_diagnostic'])
+def test_rejection_fields_cannot_carry_private_text_or_claim_an_unrejected_state(report_path,change):
+    report=public_report(mode='public_daily');report['status']='degraded'
+    value=report['profiles']['nba']
+    value.update(status='degraded',public_input_status='rejected',rejection_stage='handoff',rejection_reason='shape')
+    if change=='missing_stage': del value['rejection_stage']
+    elif change=='missing_reason': del value['rejection_reason']
+    elif change=='unknown_stage': value['rejection_stage']='invented'
+    elif change=='unknown_reason': value['rejection_reason']='invented'
+    elif change=='wrong_pair': value.update(rejection_stage='snapshots',rejection_reason='chronology')
+    elif change=='sensitive_stage': value['rejection_stage']='PRIVATE_PLAYER https://private.example'
+    elif change=='sensitive_reason': value['rejection_reason']='PRIVATE_PLAYER https://private.example'
+    elif change=='large_reason': value['rejection_reason']='x'*10000
+    elif change=='object_stage': value['rejection_stage']={'private':'payload'}
+    elif change=='list_reason': value['rejection_reason']=['private','payload']
+    elif change=='extra_text': value['exception_message']='PRIVATE_PLAYER https://private.example'
+    elif change=='observed_diagnostic':
+        report['status']='observed';value.update(status='complete',public_input_status='observed')
+    elif change=='missing_diagnostic': value['public_input_status']='missing'
+    report_path.write_text(json.dumps(report),encoding='utf-8')
+    with pytest.raises(ValueError) as caught:
+        validate(report_path,mode='public_daily',producer_status=0 if change=='observed_diagnostic' else 2)
+    assert 'PRIVATE_' not in str(caught.value) and 'https://' not in str(caught.value)
 
 
 @pytest.mark.parametrize('change', ['absent','extra_identity','bool_count','large_count','unknown_input',
