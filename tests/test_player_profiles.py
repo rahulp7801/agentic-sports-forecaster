@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from copy import deepcopy
 from sportsbet.player_profiles import profile
-from sportsbet.player_profiles import run
+from sportsbet.player_profiles import run, PUBLIC_IDENTITIES_QUERY
 import pytest
 
 
@@ -42,6 +42,9 @@ async def test_scheduled_profile_refresh_uses_recorded_slate_without_new_quotes(
     now,data=context(); publications=[]; events=[]
     class Connection:
         async def fetch(self,sql,*args):
+            if sql==PUBLIC_IDENTITIES_QUERY:
+                assert args==(['kalshi-props:nfl','slate:nfl'],)
+                return []
             if 'dashboard_snapshots' in sql:
                 assert args==('signals:nfl:%',)
                 assert "jsonb_array_elements" in sql and "payload->'signals'" in sql
@@ -62,12 +65,13 @@ async def test_scheduled_profile_refresh_uses_recorded_slate_without_new_quotes(
     monkeypatch.setattr('sportsbet.player_profiles.create_async_pool',create_pool)
     monkeypatch.setattr('sportsbet.player_profiles.fetch_event_availability',collect)
     monkeypatch.setattr('sportsbet.player_profiles.publish_snapshot',lambda *args:publications.append(args))
-    assert (await run(['nfl']))['nfl']==dict(profiles=1,unavailable=0)
+    expected=dict(signal_identities=1,public_identities=0,public_input_status='missing',selected_events=1,selected_players=1)
+    assert (await run(['nfl']))['nfl']==dict(profiles=1,unavailable=0,**expected)
     assert events==[dict(id='game',home_team='Home',away_team='Away')]
     assert publications[0][0]=='player-profiles:nfl'
     assert publications[0][1]['profiles'][0]['jersey']=='0' and pool.closed
     publications.clear();data['status']='unavailable'
-    assert (await run(['nfl']))['nfl']==dict(profiles=0,unavailable=1)
+    assert (await run(['nfl']))['nfl']==dict(profiles=0,unavailable=1,**expected)
     assert publications==[]  # Provider failure cannot overwrite the last capture.
 
 
@@ -84,6 +88,9 @@ async def test_empty_recent_identities_preserve_original_profile_capture(monkeyp
     original=deepcopy(stored); publications=[]
     class Connection:
         async def fetch(self,sql,*args):
+            if sql==PUBLIC_IDENTITIES_QUERY:
+                assert args==(['kalshi-props:'+sport,'slate:'+sport],)
+                return []
             assert 'dashboard_snapshots' in sql and args==('signals:'+sport+':%',)
             return []
         async def __aenter__(self): return self
@@ -102,7 +109,8 @@ async def test_empty_recent_identities_preserve_original_profile_capture(monkeyp
     monkeypatch.setattr('sportsbet.player_profiles.create_async_pool',create_pool)
     monkeypatch.setattr('sportsbet.player_profiles.fetch_event_availability',unexpected_collection)
     monkeypatch.setattr('sportsbet.player_profiles.publish_snapshot',publish)
-    assert await run([sport])=={sport:dict(profiles=0,unavailable=0)}
+    assert await run([sport])=={sport:dict(profiles=0,unavailable=0,signal_identities=0,
+        public_identities=0,public_input_status='missing',selected_events=0,selected_players=0)}
     assert publications==[] and stored==original and pool.closed
 
 
