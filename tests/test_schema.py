@@ -10,6 +10,10 @@ All tests use the pg_engine fixture which skips if DB is not reachable.
 from __future__ import annotations
 
 import sqlalchemy as sa
+import pytest
+import uuid
+import json
+from copy import deepcopy
 
 
 def test_pbp_indexes(pg_engine: sa.Engine) -> None:
@@ -91,3 +95,48 @@ def test_odds_snapshot_write_read(pg_engine: sa.Engine) -> None:
     assert row[2] == "moneyline", f"market_type mismatch: {row[2]}"
     assert row[3] == -150, f"price mismatch: {row[3]}"
     assert row[4] is not None, "snapped_at is None — server_default not applied"
+
+
+def test_dashboard_snapshot_batch_commits_together_and_rolls_back_second_row_failure(
+        pg_engine: sa.Engine, monkeypatch) -> None:
+    """The real executemany transaction cannot leave one of two outputs updated."""
+    from sportsbet import dashboard
+    prefix = 'snapshot-batch-test:' + uuid.uuid4().hex
+    first, second = prefix + ':first', prefix + ':second'
+    captured = '2026-10-18T18:53:07.610862+00:00'
+    payloads = [(first, {'captured_at': captured, 'label': 'café', 'nested': {'valid': True}}),
+                (second, {'captured_at': captured, 'execution_ready': False})]
+    original = deepcopy(payloads)
+    parameters = {'first': first, 'second': second}
+    try:
+        with pg_engine.begin() as conn:
+            conn.execute(sa.text('''INSERT INTO dashboard_snapshots(snapshot_key,payload,updated_at)
+                VALUES (:key,CAST(:payload AS JSONB),'2026-01-01T00:00:00Z')'''),
+                [{'key': first, 'payload': json.dumps({'old': 1})},
+                 {'key': second, 'payload': json.dumps({'old': 2})}])
+        def factory():
+            return sa.create_engine(pg_engine.url, connect_args={'connect_timeout': 3})
+        monkeypatch.setattr(dashboard, 'get_sync_engine', factory)
+        def read():
+            with pg_engine.connect() as conn:
+                return conn.execute(sa.text('''SELECT snapshot_key,payload,updated_at
+                    FROM dashboard_snapshots WHERE snapshot_key IN (:first,:second)
+                    ORDER BY snapshot_key'''), parameters).all()
+        before = read()
+
+        # JSON serialization succeeds; PostgreSQL JSONB rejects U+0000 only
+        # after the first row's update, proving real transaction rollback.
+        with pytest.raises(sa.exc.DBAPIError) as raised:
+            dashboard.publish_snapshots([payloads[0], (second, {'value': '\x00'})])
+        assert raised.value.orig.sqlstate == '22P05'
+        assert read() == before
+
+        dashboard.publish_snapshots(payloads)
+        committed = read()
+        assert [(row[0], row[1]) for row in committed] == payloads
+        assert committed[0][2] == committed[1][2]
+        assert committed[0][2] != before[0][2]
+        assert payloads == original
+    finally:
+        with pg_engine.begin() as conn:
+            conn.execute(sa.text('DELETE FROM dashboard_snapshots WHERE snapshot_key IN (:first,:second)'), parameters)

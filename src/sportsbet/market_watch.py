@@ -13,7 +13,8 @@ from uuid import UUID
 import httpx
 
 from sportsbet.config import settings, DEFAULT_DAILY_CREDIT_LIMIT
-from sportsbet.dashboard import publish_snapshot, load_snapshot
+from sportsbet.dashboard import publish_snapshot, publish_snapshots, load_snapshot
+from sportsbet.diagnostics import failure_stage
 from sportsbet.ingestion.archive import write_archive
 from sportsbet.ingestion.odds_api_credential import require_safe_odds_api_key
 from sportsbet.ingestion.kalshi import KalshiReader, KalshiReadError
@@ -857,9 +858,14 @@ async def run(sport: str, daily_credit_limit: int, game_limit: int, publish: boo
         summary['schedule_status']=schedule_status
     archive = write_archive(dict(evidence=evidence, summary=summary),directory=Path('.local/market-watch'))
     if publish:
-        if 'kalshi' in selected:
-            publish_snapshot('kalshi-props:'+sport,kalshi_prop_handoff(sources['kalshi'],sport,evidence['captured_at']))
-        publish_snapshot('markets:'+sport,summary)
+        with failure_stage('market_watch','publication'):
+            if 'kalshi' in selected:
+                handoff=kalshi_prop_handoff(sources['kalshi'],sport,evidence['captured_at'])
+                # Both snapshots commit together from one original capture.
+                # Unacknowledged commits remain failed; never retry or claim success.
+                publish_snapshots((('kalshi-props:'+sport,handoff),('markets:'+sport,summary)))
+            else:
+                publish_snapshot('markets:'+sport,summary)
     return summary, archive
 
 
