@@ -253,7 +253,6 @@ def test_cfb_publication_has_an_independent_exact_receipt_gate_and_private_readi
 def test_public_profiles_and_validated_receipts_survive_independent_degradation() -> None:
     public = PUBLIC_WORKFLOW.read_text(encoding="utf-8")
     update = _step(public, "Update public market data")
-    profiles = _step(public, "Update source-backed player profiles")
     readiness = _step(public, "Verify private access and published snapshot receipt")
     settlement = _step(public, "Settle CFB from free final sources")
     assert 'id: public_update' in update
@@ -261,20 +260,20 @@ def test_public_profiles_and_validated_receipts_survive_independent_degradation(
         "if: always() && !cancelled() && steps.worker_config.outcome == 'success' "
         "&& steps.schema.outcome == 'success' && "
     )
-    profile_guard = re.search(r'^\s*(if: .+)$', profiles, re.MULTILINE)
     readiness_guard = re.search(r'^\s*(if: .+)$', readiness, re.MULTILINE)
     # Explicit status functions avoid the implicit success() that previously
     # skipped these independent operations after degraded CFB settlement.
-    assert profile_guard is not None and profile_guard.group(1) == prerequisites + (
-        "env.SPORT != 'cfb' && env.OPERATION == 'public_daily'"
-    )
     assert readiness_guard is not None and readiness_guard.group(1) == prerequisites + (
         "((env.SPORT != 'cfb' && steps.public_update.outputs.report_ready == 'true') "
         "|| (env.SPORT == 'cfb' && steps.cfb_schedule.outcome == 'success'))"
     )
-    # A validated report survives intentional producer exit 2. Profiles read
-    # independent stored identities; neither operation needs complete markets.
-    assert 'public_update' not in profile_guard.group(1)
+    # Profile work now runs promptly inside the producer and is included in its
+    # validated report, before unrelated histories/settlements can age inputs.
+    # A late standalone call would duplicate roster collection.
+    assert 'python -m sportsbet.player_profiles' not in public
+    assert 'second roster refresh here would duplicate' in public
+    # A validated report survives intentional producer exit 2 and preserves
+    # independent publication verification after degraded CFB settlement.
     assert 'public_update.outcome' not in readiness_guard.group(1)
     assert 'mktemp -d "$RUNNER_TEMP/public-report.XXXXXXXX"' in update
     assert 'started_at="$(date -u' in update and 'status=$?' in update
@@ -287,7 +286,7 @@ def test_public_profiles_and_validated_receipts_survive_independent_degradation(
     # CFB-only runs skip the absent NFL/NBA report and retain site access checks.
     assert 'if [ "$SPORT" != cfb ]; then' in readiness
     assert 'PUBLIC_DATA_REPORT_PATH= node frontend/scripts/verify-production.mjs' in readiness
-    for step in (profiles, readiness, settlement):
+    for step in (readiness, settlement):
         assert 'continue-on-error' not in step
     assert 'python -m sportsbet.cfb_public_settlement' in settlement
 

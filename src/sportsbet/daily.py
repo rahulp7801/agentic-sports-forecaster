@@ -21,6 +21,7 @@ from sportsbet.nba_source_asof import ReleaseLedger as Ledger
 from sportsbet.model_contract import MODEL_VERSION
 from sportsbet.nba_source_asof import model_version_for
 from sportsbet.picks import build_pick_board
+from sportsbet.player_profiles import run as refresh_profiles
 from sportsbet.refresh import refresh_history
 from sportsbet.scan import run as scan, timestamp, prop_credit_holdback, MARKETS
 from sportsbet.schedules import collect as collect_schedule
@@ -30,13 +31,13 @@ MODES=('daily','monitor','public_daily','public_monitor')
 PUBLIC_SCOPES={
     'public_daily':(
         'Public-only daily collection: Kalshi markets, PrizePicks projections when publicly available, '
-        'ESPN schedules, NBA/NFL history refresh, and settlement evaluation. Sportsbooks and prop '
+        'ESPN schedules, source-backed player profile metadata, NBA/NFL history refresh, and settlement evaluation. Sportsbooks and prop '
         'recommendations are not requested. Partial market sampling is retained explicitly. This is periodic collection, '
         'not continuous arbitrage monitoring.'
     ),
     'public_monitor':(
         'Public-only market observation: Kalshi markets and ESPN schedules. History refresh, '
-        'settlement evaluation, sportsbooks, PrizePicks and prop recommendations are not requested. '
+        'settlement evaluation, player profile refresh, sportsbooks, PrizePicks and prop recommendations are not requested. '
         'Partial market sampling is retained explicitly. This is periodic collection, not continuous '
         'arbitrage monitoring.'
     ),
@@ -44,6 +45,7 @@ PUBLIC_SCOPES={
 
 
 PUBLIC_MARKET_REUSE = timedelta(minutes=10)
+PROFILE_READY_TIMEOUT_SECONDS = 120
 
 
 def reusable_public_market(snapshot: object, sport: str, mode: str,
@@ -92,47 +94,70 @@ class DailyState(TypedDict, total=False):
     schedule_evidence: dict
     settlements: dict
     props: dict
+    profiles: dict
+    profile_readiness: dict
     report: dict
 
 
 def create_daily_graph():
     graph=StateGraph(DailyState)
 
+    async def initialize(state):
+        # Futures belong to this invocation, including when a compiled graph is reused.
+        return {'profile_readiness':{sport:asyncio.get_running_loop().create_future()
+            for sport in state['sports']} if state['mode']=='public_daily' else {}}
+
+    async def catchup_schedule(sport,now,current,*,offload=False):
+        def offsets_to_collect():
+            try:
+                extra=pending_schedule_offsets(Ledger(),sport,now)
+            except Exception:
+                extra=()
+            return tuple(sorted(set(range(-7,-1))|set(extra)))
+        offsets=await asyncio.to_thread(offsets_to_collect) if offload else offsets_to_collect()
+        older=await collect_schedule(sport,now,offsets=offsets)
+        combined={**current,'captured_at':older['captured_at'],
+            'games':older.get('games',[])+current.get('games',[]),
+            'failures':older.get('failures',[])+current.get('failures',[]),
+            'sources':older.get('sources',[])+current.get('sources',[]),
+            'partial':older.get('status')!='complete' or current.get('status')!='complete'}
+        combined['status']='complete' if not combined['partial'] else 'unavailable' if (
+            older.get('status')=='unavailable' and current.get('status')=='unavailable') else 'partial'
+        return combined
+
     async def schedules(state):
-        results={};evidence={}
-        for sport in state['sports']:
-            catchup=state['mode'] in ('daily','public_daily')
-            now=datetime.now(timezone.utc)
-            current=await collect_schedule(sport,now)
-            publish_snapshot('schedule:'+sport,current)
-            results[sport]={'status':current['status'],'captured_at':current['captured_at']}
-            if catchup:
-                try:
-                    extra=pending_schedule_offsets(Ledger(),sport,now)
-                except Exception:
-                    extra=()
-                offsets=tuple(sorted(set(range(-7,-1))|set(extra)))
-                older=await collect_schedule(sport,now,offsets=offsets)
-                combined={**current,'captured_at':older['captured_at'],
-                    'games':older.get('games',[])+current.get('games',[]),
-                    'failures':older.get('failures',[])+current.get('failures',[]),
-                    'sources':older.get('sources',[])+current.get('sources',[]),
-                    'partial':older.get('status')!='complete' or current.get('status')!='complete'}
-                combined['status']='complete' if not combined['partial'] else 'unavailable' if (
-                    older.get('status')=='unavailable' and current.get('status')=='unavailable') else 'partial'
-                evidence[sport]=combined
-            else:
-                evidence[sport]=current
-            future=await collect_schedule(sport,now,offsets=(2,3,4,5,6))
-            partial=current['status']!='complete' or future['status']!='complete'
-            slate={**current,'captured_at':future['captured_at'],
-                'games':current.get('games',[])+future.get('games',[]),
-                'failures':current.get('failures',[])+future.get('failures',[]),
-                'sources':current.get('sources',[])+future.get('sources',[]),
-                'partial':partial,'status':'complete' if not partial else 'unavailable' if (
-                    current['status']=='unavailable' and future['status']=='unavailable') else 'partial'}
-            publish_snapshot('slate:'+sport,slate)
-            results[sport]['slate_status']=slate['status']
+        results={};evidence={};pending=[]
+        readiness=state['profile_readiness']
+        try:
+            for sport in state['sports']:
+                catchup=state['mode'] in ('daily','public_daily')
+                now=datetime.now(timezone.utc)
+                current=await collect_schedule(sport,now)
+                publish_snapshot('schedule:'+sport,current)
+                results[sport]={'status':current['status'],'captured_at':current['captured_at']}
+                if catchup and state['mode']!='public_daily':
+                    evidence[sport]=await catchup_schedule(sport,now,current)
+                else:
+                    evidence[sport]=current
+                future=await collect_schedule(sport,now,offsets=(2,3,4,5,6))
+                partial=current['status']!='complete' or future['status']!='complete'
+                slate={**current,'captured_at':future['captured_at'],
+                    'games':current.get('games',[])+future.get('games',[]),
+                    'failures':current.get('failures',[])+future.get('failures',[]),
+                    'sources':current.get('sources',[])+future.get('sources',[]),
+                    'partial':partial,'status':'complete' if not partial else 'unavailable' if (
+                        current['status']=='unavailable' and future['status']=='unavailable') else 'partial'}
+                publish_snapshot('slate:'+sport,slate)
+                results[sport].update(slate_status=slate['status'],slate_captured_at=slate['captured_at'])
+                if state['mode']=='public_daily':
+                    readiness[sport].set_result(slate['captured_at'])
+                    pending.append((sport,now,current))
+            # Fresh per-sport inputs are released before unrelated historical reads.
+            for sport,now,current in pending:
+                evidence[sport]=await catchup_schedule(sport,now,current,offload=True)
+        finally:
+            for ready in readiness.values():
+                if not ready.done(): ready.set_result(None)
         return {'schedules':results,'schedule_evidence':evidence}
 
     async def histories(state):
@@ -156,7 +181,7 @@ def create_daily_graph():
         return {'histories':results}
 
     async def markets(state):
-        results={}
+        results={};profiles={sport:dict(status='not_requested',reason='public_daily_only') for sport in state['sports']}
         public=state['mode'].startswith('public_')
         held=prop_credit_holdback(state['sports'],state['daily_credit_limit'])
         market_holdback=held+max(len(MARKETS[s]) for s in state['sports']) if held else 0
@@ -224,7 +249,19 @@ def create_daily_graph():
                 results[sport]=dict(status='failed',error_type=type(exc).__name__)
                 if pair_state is not None:
                     results[sport]['research_pair_status']=pair_state
-        return {'markets':results}
+            if state['mode']=='public_daily':
+                try:
+                    try:
+                        slate_at=await asyncio.wait_for(asyncio.shield(state['profile_readiness'][sport]),PROFILE_READY_TIMEOUT_SECONDS)
+                    except TimeoutError:
+                        slate_at=None
+                    result=(await refresh_profiles([sport],expected_public_captures={sport:dict(
+                        market_captured_at=results[sport].get('captured_at'),slate_captured_at=slate_at)}))[sport]
+                    status='complete' if result['public_input_status']=='observed' and result['unavailable']==0 else 'degraded'
+                    profiles[sport]=dict(result,status=status)
+                except Exception as exc:
+                    profiles[sport]=dict(status='failed',**error_fields(exc))
+        return {'markets':results,'profiles':profiles}
 
     async def props(state):
         if state['mode'].startswith('public_'):
@@ -326,29 +363,31 @@ def create_daily_graph():
     def report(state):
         public=state['mode'].startswith('public_')
         groups=('markets','schedules') if public else ('histories','markets','props','schedules','settlements')
-        if state['mode']=='public_daily':groups+=('histories','settlements')
+        if state['mode']=='public_daily':groups+=('histories','settlements','profiles')
         accepted=('complete','observed') if public else ('complete',)
         healthy=all(r['status'] in accepted or (group=='props' and r['status']=='scheduled')
             for group in groups for r in state[group].values())
         result=dict(mode=state['mode'],finished_at=datetime.now(timezone.utc).isoformat(),
             status=('observed' if public else 'complete') if healthy else 'degraded',execution_ready=False,
             histories=state['histories'],markets=state['markets'],schedules=state['schedules'],
-            settlements=state['settlements'],
+            settlements=state['settlements'],profiles=state['profiles'],
             props={s:{k:v for k,v in r.items() if k not in ('attempts','coverage')} for s,r in state['props'].items()})
         if public:
             result['scope']=PUBLIC_SCOPES[state['mode']]
         publish_snapshot('pipeline:'+state['mode'],result)
         return {'report':result}
 
+    graph.add_node('initialize',initialize)
     graph.add_node('histories',histories)
     graph.add_node('markets',markets)
     graph.add_node('schedules',schedules)
     graph.add_node('settlements',settlements)
     graph.add_node('props',props)
     graph.add_node('report',report)
-    graph.add_edge(START,'histories')
-    graph.add_edge(START,'markets')
-    graph.add_edge(START,'schedules')
+    graph.add_edge(START,'initialize')
+    graph.add_edge('initialize','histories')
+    graph.add_edge('initialize','markets')
+    graph.add_edge('initialize','schedules')
     # Collect market prices before props compete for the remaining paid allowance.
     graph.add_edge(['histories','schedules'],'settlements')
     graph.add_edge(['markets','settlements'],'props')

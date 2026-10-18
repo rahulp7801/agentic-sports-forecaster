@@ -1,6 +1,7 @@
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
+import asyncio
 import json
 
 import pytest
@@ -38,6 +39,14 @@ def schedule_source(monkeypatch):
     monkeypatch.setattr(daily,'settle_final_props',lambda ledger,sport,schedule:{
         'sport':sport,'status':'complete','candidates':0,'settled':0,'pending':0,
         'reasons':{},'execution_ready':False})
+    async def profiles(sports,**kwargs):
+        return {sport:profile_counts() for sport in sports}
+    monkeypatch.setattr(daily,'refresh_profiles',AsyncMock(side_effect=profiles))
+
+
+def profile_counts(**changes):
+    return dict(dict(profiles=1,unavailable=0,signal_identities=0,public_identities=1,
+        public_input_status='observed',selected_events=1,selected_players=1),**changes)
 
 
 @pytest.mark.asyncio
@@ -590,3 +599,186 @@ async def test_nfl_stat_only_failure_does_not_block_existing_research(monkeypatc
     assert stored['research:corrected-workload-capture:nfl']['status'] == 'captured'
     assert stored['corrected-workload-shadow-validation:nfl']['status'] == 'collecting'
     pool.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_public_profiles_consume_exact_fresh_inputs_before_histories_and_catchup_finish(monkeypatch):
+    from threading import Event
+    profiles_done=asyncio.Event();history_release=Event();calls=[];stored={}
+    stamps={sport:(datetime.now(timezone.utc)-timedelta(seconds=index)).isoformat()
+            for index,sport in enumerate(('nfl','nba'),1)}
+    async def collect(sport,now,**kwargs):
+        offsets=kwargs.get('offsets',())
+        if offsets and max(offsets)<0:
+            await asyncio.wait_for(profiles_done.wait(),3)
+            calls.append(('catchup_finished',sport))
+        return dict(status='complete',captured_at=stamps[sport],games=[],sources=[],failures=[])
+    def history(sport,day):
+        assert history_release.wait(3), 'Profiles waited for the history superstep barrier'
+        calls.append(('history_finished',sport));return dict(status='complete')
+    def catchup_offsets(*args):
+        assert history_release.wait(3), 'Catchup offset database reads blocked profile admission'
+        calls.append(('offsets_finished',args[1]));return ()
+    async def watch(sport,*args,**kwargs):
+        calls.append(('market',sport))
+        return dict(sources={'kalshi':dict(status='observed',partial_coverage=False)},captured_at=stamps[sport]),None
+    async def profiles(sports,*,expected_public_captures):
+        sport,=sports
+        assert expected_public_captures=={sport:dict(market_captured_at=stamps[sport],slate_captured_at=stamps[sport])}
+        assert stored['slate:'+sport]['captured_at']==stamps[sport]
+        calls.append(('profiles',sport))
+        if sum(stage=='profiles' for stage,_ in calls)==2:
+            profiles_done.set();history_release.set()
+        return {sport:profile_counts()}
+    monkeypatch.setattr(daily,'collect_schedule',collect)
+    monkeypatch.setattr(daily,'refresh_history',history)
+    monkeypatch.setattr(daily,'pending_schedule_offsets',catchup_offsets)
+    monkeypatch.setattr(daily,'watch',watch)
+    monkeypatch.setattr(daily,'refresh_profiles',profiles)
+    monkeypatch.setattr(daily,'publish_snapshot',lambda key,value:stored.update({key:deepcopy(value)}))
+    result=await daily.run(['nfl','nba'],'public_daily',20)
+    assert result['status']=='observed'
+    for sport in ('nfl','nba'):
+        assert calls.count(('market',sport))==calls.count(('profiles',sport))==1
+        assert calls.index(('profiles',sport))<calls.index(('catchup_finished','nfl'))
+        assert calls.index(('profiles',sport))<calls.index(('history_finished','nfl'))
+        assert calls.index(('profiles',sport))<calls.index(('offsets_finished','nfl'))
+        assert result['schedules'][sport]['slate_captured_at']==stamps[sport]
+        assert result['profiles'][sport]['status']=='complete'
+
+
+@pytest.mark.asyncio
+async def test_profile_failure_preserves_market_receipts_and_next_sport_refresh(monkeypatch):
+    stamp=datetime.now(timezone.utc).isoformat();stored={};attempted=[]
+    monkeypatch.setattr(daily,'publish_snapshot',lambda key,value:stored.update({key:deepcopy(value)}))
+    monkeypatch.setattr(daily,'refresh_history',lambda *args:dict(status='complete'))
+    monkeypatch.setattr(daily,'watch',AsyncMock(return_value=(dict(
+        captured_at=stamp,sources={'kalshi':dict(status='observed',partial_coverage=False)}),None)))
+    async def profiles(sports,**kwargs):
+        sport,=sports;attempted.append(sport)
+        if sport=='nfl': raise RuntimeError('unlogged private provider response')
+        return {sport:profile_counts()}
+    monkeypatch.setattr(daily,'refresh_profiles',profiles)
+    result=await daily.run(['nfl','nba'],'public_daily',20)
+    assert result['status']=='degraded' and attempted==['nfl','nba']
+    assert result['profiles']['nfl']==dict(status='failed',error_type='RuntimeError')
+    assert result['profiles']['nba']['status']=='complete'
+    assert all(result['markets'][sport]['captured_at']==stamp for sport in ('nfl','nba'))
+    assert stored['pipeline:public_daily']['markets']==result['markets']
+    assert 'unlogged private' not in str(result)
+
+
+@pytest.mark.asyncio
+async def test_failed_market_can_refresh_signal_profiles_without_claiming_public_input(monkeypatch):
+    monkeypatch.setattr(daily,'publish_snapshot',lambda *args:None)
+    monkeypatch.setattr(daily,'refresh_history',lambda *args:dict(status='complete'))
+    monkeypatch.setattr(daily,'watch',AsyncMock(side_effect=RuntimeError('private URL')))
+    async def profiles(sports,*,expected_public_captures):
+        assert sports==['nfl'] and expected_public_captures['nfl']['market_captured_at'] is None
+        return {'nfl':profile_counts(signal_identities=1,public_identities=0,public_input_status='rejected')}
+    monkeypatch.setattr(daily,'refresh_profiles',profiles)
+    result=await daily.run(['nfl'],'public_daily',20)
+    assert result['markets']['nfl']['status']=='failed' and 'captured_at' not in result['markets']['nfl']
+    assert result['profiles']['nfl']['profiles']==1 and result['profiles']['nfl']['status']=='degraded'
+    assert result['status']=='degraded' and 'private URL' not in str(result)
+
+
+@pytest.mark.asyncio
+async def test_profile_ready_timeout_is_bounded_without_cancelling_schedule_future(monkeypatch):
+    released=asyncio.Event();stamp=datetime.now(timezone.utc).isoformat()
+    monkeypatch.setattr(daily,'PROFILE_READY_TIMEOUT_SECONDS',0.01)
+    monkeypatch.setattr(daily,'publish_snapshot',lambda *args:None)
+    monkeypatch.setattr(daily,'refresh_history',lambda *args:dict(status='complete'))
+    monkeypatch.setattr(daily,'watch',AsyncMock(return_value=(dict(
+        captured_at=stamp,sources={'kalshi':dict(status='observed',partial_coverage=False)}),None)))
+    async def collect(*args,**kwargs):
+        if kwargs.get('offsets')==(2,3,4,5,6): await released.wait()
+        return dict(status='complete',captured_at=stamp,games=[])
+    async def profiles(sports,*,expected_public_captures):
+        assert expected_public_captures['nfl']==dict(market_captured_at=stamp,slate_captured_at=None)
+        released.set()
+        return {'nfl':profile_counts(profiles=0,public_identities=0,public_input_status='rejected',selected_events=0,selected_players=0)}
+    monkeypatch.setattr(daily,'collect_schedule',collect)
+    monkeypatch.setattr(daily,'refresh_profiles',profiles)
+    result=await asyncio.wait_for(daily.run(['nfl'],'public_daily',20),2)
+    assert result['schedules']['nfl']['slate_captured_at']==stamp
+    assert result['profiles']['nfl']['status']==result['status']=='degraded'
+
+
+@pytest.mark.asyncio
+async def test_schedule_exception_releases_every_pending_profile_waiter(monkeypatch):
+    monkeypatch.setattr(daily,'refresh_history',lambda *args:dict(status='complete'))
+    monkeypatch.setattr(daily,'collect_schedule',AsyncMock(side_effect=RuntimeError('schedule unavailable')))
+    monkeypatch.setattr(daily,'watch',AsyncMock(return_value=(dict(captured_at=datetime.now(timezone.utc).isoformat(),
+        sources={'kalshi':dict(status='observed',partial_coverage=False)}),None)))
+    futures={}
+    with pytest.raises(RuntimeError,match='schedule unavailable'):
+        async for update in daily.create_daily_graph().astream(dict(sports=['nfl','nba'],mode='public_daily',daily_credit_limit=20)):
+            if 'initialize' in update: futures=update['initialize']['profile_readiness']
+    assert set(futures)=={'nfl','nba'} and all(value.done() and value.result() is None for value in futures.values())
+
+
+@pytest.mark.asyncio
+async def test_cancelled_invocation_releases_waiters_without_swallowing_cancellation(monkeypatch):
+    started=asyncio.Event();initial=asyncio.Event();blocked=asyncio.Event();futures={}
+    monkeypatch.setattr(daily,'publish_snapshot',lambda *args:None)
+    monkeypatch.setattr(daily,'refresh_history',lambda *args:dict(status='complete'))
+    async def collect(*args,**kwargs):
+        started.set();await blocked.wait()
+    monkeypatch.setattr(daily,'collect_schedule',collect)
+    monkeypatch.setattr(daily,'watch',AsyncMock(return_value=(dict(captured_at=datetime.now(timezone.utc).isoformat(),
+        sources={'kalshi':dict(status='observed',partial_coverage=False)}),None)))
+    async def consume():
+        nonlocal futures
+        async for update in daily.create_daily_graph().astream(dict(sports=['nfl','nba'],mode='public_daily',daily_credit_limit=20)):
+            if 'initialize' in update:
+                futures=update['initialize']['profile_readiness'];initial.set()
+    task=asyncio.create_task(consume())
+    await initial.wait();await started.wait();task.cancel()
+    with pytest.raises(asyncio.CancelledError): await task
+    assert all(value.done() and value.result() is None for value in futures.values())
+    daily.refresh_profiles.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_reused_and_concurrent_graph_invocations_have_independent_profile_coordinators(monkeypatch):
+    from contextvars import ContextVar
+    invocation=ContextVar('profile_invocation');calls=[]
+    stamps={label:(datetime.now(timezone.utc)-timedelta(seconds=index)).isoformat()
+        for index,label in enumerate(('first','second'),1)}
+    monkeypatch.setattr(daily,'publish_snapshot',lambda *args:None)
+    monkeypatch.setattr(daily,'refresh_history',lambda *args:dict(status='complete'))
+    async def collect(*args,**kwargs): return dict(status='complete',captured_at=stamps[invocation.get()],games=[])
+    async def watch(*args,**kwargs):
+        return dict(captured_at=stamps[invocation.get()],sources={'kalshi':dict(status='observed',partial_coverage=False)}),None
+    async def profiles(sports,*,expected_public_captures):
+        label=invocation.get();calls.append(label)
+        assert expected_public_captures=={'nfl':dict(market_captured_at=stamps[label],slate_captured_at=stamps[label])}
+        return {'nfl':profile_counts()}
+    monkeypatch.setattr(daily,'collect_schedule',collect);monkeypatch.setattr(daily,'watch',watch)
+    monkeypatch.setattr(daily,'refresh_profiles',profiles)
+    graph=daily.create_daily_graph()
+    async def invoke(label):
+        token=invocation.set(label)
+        try: return await graph.ainvoke(dict(sports=['nfl'],mode='public_daily',daily_credit_limit=20))
+        finally: invocation.reset(token)
+    first,second=await asyncio.gather(invoke('first'),invoke('second'))
+    third=await invoke('first')
+    assert calls.count('first')==2 and calls.count('second')==1
+    coordinators=[state['profile_readiness']['nfl'] for state in (first,second,third)]
+    assert len({id(value) for value in coordinators})==3
+    assert [value.result() for value in coordinators]==[stamps['first'],stamps['second'],stamps['first']]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode',['public_monitor','monitor','daily'])
+async def test_profiles_are_not_requested_outside_public_daily(monkeypatch,mode):
+    monkeypatch.setattr(daily,'publish_snapshot',lambda *args:None)
+    monkeypatch.setattr(daily,'refresh_history',lambda *args:dict(status='complete'))
+    monkeypatch.setattr(daily,'load_snapshot',lambda *args:dict(status='complete',finished_at=datetime.now(timezone.utc).isoformat()))
+    monkeypatch.setattr(daily,'watch',AsyncMock(return_value=(dict(captured_at=datetime.now(timezone.utc).isoformat(),
+        sources={'kalshi':dict(status='observed',partial_coverage=False)}),None)))
+    monkeypatch.setattr(daily,'scan',AsyncMock(return_value={'nba':dict(status='complete')}))
+    result=await daily.run(['nba'],mode,20)
+    daily.refresh_profiles.assert_not_called()
+    assert result['profiles']=={'nba':dict(status='not_requested',reason='public_daily_only')}
