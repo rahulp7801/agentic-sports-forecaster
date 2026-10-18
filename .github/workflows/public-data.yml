@@ -42,6 +42,10 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
+      - name: Record original public run selection
+        env:
+          PUBLIC_RUN_SCHEDULE: ${{ github.event.schedule || '' }}
+        run: node .github/scripts/public-run-selection.mjs
       - run: pip install uv==0.11.32
       - run: uv sync --locked
       - name: Check worker configuration
