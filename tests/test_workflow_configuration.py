@@ -90,6 +90,19 @@ def _step(source: str, name: str) -> str:
     return source[start:] if end == -1 else source[start:end]
 
 
+def _job(source: str, name: str) -> str:
+    start = re.search(rf"^  {re.escape(name)}:\s*$", source, re.MULTILINE)
+    assert start is not None
+    end = re.search(r"^  [a-z][a-z0-9-]*:\s*$", source[start.end():], re.MULTILINE)
+    return source[start.start():] if end is None else source[start.start():start.end() + end.start()]
+
+
+def _needs(job: str) -> set[str]:
+    dependency_line = re.search(r"^    needs: \[(.*?)\]$", job, re.MULTILINE)
+    assert dependency_line is not None
+    return set(dependency_line.group(1).split(", "))
+
+
 def test_paid_and_public_schedules_are_isolated() -> None:
     paid = WORKFLOW.read_text(encoding="utf-8")
     public = PUBLIC_WORKFLOW.read_text(encoding="utf-8")
@@ -140,8 +153,10 @@ def test_hosted_schema_is_migrated_after_ci_and_checked_before_collection_and_de
     assert data.index(check) < data.index("name: Collect live market data")
     assert public.index(check) < public.index("name: Update public market data")
 
-    schema_job = ci[ci.index("  production-schema:"):ci.index("  release-plan:")]
-    assert "needs: [secrets, backend, frontend, postgres, worker-image]" in schema_job
+    schema_job = _job(ci, "production-schema")
+    assert _needs(schema_job) == {
+        "release-inputs", "secrets", "backend", "frontend", "postgres", "worker-image",
+    }
     # Only provisioning derives a writer from the dashboard identity; schema
     # readiness retains its existing worker read and separate owner migration.
     provision_step = _step(schema_job, "Provision and verify dedicated waitlist credential without rotation")
@@ -175,11 +190,10 @@ def test_hosted_schema_is_migrated_after_ci_and_checked_before_collection_and_de
         schema_job, "Plan hosted schema using restricted transaction reader"
     )
 
-    deploy_job = ci[ci.index("\n  deploy:\n"):]
-    dependency_line = re.search(r"^    needs: \[(.*?)\]$", deploy_job, re.MULTILINE)
-    assert dependency_line is not None
-    assert set(dependency_line.group(1).split(", ")) == {
-        "secrets", "backend", "frontend", "postgres", "worker-image", "production-schema", "release-plan",
+    deploy_job = _job(ci, "deploy")
+    assert _needs(deploy_job) == {
+        "release-inputs", "secrets", "backend", "frontend", "postgres", "worker-image",
+        "production-schema", "release-plan",
     }
 
 def test_public_collection_verifies_the_deployed_contract_before_success() -> None:
@@ -318,17 +332,24 @@ def test_paid_schedule_collects_all_three_sports_and_keeps_public_modes_separate
 
 def test_release_planning_cannot_skip_live_checks_or_mutate_from_a_review_branch() -> None:
     ci = CI_WORKFLOW.read_text(encoding="utf-8")
-    schema = ci[ci.index("  production-schema:"):ci.index("  release-plan:")]
-    plan = ci[ci.index("  release-plan:"):ci.index("\n  deploy:\n")]
-    deploy = ci[ci.index("\n  deploy:\n"):]
+    schema = _job(ci, "production-schema")
+    plan = _job(ci, "release-plan")
+    deploy = _job(ci, "deploy")
     production_guard = "github.ref == 'refs/heads/master' && (github.event_name == 'push' || inputs.force_frontend_deploy == true)"
-    assert production_guard in schema and production_guard in deploy
+    assert production_guard in deploy
+    assert "github.ref == 'refs/heads/master' && (github.event_name == 'push' || inputs.force_frontend_deploy == true || (" in schema
+    assert "github.event_name == 'workflow_dispatch' && inputs.public_landing_only == true && inputs.force_frontend_deploy != true && github.repository_id == '1199906339' && github.actor_id == '76501505'" in schema
     assert "default: false" in ci[ci.index("  workflow_dispatch:"):ci.index("permissions:")]
     assert "fetch-depth: 0" in plan and "persist-credentials: false" in plan
     assert "node .github/scripts/deployment-plan.mjs" in plan
     assert "vercel deploy" not in plan and "DATABASE_MIGRATION_URL" not in plan
     assert "github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')" in plan
-    assert "needs: [secrets, backend, frontend, postgres, worker-image]" in plan
+    assert _needs(plan) == {
+        "release-inputs", "secrets", "backend", "frontend", "postgres", "worker-image",
+    }
+    assert "inputs.public_landing_only" not in deploy
+    assert "FORCE_FRONTEND_DEPLOY: ${{ inputs.force_frontend_deploy || false }}" in plan
+    assert "PUBLIC_LANDING_ONLY" not in plan
     conditional = "      - if: needs.release-plan.outputs.deploy == 'true'"
     assert deploy.count(conditional) == 2
     verify = _step(deploy, "Verify unchanged deployed access controls and data readiness")
@@ -350,11 +371,89 @@ def test_release_planning_cannot_skip_live_checks_or_mutate_from_a_review_branch
 
 def test_vercel_token_is_unavailable_to_checkout_install_and_public_verification() -> None:
     ci = CI_WORKFLOW.read_text(encoding="utf-8")
-    plan = ci[ci.index("  release-plan:"):ci.index("\n  deploy:\n")]
-    deploy = ci[ci.index("\n  deploy:\n"):]
+    plan = _job(ci, "release-plan")
+    deploy = _job(ci, "deploy")
     for job in (plan, deploy):
         assert "secrets.VERCEL_TOKEN" not in job[:job.index("    steps:")]
     assert "secrets.VERCEL_TOKEN" in _step(plan, "Compare current source with the live production deployment")
     assert "secrets.VERCEL_TOKEN" not in _step(deploy, "Verify unchanged deployed access controls and data readiness")
     installer = deploy[deploy.index("      - if:"):deploy.index("      # Only create")]
     assert "npm install" in installer and "secrets.VERCEL_TOKEN" not in installer
+
+
+def test_public_landing_input_is_off_by_default_and_validated_before_production_secrets() -> None:
+    ci = CI_WORKFLOW.read_text(encoding="utf-8")
+    dispatch = ci[ci.index("  workflow_dispatch:"):ci.index("permissions:")]
+    for name in ("force_frontend_deploy", "public_landing_only"):
+        match = re.search(rf"^      {name}:\n(.*?)(?=^      [a-z_]+:|\Z)", dispatch, re.MULTILINE | re.DOTALL)
+        assert match is not None
+        assert "        type: boolean" in match.group(1)
+        assert "        default: false" in match.group(1)
+    gate = _job(ci, "release-inputs")
+    assert "    if:" not in gate and "    needs:" not in gate
+    assert "    permissions: {}" in gate
+    assert "environment:" not in gate and "secrets." not in gate and "uses:" not in gate
+    assert "PUBLIC_LANDING_ONLY: ${{ inputs.public_landing_only || false }}" in gate
+    assert "FORCE_FRONTEND_DEPLOY: ${{ inputs.force_frontend_deploy || false }}" in gate
+    validation = _step(gate, "Validate mutually exclusive release inputs and public scope")
+    assert 'case "$PUBLIC_LANDING_ONLY:$FORCE_FRONTEND_DEPLOY" in' in validation
+    assert "false:false|false:true|true:false) ;;" in validation
+    assert "true:true)" not in validation
+    assert "Invalid or conflicting release inputs'; exit 1" in validation
+    assert 'if [[ "$PUBLIC_LANDING_ONLY" == true ]]; then' in validation
+    for condition in (
+        '"$GITHUB_EVENT_NAME" != workflow_dispatch',
+        '"$GITHUB_REF" != refs/heads/master',
+        '"$GITHUB_REPOSITORY_ID" != 1199906339',
+        '"$GITHUB_ACTOR_ID" != 76501505',
+    ):
+        assert condition in validation
+    assert "${{" not in validation
+    for name in ("production-schema", "release-plan", "deploy", "deploy-public-contained"):
+        job = _job(ci, name)
+        assert "release-inputs" in _needs(job)
+        assert "always()" not in job
+        assert "environment: production" in job
+
+
+def test_public_landing_release_is_manual_owner_scoped_and_keeps_all_real_code_gates() -> None:
+    ci = CI_WORKFLOW.read_text(encoding="utf-8")
+    job = _job(ci, "deploy-public-contained")
+    assert "    if: github.event_name == 'workflow_dispatch' && inputs.public_landing_only == true && inputs.force_frontend_deploy != true && github.ref == 'refs/heads/master' && github.repository_id == '1199906339' && github.actor_id == '76501505'\n" in job
+    assert _needs(job) == {
+        "release-inputs", "secrets", "backend", "frontend", "postgres", "worker-image",
+        "production-schema", "release-plan",
+    }
+    assert "    runs-on: ubuntu-latest" in job
+    assert "    timeout-minutes: 15" in job
+    assert "    environment: production" in job
+    permissions = job[job.index("    permissions:"):job.index("    env:")]
+    assert permissions.strip() == "permissions:\n      contents: read\n      checks: read\n      actions: read\n      pull-requests: read"
+    assert "persist-credentials: false" in job and "node-version: '24'" in job
+    assert "VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}" in job
+    assert "VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}" in job
+    assert "CONTAINED_PUBLIC_RECEIPT: ${{ runner.temp }}/contained-public-release.json" in job
+    assert "PUBLIC_LANDING_ONLY: ${{ inputs.public_landing_only }}" in job
+    assert "FORCE_FRONTEND_DEPLOY: ${{ inputs.force_frontend_deploy || false }}" in job
+    before_steps = job[:job.index("    steps:")]
+    assert "secrets." not in before_steps and "GITHUB_TOKEN:" not in before_steps
+    install = _step(job, "Install pinned Vercel CLI without release credentials")
+    preflight = _step(job, "Verify contained public release prerequisites")
+    deploy = _step(job, "Deploy public landing with private containment retained")
+    finish = _step(job, "Verify deployed public landing and retained private containment")
+    assert "run: npm install --global vercel@59.15.1" in install
+    assert "secrets." not in install
+    assert "secrets." not in job[job.index("    steps:"):job.index(install)]
+    for step, operation in ((preflight, "preflight"), (finish, "finish")):
+        assert "VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}" in step
+        assert "GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}" in step
+        assert f"run: node .github/scripts/contained-public-release.mjs {operation}" in step
+    assert "VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}" in deploy
+    assert "GITHUB_TOKEN" not in deploy
+    assert 'run: vercel deploy --yes --prod --force --meta sportsbetCommit="$GITHUB_SHA" --token="$VERCEL_TOKEN"' in deploy
+    assert job.index(install) < job.index(preflight) < job.index(deploy) < job.index(finish)
+    for forbidden in (
+        "private-dashboard-release.mjs", " recover", "firewall", "PRODUCTION_VERIFY_ATTEMPTS",
+        "continue-on-error", "cancelled()", "failure()", "retry", "needs.release-plan.outputs.deploy",
+    ):
+        assert forbidden not in job
