@@ -10,6 +10,7 @@ export const REPOSITORY_ID=1199906339;
 export const OWNER_ID=76501505;
 export const WORKFLOW_ID=355316840;
 export const WORKFLOW_PATH='.github/workflows/ci.yml';
+export const GITHUB_API_VERSION='2022-11-28';
 export const REQUIRED_JOBS=['release-inputs','secrets','backend','frontend','postgres','worker-image','production-schema','release-plan'];
 export const CODEQL_CHECKS=['Analyze (python)','Analyze (javascript-typescript)','Analyze (actions)','CodeQL'];
 export const ACTION_CHECKS=['secrets','backend','frontend','postgres','worker-image',...CODEQL_CHECKS.slice(0,3)];
@@ -85,7 +86,7 @@ export function containedPublicController({token,githubToken,context,project=PRO
  async function metadata(origin,path,credential) {
   let response;
   try {response=await fetcher(origin+path,{method:'GET',headers:{Authorization:'Bearer '+credential,
-   Accept:'application/json',...(origin==='https://api.github.com'?{'X-GitHub-Api-Version':'2026-03-10'}:{})},
+   Accept:'application/json',...(origin==='https://api.github.com'?{'X-GitHub-Api-Version':GITHUB_API_VERSION}:{})},
    redirect:'error',cache:'no-store',signal:AbortSignal.timeout(15000)});}
   catch{fail('metadata_request_unavailable');}
   try{return await boundedJson(response);}catch{fail('metadata_response_invalid_or_unbounded');}
