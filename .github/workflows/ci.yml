@@ -9,12 +9,39 @@ on:
         description: 'Rebuild unchanged frontend after a deliberate environment/settings change (master only)'
         type: boolean
         default: false
+      public_landing_only:
+        description: 'Deploy the public landing page while retaining private dashboard containment (owner, master only)'
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  release-inputs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions: {}
+    env:
+      PUBLIC_LANDING_ONLY: ${{ inputs.public_landing_only || false }}
+      FORCE_FRONTEND_DEPLOY: ${{ inputs.force_frontend_deploy || false }}
+    steps:
+      - name: Validate mutually exclusive release inputs and public scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$PUBLIC_LANDING_ONLY:$FORCE_FRONTEND_DEPLOY" in
+            false:false|false:true|true:false) ;;
+            *) echo '::error::Invalid or conflicting release inputs'; exit 1 ;;
+          esac
+          if [[ "$PUBLIC_LANDING_ONLY" == true ]]; then
+            if [[ "$GITHUB_EVENT_NAME" != workflow_dispatch || "$GITHUB_REF" != refs/heads/master ||
+                  "$GITHUB_REPOSITORY_ID" != 1199906339 || "$GITHUB_ACTOR_ID" != 76501505 ]]; then
+              echo '::error::Public landing release scope is not authorized'
+              exit 1
+            fi
+          fi
   secrets:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -153,8 +180,8 @@ jobs:
             --volume "$PWD/tests/worker_image_smoke.py:/checks/smoke.py:ro" \
             sportsbet-worker:test python /checks/smoke.py
   production-schema:
-    if: github.ref == 'refs/heads/master' && (github.event_name == 'push' || inputs.force_frontend_deploy == true)
-    needs: [secrets, backend, frontend, postgres, worker-image]
+    if: github.ref == 'refs/heads/master' && (github.event_name == 'push' || inputs.force_frontend_deploy == true || (github.event_name == 'workflow_dispatch' && inputs.public_landing_only == true && inputs.force_frontend_deploy != true && github.repository_id == '1199906339' && github.actor_id == '76501505'))
+    needs: [release-inputs, secrets, backend, frontend, postgres, worker-image]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: production
@@ -199,7 +226,7 @@ jobs:
         run: .venv/bin/python ops/provision_waitlist.py
   release-plan:
     if: github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-    needs: [secrets, backend, frontend, postgres, worker-image]
+    needs: [release-inputs, secrets, backend, frontend, postgres, worker-image]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     environment: production
@@ -224,7 +251,7 @@ jobs:
         run: node .github/scripts/deployment-plan.mjs
   deploy:
     if: github.ref == 'refs/heads/master' && (github.event_name == 'push' || inputs.force_frontend_deploy == true)
-    needs: [secrets, backend, frontend, postgres, worker-image, production-schema, release-plan]
+    needs: [release-inputs, secrets, backend, frontend, postgres, worker-image, production-schema, release-plan]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: production
@@ -276,3 +303,44 @@ jobs:
           PRODUCTION_VERIFY_ATTEMPTS: '12'
           PRODUCTION_VERIFY_DELAY_MS: '5000'
         run: node frontend/scripts/verify-production.mjs
+  deploy-public-contained:
+    if: github.event_name == 'workflow_dispatch' && inputs.public_landing_only == true && inputs.force_frontend_deploy != true && github.ref == 'refs/heads/master' && github.repository_id == '1199906339' && github.actor_id == '76501505'
+    needs: [release-inputs, secrets, backend, frontend, postgres, worker-image, production-schema, release-plan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    permissions:
+      contents: read
+      checks: read
+      actions: read
+      pull-requests: read
+    env:
+      VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+      PUBLIC_LANDING_ONLY: ${{ inputs.public_landing_only }}
+      FORCE_FRONTEND_DEPLOY: ${{ inputs.force_frontend_deploy || false }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - name: Install pinned Vercel CLI without release credentials
+        run: npm install --global vercel@59.15.1
+      - name: Verify contained public release prerequisites
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CONTAINED_PUBLIC_RECEIPT: ${{ runner.temp }}/contained-public-release.json
+        run: node .github/scripts/contained-public-release.mjs preflight
+      - name: Deploy public landing with private containment retained
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: vercel deploy --yes --prod --force --meta sportsbetCommit="$GITHUB_SHA" --token="$VERCEL_TOKEN"
+      - name: Verify deployed public landing and retained private containment
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CONTAINED_PUBLIC_RECEIPT: ${{ runner.temp }}/contained-public-release.json
+        run: node .github/scripts/contained-public-release.mjs finish
