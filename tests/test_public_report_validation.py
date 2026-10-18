@@ -26,8 +26,12 @@ def public_report(status='observed', mode='public_monitor', sports=('nfl', 'nba'
         scope='Synthetic public-only observation; no quote collection in this test.',
         histories={sport:dict(status='complete' if mode == 'public_daily' else 'not_requested') for sport in sports},
         markets={sport:dict(status='observed', captured_at=(now-timedelta(minutes=3)).isoformat()) for sport in sports},
-        schedules={sport:dict(status='complete', captured_at=(now-timedelta(days=1)).isoformat()) for sport in sports},
+        schedules={sport:dict(status='complete', captured_at=(now-timedelta(days=1)).isoformat(),
+            slate_captured_at=(now-timedelta(minutes=3)).isoformat()) for sport in sports},
         settlements={sport:dict(status='complete' if mode == 'public_daily' else 'not_requested') for sport in sports},
+        profiles={sport:(dict(status='complete', profiles=1, unavailable=0, signal_identities=0,
+            public_identities=1, public_input_status='observed', selected_events=1, selected_players=1)
+            if mode == 'public_daily' else dict(status='not_requested', reason='public_daily_only')) for sport in sports},
         props={sport:dict(status='not_requested', reason='public_only_collection') for sport in sports})
     if status == 'degraded':
         report['markets'][sports[-1]] = dict(status='failed')
@@ -84,7 +88,8 @@ def test_published_component_cannot_silently_omit_its_receipt(report_path, group
 
 
 @pytest.mark.parametrize('group,status', [('markets', 'degraded'), ('schedules', 'partial'),
-                                         ('histories', 'failed'), ('settlements', 'blocked')])
+                                         ('histories', 'failed'), ('settlements', 'blocked'),
+                                         ('profiles', 'degraded'), ('profiles', 'failed')])
 def test_observed_status_cannot_contradict_daily_component_coverage(report_path, group, status):
     report = public_report(mode='public_daily')
     report[group]['nba']['status'] = status
@@ -97,6 +102,43 @@ def test_real_degraded_market_retains_its_capture_receipt(report_path):
     report['markets']['nba'] = dict(status='degraded', captured_at=(NOW-timedelta(seconds=5)).isoformat())
     report_path.write_text(json.dumps(report), encoding='utf-8')
     assert validate(report_path, producer_status=2) == {'validated_public_report_receipts': 4}
+
+
+@pytest.mark.parametrize('state', ['degraded', 'failed'])
+def test_profile_failure_keeps_successful_market_receipts_and_degraded_exit(report_path, state):
+    report=public_report(mode='public_daily')
+    report['status']='degraded'
+    report['profiles']['nba']=(dict(report['profiles']['nba'],status='degraded',public_input_status='rejected')
+        if state=='degraded' else dict(status='failed',error_type='RuntimeError',sqlstate='08006'))
+    report_path.write_text(json.dumps(report),encoding='utf-8')
+    assert validate(report_path,mode='public_daily',producer_status=2)=={'validated_public_report_receipts':4}
+    assert report['markets']['nba']['captured_at']==(NOW-timedelta(minutes=3)).isoformat()
+
+
+@pytest.mark.parametrize('change', ['absent','extra_identity','bool_count','large_count','unknown_input',
+    'masked_rejection','masked_unavailable','wrong_degraded','too_many_players','private_error',
+    'invalid_error_type','invalid_sqlstate','monitor_request','slate_missing','slate_future'])
+def test_profile_diagnostics_and_original_slate_clocks_are_bounded_and_required(report_path,change):
+    report=public_report(mode='public_daily');mode='public_daily'
+    value=report['profiles']['nba']
+    if change=='absent': del report['profiles']
+    elif change=='extra_identity': value['player']='RAW_PRIVATE_IDENTITY'
+    elif change=='bool_count': value['profiles']=True
+    elif change=='large_count': value['public_identities']=5001
+    elif change=='unknown_input': value['public_input_status']='verified_by_guess'
+    elif change=='masked_rejection': value['public_input_status']='rejected'
+    elif change=='masked_unavailable': value.update(profiles=0,unavailable=1)
+    elif change=='wrong_degraded': value['status']='degraded'
+    elif change=='too_many_players': value['selected_players']=51
+    elif change=='private_error': report['profiles']['nba']=dict(status='failed',error_type='RuntimeError',message='RAW_PRIVATE_REPORT')
+    elif change=='invalid_error_type': report['profiles']['nba']=dict(status='failed',error_type='RAW PRIVATE REPORT')
+    elif change=='invalid_sqlstate': report['profiles']['nba']=dict(status='failed',error_type='RuntimeError',sqlstate='url')
+    elif change=='monitor_request':
+        report=public_report();mode='public_monitor';report['profiles']['nba']=value
+    elif change=='slate_missing': del report['schedules']['nba']['slate_captured_at']
+    elif change=='slate_future': report['schedules']['nba']['slate_captured_at']=(NOW+timedelta(seconds=1)).isoformat()
+    report_path.write_text(json.dumps(report),encoding='utf-8')
+    with pytest.raises(ValueError): validate(report_path,mode=mode)
 
 
 @pytest.mark.parametrize('mutation', ['stale', 'future', 'naive', 'invalid', 'capture_future', 'capture_naive'])

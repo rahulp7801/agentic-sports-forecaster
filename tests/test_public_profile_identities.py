@@ -163,10 +163,14 @@ def test_profile_keeps_captured_team_side_after_roster_resolution_and_passes_spo
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('sport',['nfl','nba'])
-@pytest.mark.parametrize('public_mode',['valid','invalid'])
+@pytest.mark.parametrize('public_mode',['valid','invalid','changed_market','changed_slate','unknown_market'])
 async def test_refresh_uses_jsonb_handoff_without_signals_and_retains_signal_fallback(monkeypatch,sport,public_mode):
     now=datetime.now(timezone.utc);handoff,slate=receipts(sport,now=now)
     if public_mode=='invalid': handoff['evidence_sha256']='f'*64
+    pins=dict(market_captured_at=handoff['captured_at'],slate_captured_at=slate['captured_at'])
+    if public_mode=='changed_market': pins['market_captured_at']=now.isoformat()
+    if public_mode=='changed_slate': pins['slate_captured_at']=now.isoformat()
+    if public_mode=='unknown_market': pins['market_captured_at']=None
     calls=[];published=[];ids=[]
     signals=[] if public_mode=='valid' else [seed(home=slate['games'][0]['home_name'],away=slate['games'][0]['away_name'])]
     class Connection:
@@ -195,7 +199,7 @@ async def test_refresh_uses_jsonb_handoff_without_signals_and_retains_signal_fal
     monkeypatch.setattr(profiles,'fetch_event_availability',fetch)
     monkeypatch.setattr(profiles,'profile',checked_profile)
     monkeypatch.setattr(profiles,'publish_snapshot',lambda *args:published.append(args))
-    result=(await profiles.run([sport]))[sport]
+    result=(await profiles.run([sport],expected_public_captures={sport:pins}))[sport]
     assert result==dict(profiles=1,unavailable=0,signal_identities=len(signals),
         public_identities=1 if public_mode=='valid' else 0,public_input_status='observed' if public_mode=='valid' else 'rejected',
         selected_events=1,selected_players=1)
@@ -208,3 +212,61 @@ async def test_refresh_uses_jsonb_handoff_without_signals_and_retains_signal_fal
         assert row['identity_context']['slate_captured_at']==slate['captured_at']
         assert datetime.fromisoformat(row['captured_at'])>datetime.fromisoformat(row['identity_context']['captured_at'])
     else: assert 'identity_context' not in row
+
+
+@pytest.mark.asyncio
+async def test_reused_six_minute_market_does_not_recollect_or_refresh_stale_public_identities(monkeypatch):
+    from unittest.mock import AsyncMock
+    from sportsbet import daily
+    now=datetime.now(timezone.utc)
+    handoff,slate=receipts(now=now-timedelta(minutes=6))
+    slate['captured_at']=now.isoformat()
+    stored={'kalshi-props:nfl':handoff}
+    cached=dict(schema_version=2,sport='nfl',captured_at=handoff['captured_at'],execution_ready=False,
+        evidence_sha256='a'*64,comparisons=[],sources={
+            'sportsbook':dict(status='not_requested',partial_coverage=True),
+            'kalshi':dict(status='observed',partial_coverage=False),
+            'prizepicks':dict(status='observed',partial_coverage=False)})
+    class Connection:
+        async def fetch(self,sql,*args):
+            if sql==profiles.SIGNAL_IDENTITIES_QUERY: return []
+            assert sql==profiles.PUBLIC_IDENTITIES_QUERY
+            return [dict(snapshot_key=key,payload=json.dumps(stored[key])) for key in args[0]]
+        async def __aenter__(self): return self
+        async def __aexit__(self,*args): pass
+    class Pool:
+        def acquire(self): return Connection()
+        async def close(self): pass
+    async def create_pool(): return Pool()
+    class Audit:
+        def report(self,*args,**kwargs): return {}
+        def predictions(self): return []
+    async def collect(sport,clock,**kwargs):
+        offsets=kwargs.get('offsets')
+        value=deepcopy(slate)
+        if offsets==(2,3,4,5,6): value['sources']=slate['sources'][3:]
+        else:
+            value['games']=[]
+            value['sources']=slate['sources'][:3] if offsets is None else []
+        return value
+    watch=AsyncMock(side_effect=AssertionError('Cached quotes must not be recollected'))
+    roster_fetch=AsyncMock(side_effect=AssertionError('Stale public identities must not fetch rosters'))
+    publication=AsyncMock()
+    monkeypatch.setattr(profiles,'create_async_pool',create_pool)
+    monkeypatch.setattr(profiles,'fetch_event_availability',roster_fetch)
+    monkeypatch.setattr(profiles,'publish_snapshot',publication)
+    monkeypatch.setattr(daily,'refresh_profiles',profiles.run)
+    monkeypatch.setattr(daily,'watch',watch)
+    monkeypatch.setattr(daily,'load_snapshot',lambda key:cached if key=='markets:nfl' else None)
+    monkeypatch.setattr(daily,'collect_schedule',collect)
+    monkeypatch.setattr(daily,'publish_snapshot',lambda key,value:stored.update({key:deepcopy(value)}))
+    monkeypatch.setattr(daily,'refresh_history',lambda *args:dict(status='complete'))
+    monkeypatch.setattr(daily,'Ledger',Audit)
+    monkeypatch.setattr(daily,'settle_final_props',lambda *args:dict(status='complete'))
+    result=await daily.run(['nfl'],'public_daily',20)
+    assert result['markets']['nfl']['captured_at']==handoff['captured_at']
+    assert result['markets']['nfl']['research_pair_status']=='market_reused'
+    assert result['profiles']['nfl']==dict(status='degraded',profiles=0,unavailable=0,signal_identities=0,
+        public_identities=0,public_input_status='rejected',selected_events=0,selected_players=0)
+    assert result['status']=='degraded'
+    watch.assert_not_called();roster_fetch.assert_not_called();publication.assert_not_called()

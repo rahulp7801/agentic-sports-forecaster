@@ -5,10 +5,13 @@ import importlib.util
 import json
 import math
 from pathlib import Path
+import re
 
 
 MAX_REPORT_BYTES = 1024 * 1024
-GROUPS = ('histories', 'markets', 'schedules', 'settlements', 'props')
+GROUPS = ('histories', 'markets', 'schedules', 'settlements', 'props', 'profiles')
+PROFILE_COUNTS = {'profiles': 1000, 'unavailable': 1000, 'signal_identities': 1000,
+                  'public_identities': 5000, 'selected_events': 20, 'selected_players': 1000}
 
 
 def _clock(value):
@@ -49,6 +52,33 @@ def _receipt_entries(report):
     return module.receipt_entries(report)
 
 
+def _profile_result(value, mode):
+    """Validate bounded aggregate diagnostics, never private identity rows."""
+    if mode == 'public_monitor':
+        if value != {'status': 'not_requested', 'reason': 'public_daily_only'}:
+            raise ValueError('Monitor requested profile collection')
+        return
+    status = value.get('status')
+    if status == 'failed':
+        if (not {'status', 'error_type'} <= set(value) <= {'status', 'error_type', 'sqlstate'}
+                or not isinstance(value['error_type'], str)
+                or not re.fullmatch('[A-Za-z_][A-Za-z0-9_]{0,99}', value['error_type'])
+                or ('sqlstate' in value and (not isinstance(value['sqlstate'], str)
+                    or not re.fullmatch('[0-9A-Z]{5}', value['sqlstate'])))):
+            raise ValueError('Invalid profile failure diagnostic')
+        return
+    if (set(value) != {'status', 'public_input_status', *PROFILE_COUNTS}
+            or any(type(value[key]) is not int or not 0 <= value[key] <= limit
+                   for key, limit in PROFILE_COUNTS.items())
+            or value['public_input_status'] not in ('observed', 'missing', 'rejected')
+            or value['profiles'] + value['unavailable'] > value['selected_players']
+            or value['selected_players'] > value['selected_events'] * 50):
+        raise ValueError('Invalid profile result counters')
+    expected = 'complete' if value['public_input_status'] == 'observed' and value['unavailable'] == 0 else 'degraded'
+    if status != expected:
+        raise ValueError('Profile status contradicts its input or availability')
+
+
 def validate_report(path, *, mode, sport, producer_status, started_at, now=None):
     if (mode not in ('public_daily', 'public_monitor') or sport not in ('both', 'nfl', 'nba')
             or type(producer_status) is not int or producer_status not in (0, 2)):
@@ -86,7 +116,8 @@ def validate_report(path, *, mode, sport, producer_status, started_at, now=None)
                    schedules={'complete', 'partial', 'unavailable'}, props={'not_requested'},
                    histories={'complete', 'failed'} if mode == 'public_daily' else {'not_requested'},
                    settlements={'complete', 'degraded', 'blocked', 'failed'}
-                   if mode == 'public_daily' else {'not_requested'})
+                   if mode == 'public_daily' else {'not_requested'},
+                   profiles={'complete', 'degraded', 'failed'} if mode == 'public_daily' else {'not_requested'})
     for group in GROUPS:
         for value in report[group].values():
             status = value.get('status')
@@ -97,10 +128,15 @@ def validate_report(path, *, mode, sport, producer_status, started_at, now=None)
                     raise ValueError('Published component capture is missing or invalid')
             elif group == 'markets' and 'captured_at' in value:
                 raise ValueError('Failed market cannot claim a completed capture')
+            if group == 'profiles':
+                _profile_result(value, mode)
+            if group == 'schedules':
+                if 'slate_captured_at' not in value or _clock(value['slate_captured_at']) > finished:
+                    raise ValueError('Published slate capture is missing or invalid')
     if any(value.get('status') != 'not_requested'
            or value.get('reason') != 'public_only_collection' for value in report['props'].values()):
         raise ValueError('Public producer requested unsupported prop collection')
-    health_groups = ('markets', 'schedules') + (('histories', 'settlements')
+    health_groups = ('markets', 'schedules') + (('histories', 'settlements', 'profiles')
                                                if mode == 'public_daily' else ())
     healthy = all(value['status'] in ('complete', 'observed')
                   for group in health_groups for value in report[group].values())

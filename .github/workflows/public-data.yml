@@ -110,12 +110,10 @@ jobs:
           DATABASE_URL_ASYNC: ${{ secrets.DATABASE_URL_ASYNC }}
           ANALYTICS_DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: uv run --locked python -m sportsbet.cfb_public_settlement
-      - name: Update source-backed player profiles
-        if: always() && !cancelled() && steps.worker_config.outcome == 'success' && steps.schema.outcome == 'success' && env.SPORT != 'cfb' && env.OPERATION == 'public_daily'
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          DATABASE_URL_ASYNC: ${{ secrets.DATABASE_URL_ASYNC }}
-        run: uv run --locked python -m sportsbet.player_profiles --sport "$SPORT"
+      # The public_daily producer consumes each sport's saved identities while
+      # fresh, before unrelated history/settlement waits. Its validated report
+      # retains profile diagnostics; a second roster refresh here would duplicate
+      # collection and could only see older identity evidence.
       - name: Verify private access and published snapshot receipt
         if: always() && !cancelled() && steps.worker_config.outcome == 'success' && steps.schema.outcome == 'success' && ((env.SPORT != 'cfb' && steps.public_update.outputs.report_ready == 'true') || (env.SPORT == 'cfb' && steps.cfb_schedule.outcome == 'success'))
         env:

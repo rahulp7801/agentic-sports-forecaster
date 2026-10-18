@@ -220,7 +220,7 @@ def bounded_profile_events(rows):
     return list(events.values())
 
 
-async def run(sports):
+async def run(sports, *, expected_public_captures=None):
     pool = await create_async_pool()
     results = {}
     try:
@@ -237,8 +237,17 @@ async def run(sports):
                     if inputs.keys()!=expected:
                         public_status='missing'
                     else:
-                        public=public_profile_identities(_public_payload(inputs['kalshi-props:'+sport]),
-                            _public_payload(inputs['slate:'+sport]),sport,datetime.now(timezone.utc))
+                        handoff=_public_payload(inputs['kalshi-props:'+sport])
+                        slate=_public_payload(inputs['slate:'+sport])
+                        if expected_public_captures is not None:
+                            pins=expected_public_captures[sport]
+                            if (set(pins)!={'market_captured_at','slate_captured_at'}
+                                    or not isinstance(pins['market_captured_at'],str)
+                                    or not isinstance(pins['slate_captured_at'],str)
+                                    or handoff['captured_at']!=pins['market_captured_at']
+                                    or slate['captured_at']!=pins['slate_captured_at']):
+                                raise ValueError('Public profile capture changed')
+                        public=public_profile_identities(handoff,slate,sport,datetime.now(timezone.utc))
                         public_status='observed'
                 except (KeyError,TypeError,ValueError,AttributeError,RecursionError): pass
                 events=bounded_profile_events([*public,*rows])
