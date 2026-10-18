@@ -6,6 +6,8 @@ import sys
 
 
 FAILURE_STAGES = {
+    'hosted_preflight': frozenset({'mode', 'config', 'heads', 'dsn', 'connect',
+                                   'schema_read', 'dashboard_read', 'close', 'schema_check', 'output'}),
     'market_watch': frozenset({'publication'}),
     'daily': frozenset({'initialize', 'histories', 'markets', 'schedules',
                        'settlements', 'props', 'report', 'report_write'}),

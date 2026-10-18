@@ -141,6 +141,29 @@ jobs:
         run: |
           UV_PROJECT_ENVIRONMENT="$RUNNER_TEMP/migrations-venv" uv sync --locked --only-group migrations
           "$RUNNER_TEMP/migrations-venv/bin/alembic" current --check-heads
+          # Exercise the real direct-script import using only migration dependencies.
+          # Missing configuration must fail closed before any database access.
+          env -u DATABASE_URL "$RUNNER_TEMP/migrations-venv/bin/python" -I - <<'PY'
+          import contextlib, io, json, runpy, sys
+          stdout, stderr = io.StringIO(), io.StringIO()
+          sys.argv = ['production-transaction-preflight.py']
+          with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+              try:
+                  runpy.run_path('.github/scripts/production-transaction-preflight.py', run_name='__main__')
+              except SystemExit as error:
+                  assert error.code == 1
+              else:
+                  raise AssertionError('Unconfigured preflight unexpectedly passed')
+          assert stdout.getvalue() == ''
+          lines = stderr.getvalue().splitlines()
+          assert len(lines) == 2
+          assert json.loads(lines[0]) == {
+              'schema_version': 1, 'diagnostic_kind': 'operation_failure',
+              'operation': 'hosted_preflight', 'stage': 'config', 'error_type': 'KeyError',
+          }
+          assert lines[1] == 'Hosted transaction-pool schema/read preflight failed'
+          print('Migration-only preflight import and configuration failure verified')
+          PY
   worker-image:
     runs-on: ubuntu-latest
     timeout-minutes: 15
