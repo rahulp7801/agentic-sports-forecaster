@@ -13,8 +13,25 @@ SPORTS = {'nba':'basketball/nba', 'nfl':'football/nfl', 'cfb':'football/college-
 STAT_TEAM_ALIASES = {'nba':{}, 'nfl':{'LAR':'LA', 'WSH':'WAS'}, 'cfb':{}}
 
 
-def scheduled_stat_teams(sport: str, game: dict) -> frozenset[str]:
+def scheduled_stat_teams(sport: str, game: dict, *, identity_version: int = 2) -> frozenset[str]:
     """Translate exact ESPN abbreviations to the stat provider's identities."""
+    if type(identity_version) is int and identity_version == 3:
+        if sport != 'nba':
+            raise ValueError('Unsupported schedule identity version')
+        projected={};utah=False
+        for side in ('home','away'):
+            value=game.get(side+'_abbr')
+            if value=='UTAH':
+                if game.get(side+'_name')!='Utah Jazz':
+                    raise ValueError('Invalid Utah schedule identity')
+                value='UTA';utah=True
+            projected[side+'_abbr']=value
+        if not utah:
+            raise ValueError('Utah schedule identity is required')
+        # Preserve raw source fields and the version2 interpretation of old proofs.
+        return scheduled_stat_teams(sport,projected)
+    if identity_version != 2:
+        raise ValueError('Unsupported schedule identity version')
     if sport not in STAT_TEAM_ALIASES:
         raise ValueError('Unsupported sport')
     values=[]

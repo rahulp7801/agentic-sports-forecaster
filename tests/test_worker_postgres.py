@@ -14,6 +14,7 @@ from unittest.mock import patch
 from sportsbet.ingestion.upsert import upsert_rows
 from sportsbet.ingestion.provenance import stat_row_sha256
 from sportsbet.ledger import Ledger
+from sportsbet.live_settlement_ledger import Ledger as LiveSettlementLedger
 from sportsbet.scan import evaluate_event, quotes_from_event
 from sportsbet.settlement import settle_final_props
 
@@ -22,38 +23,61 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def test_final_prop_settlement_uses_real_postgres_and_retains_provenance():
-    url=os.environ['SPORTSBET_TEST_DATABASE_URL'];ledger=Ledger(database_url=url)
+@pytest.mark.parametrize(('home_name','home_abbr','stat_team','identity_version'),[
+    ('Home','HOM','HOM',2),('Utah Jazz','UTAH','UTA',3),
+])
+def test_final_prop_settlement_uses_real_postgres_and_retains_provenance(
+        home_name,home_abbr,stat_team,identity_version):
+    url=os.environ['SPORTSBET_TEST_DATABASE_URL']
+    ledger=(LiveSettlementLedger if identity_version==3 else Ledger)(database_url=url)
     identity=uuid.uuid4().hex[:16];player_id=int(uuid.uuid4().int%900000000)+1
     now=datetime.now(timezone.utc);day=(now-timedelta(days=1)).date()
     payload=dict(game_id=identity,player='Settlement Fixture',player_id=str(player_id),sport='nba',
-        game_date=day.isoformat(),home_team='Home',away_team='Away',prop_type='points',direction='over',
+        game_date=day.isoformat(),home_team=home_name,away_team='Away',prop_type='points',direction='over',
         line=20.5,sportsbook='book',american_odds=100,model_probability=.6,
         captured_at=(now-timedelta(days=1,hours=3)).isoformat(),
         game_start_time=(now-timedelta(days=1,hours=2)).isoformat(),model_version=identity)
     engine=sa.create_engine(url)
     try:
-        stat=dict(player_id=player_id,game_id=identity,game_date=day,team_abbreviation='HOM',
+        stat=dict(player_id=player_id,game_id=identity,game_date=day,team_abbreviation=stat_team,
             points=21,rebounds=0,assists=0)
         with engine.begin() as conn:
             conn.execute(sa.text("""INSERT INTO nba_player_gamelogs
                 (player_id,player_name,game_id,game_date,season,team_abbreviation,points,rebounds,assists,
                  source_provider,source_sha256,source_record_sha256,source_observed_at)
-                VALUES (:player,:name,:game,:day,2025,'HOM',21,0,0,'nba',:source,:record,:observed)"""),
+                VALUES (:player,:name,:game,:day,2025,:team,21,0,0,'nba',:source,:record,:observed)"""),
                 {'player':player_id,'name':payload['player'],'game':identity,'day':day,
-                 'source':'a'*64,'record':stat_row_sha256('nba',stat),'observed':now})
+                 'team':stat_team,'source':'a'*64,'record':stat_row_sha256('nba',stat),'observed':now})
         key=ledger.record(identity,payload)
         schedule=dict(status='complete',captured_at=now.isoformat(),games=[dict(
-            provider_event_id='espn-'+identity,date=day.isoformat(),home_name='Home',away_name='Away',
-            home_abbr='HOM',away_abbr='AWY',
+            provider_event_id='espn-'+identity,date=day.isoformat(),home_name=home_name,away_name='Away',
+            home_abbr=home_abbr,away_abbr='AWY',
             completed=True,game_time=payload['game_start_time'])])
         assert settle_final_props(ledger,'nba',schedule)['settled']==1
         row=next(item for item in ledger.predictions() if item['prediction_id']==key)
         assert row['outcome'] is True and row['actual_value']==21
         assert row['outcome_source']=='observed_final_stats' and identity in row['outcome_ref']
         assert row['outcome_evidence']['stat_record_sha256']==stat_row_sha256('nba',stat)
+        assert row['outcome_evidence']['schedule_identity_version']==identity_version
+        assert row['outcome_evidence']['home_abbr']==home_abbr
         report=ledger.report(model_version=identity)
         assert report['settled_count']==1 and report['unverified_settlements']==0
+        if identity_version==3:
+            # Exercise the PostgreSQL write guard with nonempty prior v3 fields.
+            assert settle_final_props(ledger,'nba',schedule)['settled']==1
+            corrected=stat|{'points':19}
+            with engine.begin() as conn:
+                conn.execute(sa.text('''UPDATE nba_player_gamelogs
+                    SET points=19,source_record_sha256=:record WHERE game_id=:game'''),
+                    {'record':stat_row_sha256('nba',corrected),'game':identity})
+            assert settle_final_props(ledger,'nba',schedule)['settled']==1
+            corrected_row=next(item for item in ledger.predictions() if item['prediction_id']==key)
+            assert corrected_row['outcome'] is False and corrected_row['actual_value']==19
+            assert corrected_row['outcome_evidence']['schedule_identity_version']==3
+            assert corrected_row['outcome_evidence']['home_abbr']=='UTAH'
+            assert ledger.report(model_version=identity)['unverified_settlements']==0
+            frozen_report=Ledger(database_url=url).report(model_version=identity)
+            assert frozen_report['settled_count']==0 and frozen_report['unverified_settlements']==1
     finally:
         with engine.begin() as conn:
             conn.execute(sa.text('DELETE FROM nba_player_gamelogs WHERE game_id=:id'),{'id':identity})
