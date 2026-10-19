@@ -142,7 +142,9 @@ class Ledger(ReleaseLedger):
                     if prior is None:
                         raise ValueError('Utah settlement prior state is unavailable')
                     if all(value is None for value in prior):
-                        condition='''outcome IS NULL AND outcome_source IS NULL
+                        statement='''UPDATE predictions SET outcome=?,outcome_source=?,outcome_ref=?,
+                            outcome_observed_at=?,actual_value=?,outcome_evidence=?
+                            WHERE id=? AND outcome IS NULL AND outcome_source IS NULL
                             AND outcome_ref IS NULL AND outcome_observed_at IS NULL
                             AND actual_value IS NULL AND outcome_evidence IS NULL'''
                         expected=()
@@ -154,15 +156,15 @@ class Ledger(ReleaseLedger):
                                 or not verified_settlement_evidence(json.loads(payload),
                                     json.loads(prior[0]),prior[1],prior[2],prior[3],prior[4],previous)):
                             raise ValueError('Utah settlement cannot replace retained evidence')
-                        condition='''outcome=? AND outcome_source=? AND outcome_ref=?
+                        statement='''UPDATE predictions SET outcome=?,outcome_source=?,outcome_ref=?,
+                            outcome_observed_at=?,actual_value=?,outcome_evidence=?
+                            WHERE id=? AND outcome=? AND outcome_source=? AND outcome_ref=?
                             AND outcome_observed_at=? AND actual_value=? AND outcome_evidence=?'''
                         expected=tuple(prior)
                     update=(json.dumps(outcome),source,source_ref,stamp.isoformat(),actual,encoded,key)
-                    guarded.append((update,condition,expected))
-                for update,condition,expected in guarded:
-                    cursor=db.execute('''UPDATE predictions SET outcome=?,outcome_source=?,outcome_ref=?,
-                        outcome_observed_at=?,actual_value=?,outcome_evidence=? WHERE id=? AND '''+condition,
-                        (*update,*expected))
+                    guarded.append((update,statement,expected))
+                for update,statement,expected in guarded:
+                    cursor=db.execute(statement,(*update,*expected))
                     if cursor.rowcount!=1:
                         raise ValueError('Utah settlement prior state changed')
 
