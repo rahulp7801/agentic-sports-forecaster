@@ -88,15 +88,16 @@ def test_real_cfb_cli_receipt_matches_the_original_consumer_slate(monkeypatch,tm
         module.verify_captures(report,stored.get)
 
 
-@pytest.mark.parametrize('fault,expected_stage',[('connect','connect'),('read','snapshot_read'),
+@pytest.mark.parametrize('fault,expected_stage',[('connect','connect'),('read','snapshot_read'),('cancel','snapshot_read'),
                                                ('mismatch','verify'),('close','close'),(None,None)])
 def test_receipt_main_distinguishes_connection_read_mismatch_and_success(monkeypatch,tmp_path,capsys,fault,expected_stage):
-    from psycopg.errors import ConnectionFailure
+    from psycopg.errors import ConnectionFailure, QueryCanceled
     from sqlalchemy.exc import OperationalError
     captured='2026-10-18T17:02:34.123456+00:00'
     receipt=tmp_path/'receipt.json'
     receipt.write_text(json.dumps({'slates':{'cfb':{'captured_at':captured}}}),encoding='utf-8')
-    failure=OperationalError('SELECT private_sql',{},ConnectionFailure('postgres://private_credential'))
+    failure=(QueryCanceled('private cancellation detail') if fault=='cancel' else
+             OperationalError('SELECT private_sql',{},ConnectionFailure('postgres://private_credential')))
     calls=[]
     class Connection:
         def __enter__(self):
@@ -105,9 +106,9 @@ def test_receipt_main_distinguishes_connection_read_mismatch_and_success(monkeyp
             if fault=='close':raise failure
         def execute(self,sql,params):
             calls.append(('read',sql,params))
-            if fault=='read':raise failure
+            if fault in ('read','cancel'):raise failure
             value='2026-10-17T17:02:34.123456+00:00' if fault=='mismatch' else captured
-            return SimpleNamespace(fetchone=lambda:({'captured_at':value},))
+            return SimpleNamespace(fetchone=lambda:(value,))
     def connect(dsn,**kwargs):
         calls.append(('connect',dsn,kwargs))
         if fault=='connect':raise failure
@@ -119,7 +120,7 @@ def test_receipt_main_distinguishes_connection_read_mismatch_and_success(monkeyp
     monkeypatch.setenv('PUBLIC_DATA_REPORT_PATH',str(receipt))
     monkeypatch.setenv('DATABASE_URL','private_config_fixture')
     if fault:
-        with pytest.raises(ValueError if fault=='mismatch' else OperationalError) as raised:
+        with pytest.raises(ValueError if fault=='mismatch' else type(failure)) as raised:
             module.main()
         if fault!='mismatch':assert raised.value is failure
     else:
@@ -128,15 +129,49 @@ def test_receipt_main_distinguishes_connection_read_mismatch_and_success(monkeyp
         'options':'-c statement_timeout=5000 -c default_transaction_read_only=on'})
     assert len(calls)==(1 if fault=='connect' else 2)
     if len(calls)>1:
-        assert calls[1]==('read','SELECT payload FROM public.dashboard_snapshots WHERE snapshot_key=%s',('slate:cfb',))
+        assert calls[1]==('read',"SELECT payload -> 'captured_at' FROM public.dashboard_snapshots WHERE snapshot_key=%s",('slate:cfb',))
     output=capsys.readouterr()
     assert 'private_' not in output.out+output.err
     if fault:
         assert output.out==''
         expected={'schema_version':1,'diagnostic_kind':'operation_failure',
             'operation':'published_snapshot_receipt','stage':expected_stage,
-            'error_type':'ValueError' if fault=='mismatch' else 'OperationalError'}
-        if fault!='mismatch':expected['sqlstate']='08006'
+            'error_type':'ValueError' if fault=='mismatch' else type(failure).__name__}
+        if fault!='mismatch':expected['sqlstate']='57014' if fault=='cancel' else '08006'
         assert json.loads(output.err)==expected
     else:
         assert json.loads(output.out)=={'verified_snapshot_receipts':1} and output.err==''
+
+
+@pytest.mark.parametrize('value',[
+    '2026-10-06T20:00:00+00:00', None, 17, True,
+    ['2026-10-06T20:00:00+00:00'], {'nested':'2026-10-06T20:00:00+00:00'},
+    '2026-10-06T20:00:00Z',
+])
+def test_capture_projection_retains_json_types_and_exact_original_clock(value):
+    captured='2026-10-06T20:00:00+00:00'
+    calls=[]
+    class Connection:
+        def execute(self,query,parameters):
+            calls.append((query,parameters))
+            return SimpleNamespace(fetchone=lambda:(value,))
+    report={'slates':{'cfb':{'captured_at':captured}}}
+    connection=Connection()
+    if value==captured:
+        assert module.verify_captures(report,lambda key:module.read_capture(connection,key))==1
+    else:
+        with pytest.raises(ValueError,match='published capture does not match this run'):
+            module.verify_captures(report,lambda key:module.read_capture(connection,key))
+    assert calls==[("SELECT payload -> 'captured_at' FROM public.dashboard_snapshots WHERE snapshot_key=%s",('slate:cfb',))]
+
+
+def test_missing_projected_row_cannot_verify_a_receipt():
+    calls=[]
+    class Connection:
+        def execute(self,query,parameters):
+            calls.append(parameters)
+            return SimpleNamespace(fetchone=lambda:None)
+    with pytest.raises(ValueError,match='published capture does not match this run'):
+        module.verify_captures({'markets':{'nfl':{'captured_at':'2026-10-06T20:00:00+00:00'}}},
+                              lambda key:module.read_capture(Connection(),key))
+    assert calls==[('markets:nfl',)]
