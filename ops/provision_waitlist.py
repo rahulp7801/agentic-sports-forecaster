@@ -20,6 +20,11 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 import psycopg
 from psycopg import sql
 
+# The protected migrations-only environment does not install the worker project.
+# Import only the stdlib diagnostic helper from this checkout's fixed source root.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from sportsbet.diagnostics import emit_failure
+
 PROJECT = "prj_xUgCA0BZejb4GZgeOHuJVQqs6M1M"
 TEAM = "team_IWsRUaGJj5J56jLXwFs3Wzy7"
 ROLE = "sportsbet_waitlist_writer"
@@ -84,8 +89,9 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 class Vercel:
-    def __init__(self, token: str):
+    def __init__(self, token: str, *, stage=None):
         self.token = token
+        self.stage = stage or (lambda _: None)
         self.opener = build_opener(NoRedirect())
 
     def request(self, path: str, data=None):
@@ -115,8 +121,11 @@ class Vercel:
             ) from None
 
     def attest(self):
+        self.stage("provider_team")
         team = self.request("/v2/teams/" + TEAM)
+        self.stage("provider_project")
         project = self.request("/v9/projects/" + PROJECT + "?teamId=" + TEAM)
+        self.stage("provider_identity")
         if (team.get("id") != TEAM or team.get("billing", {}).get("plan") != "hobby"
                 or project.get("id") != PROJECT or project.get("accountId") != TEAM
                 or project.get("rootDirectory") != "frontend"):
@@ -230,57 +239,98 @@ def verify_login(value: str):
 
 
 def provision(env: dict[str, str], provider=None, connection=connect, login=verify_login):
-    protected_context(env)
-    password = secrets.token_urlsafe(48)
-    value = writer_url(env["DATABASE_URL"], env["DATABASE_MIGRATION_URL"], password)
-    provider = provider or Vercel(env["VERCEL_TOKEN"])
-    provider.attest()
-    entries = provider.entries()
-    with connection(env["DATABASE_MIGRATION_URL"]) as conn:
-        if conn.execute("SELECT version_num FROM alembic_version").fetchall() != [(HEAD,)]:
-            fail("Reviewed waitlist migration head required")
-        existing = conn.execute("SELECT 1 FROM pg_roles WHERE rolname=%s", (ROLE,)).fetchone()
-        if entries:
-            marker = managed_entry(entries[0])
-            if not existing:
-                fail("Stored waitlist credential has no database role; operator reconciliation required")
+    stage = "context"
+
+    def set_stage(value):
+        nonlocal stage
+        stage = value
+
+    try:
+        protected_context(env)
+        stage = "credential_prepare"
+        password = secrets.token_urlsafe(48)
+        value = writer_url(env["DATABASE_URL"], env["DATABASE_MIGRATION_URL"], password)
+        stage = "provider_setup"
+        provider = provider or Vercel(env["VERCEL_TOKEN"], stage=set_stage)
+        stage = "provider_attest"
+        provider.attest()
+        stage = "environment_metadata"
+        entries = provider.entries()
+        stage = "connect"
+        with connection(env["DATABASE_MIGRATION_URL"]) as conn:
+            stage = "schema_read"
+            if conn.execute("SELECT version_num FROM alembic_version").fetchall() != [(HEAD,)]:
+                fail("Reviewed waitlist migration head required")
+            stage = "role_read"
+            existing = conn.execute("SELECT 1 FROM pg_roles WHERE rolname=%s", (ROLE,)).fetchone()
+            if entries:
+                stage = "existing_entry"
+                marker = managed_entry(entries[0])
+                if not existing:
+                    fail("Stored waitlist credential has no database role; operator reconciliation required")
+                stage = "existing_permissions"
+                verify_permissions(conn, marker)
+                stage = "close"
+                return "Existing managed waitlist role privileges verified; no credential changed"
+            stage = "role_guard"
+            if existing:
+                fail("Waitlist role exists without its managed secret; refusing rotation or repurposing")
+            marker = MARKER + hashlib.sha256(value.encode()).hexdigest()
+            # Encrypt on the client so plaintext passwords cannot enter SQL logs.
+            stage = "password_verifier"
+            verifier = conn.pgconn.encrypt_password(password.encode(), ROLE.encode(), b"scram-sha-256").decode()
+            stage = "role_create"
+            conn.execute(sql.SQL("CREATE ROLE {} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB "
+                                 "NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD {}").format(
+                                     sql.Identifier(ROLE), sql.Literal(verifier)))
+            stage = "role_comment"
+            conn.execute(sql.SQL("COMMENT ON ROLE {} IS {}").format(sql.Identifier(ROLE), sql.Literal(marker)))
+            stage = "grants"
+            conn.execute("GRANT USAGE ON SCHEMA private_access TO sportsbet_waitlist_writer")
+            conn.execute("GRANT EXECUTE ON FUNCTION private_access.join_waitlist(text) TO sportsbet_waitlist_writer")
+            stage = "new_permissions"
             verify_permissions(conn, marker)
-            return "Existing managed waitlist role privileges verified; no credential changed"
-        if existing:
-            fail("Waitlist role exists without its managed secret; refusing rotation or repurposing")
-        marker = MARKER + hashlib.sha256(value.encode()).hexdigest()
-        # Encrypt on the client so plaintext passwords cannot enter SQL logs.
-        verifier = conn.pgconn.encrypt_password(password.encode(), ROLE.encode(), b"scram-sha-256").decode()
-        conn.execute(sql.SQL("CREATE ROLE {} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB "
-                             "NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD {}").format(
-                                 sql.Identifier(ROLE), sql.Literal(verifier)))
-        conn.execute(sql.SQL("COMMENT ON ROLE {} IS {}").format(sql.Identifier(ROLE), sql.Literal(marker)))
-        conn.execute("GRANT USAGE ON SCHEMA private_access TO sportsbet_waitlist_writer")
-        conn.execute("GRANT EXECUTE ON FUNCTION private_access.join_waitlist(text) TO sportsbet_waitlist_writer")
-        verify_permissions(conn, marker)
-        conn.commit()
-        # From this point an interruption can leave a narrowly privileged orphan
-        # role. A later run refuses to rotate it or overwrite an existing setting.
-        login(value)
-        if provider.entries():
-            fail("Waitlist setting appeared during provisioning; refusing overwrite")
-        provider.create(value, marker)
-        stored = provider.entries()
-        if len(stored) != 1 or managed_entry(stored[0]) != marker:
-            fail("Stored waitlist secret metadata could not be verified; operator reconciliation required")
-        verify_permissions(conn, marker)
-        return "New dedicated waitlist credential login verified and stored as a production sensitive secret"
+            stage = "commit"
+            conn.commit()
+            # From this point an interruption can leave a narrowly privileged orphan
+            # role. A later run refuses to rotate it or overwrite an existing setting.
+            stage = "login"
+            login(value)
+            stage = "prepublish_metadata"
+            if provider.entries():
+                fail("Waitlist setting appeared during provisioning; refusing overwrite")
+            stage = "secret_create"
+            provider.create(value, marker)
+            stage = "postpublish_metadata"
+            stored = provider.entries()
+            if len(stored) != 1 or managed_entry(stored[0]) != marker:
+                fail("Stored waitlist secret metadata could not be verified; operator reconciliation required")
+            stage = "postpublish_permissions"
+            verify_permissions(conn, marker)
+            stage = "close"
+            return "New dedicated waitlist credential login verified and stored as a production sensitive secret"
+    except Exception as error:
+        emit_failure(error, operation="waitlist_provision", stage=stage)
+        raise
 
 
 if __name__ == "__main__":
+    stage = "arguments"
     try:
         if len(sys.argv) != 1:
             fail("No command arguments accepted")
-        print(provision(dict(os.environ)))
+        stage = None  # provision emits the precise failure stage before re-raising.
+        result = provision(dict(os.environ))
+        stage = "output"
+        print(result)
     except ProvisionError as error:
+        if stage is not None:
+            emit_failure(error, operation="waitlist_provision", stage=stage)
         print("Private waitlist provisioning stopped: " + str(error), file=sys.stderr)
         sys.exit(1)
-    except Exception:
+    except Exception as error:
+        if stage is not None:
+            emit_failure(error, operation="waitlist_provision", stage=stage)
         # Database and provider exceptions can embed passwords or URLs. Do not
         # print exception strings, tracebacks, response bodies or command args.
         print("Private waitlist provisioning failed; inspect protected settings and role provenance. "

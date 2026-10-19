@@ -164,6 +164,28 @@ jobs:
           assert lines[1] == 'Hosted transaction-pool schema/read preflight failed'
           print('Migration-only preflight import and configuration failure verified')
           PY
+          # A separate isolated interpreter must load the waitlist diagnostics too.
+          env -u DATABASE_URL GITHUB_ACTIONS=false "$RUNNER_TEMP/migrations-venv/bin/python" -I - <<'PY'
+          import contextlib, io, json, runpy, sys
+          stdout, stderr = io.StringIO(), io.StringIO()
+          sys.argv = ['ops/provision_waitlist.py']
+          with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+              try:
+                  runpy.run_path('ops/provision_waitlist.py', run_name='__main__')
+              except SystemExit as error:
+                  assert error.code == 1
+              else:
+                  raise AssertionError('Unprotected waitlist provisioner unexpectedly passed')
+          assert stdout.getvalue() == ''
+          lines = stderr.getvalue().splitlines()
+          assert len(lines) == 2
+          assert json.loads(lines[0]) == {
+              'schema_version': 1, 'diagnostic_kind': 'operation_failure',
+              'operation': 'waitlist_provision', 'stage': 'context', 'error_type': 'ProvisionError',
+          }
+          assert lines[1] == 'Private waitlist provisioning stopped: Protected master production context required'
+          print('Migration-only waitlist import and protected-context failure verified')
+          PY
   worker-image:
     runs-on: ubuntu-latest
     timeout-minutes: 15
