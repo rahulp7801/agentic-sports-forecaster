@@ -6,6 +6,12 @@ import sys
 
 
 FAILURE_STAGES = {
+    'waitlist_provision': frozenset({'arguments', 'context', 'credential_prepare', 'provider_setup',
+        'provider_attest', 'provider_team', 'provider_project', 'provider_identity',
+        'environment_metadata', 'connect', 'schema_read', 'role_read', 'existing_entry',
+        'existing_permissions', 'role_guard', 'password_verifier', 'role_create', 'role_comment',
+        'grants', 'new_permissions', 'commit', 'login', 'prepublish_metadata', 'secret_create',
+        'postpublish_metadata', 'postpublish_permissions', 'close', 'output'}),
     'hosted_preflight': frozenset({'mode', 'config', 'heads', 'dsn', 'connect',
                                    'schema_read', 'dashboard_read', 'close', 'schema_check', 'output'}),
     'market_watch': frozenset({'publication'}),
