@@ -177,6 +177,80 @@ def test_profile_keeps_captured_team_side_after_roster_resolution_and_passes_spo
         sport=sport,expected_team=row['expected_team']) is None
 
 
+@pytest.mark.parametrize('side',['home','away'])
+def test_utah_public_identity_keeps_exact_espn_team_and_original_receipts(side):
+    handoff,slate=receipts('nba');game=slate['games'][0];evidence=handoff['evidence']
+    game.update({side+'_name':'Utah Jazz',side+'_abbr':'UTAH'})
+    evidence['games'][0][side+'_team_aliases']=['Utah Jazz']
+    team_id=evidence['games'][0][side+'_team_id']
+    evidence['player_targets'][uid(4)]['team_target_id']=team_id
+    evidence['quotes'][0]['team_target_id']=team_id
+    rehash(handoff);before=deepcopy((handoff,slate))
+
+    rows=profiles.public_profile_identities(handoff,slate,'nba',NOW)
+
+    assert len(rows)==1 and rows[0]['expected_team']==('UTAH','Utah Jazz')
+    row=rows[0];receipt=row['identity_context'];quote=evidence['quotes'][0]
+    assert receipt['team_target_id']==team_id and receipt['player_target_id']==uid(4)
+    assert receipt['captured_at']==handoff['captured_at']
+    assert receipt['slate_captured_at']==slate['captured_at']
+    assert receipt['evidence_sha256']==handoff['evidence_sha256']==_digest(evidence)
+    assert receipt['slate_payload_sha256']==_digest(slate)
+    assert receipt['game_start_time']==game['game_time']
+    assert receipt['quote_request_started_at']==quote['request_started_at']
+    assert receipt['quote_received_at']==quote['received_at']
+    assert (handoff,slate)==before
+
+    def utah_roster(player_side):
+        context=roster('nba',now=NOW,team=player_side)
+        context['teams'][0 if side=='home' else 1].update(name='Utah Jazz',abbreviation='UTAH')
+        return context
+
+    context=utah_roster(side)
+    value=profiles.profile(context,row['player'],None,NOW,sport='nba',expected_team=row['expected_team'])
+    assert value['player_id']=='123' and value['team']=='UTAH'
+    assert profiles.profile(context,row['player'],None,NOW,sport='nba',
+        expected_team=('UTA','Utah Jazz')) is None
+    wrong_side='away' if side=='home' else 'home'
+    assert profiles.profile(utah_roster(wrong_side),row['player'],None,NOW,sport='nba',
+        expected_team=row['expected_team']) is None
+
+
+@pytest.mark.parametrize('completed',[False,True])
+def test_unmatched_utah_slate_game_does_not_erase_other_exact_public_identity(completed):
+    handoff,slate=receipts('nba')
+    slate['games'].append(dict(slate['games'][0],provider_event_id='12346',
+        home_name='Utah Jazz',home_abbr='UTAH',completed=completed,
+        game_time=(NOW+timedelta(hours=3)).isoformat()))
+    before=deepcopy((handoff,slate))
+
+    rows=profiles.public_profile_identities(handoff,slate,'nba',NOW)
+
+    assert len(rows)==1 and rows[0]['game_id']=='12345'
+    assert rows[0]['expected_team']==('LAC','Los Angeles Clippers')
+    assert rows[0]['identity_context']['captured_at']==handoff['captured_at']
+    assert rows[0]['identity_context']['slate_captured_at']==slate['captured_at']
+    assert rows[0]['identity_context']['slate_payload_sha256']==_digest(slate)
+    assert (handoff,slate)==before
+
+
+@pytest.mark.parametrize('sport,abbreviation,name',[
+    ('nba','ABCD','Utah Jazz'),('nba','UTES','Utah Jazz'),
+    ('nfl','UTAH','Utah Jazz'),('nba','UTAH','Philadelphia 76ers'),
+])
+def test_utah_exception_does_not_accept_unknown_sport_or_team_identity(sport,abbreviation,name):
+    handoff,slate=receipts(sport)
+    slate['games'][0].update(home_abbr=abbreviation,home_name=name)
+    before=deepcopy((handoff,slate))
+
+    with pytest.raises(profiles.PublicProfileInputError) as caught:
+        profiles.public_profile_identities(handoff,slate,sport,NOW)
+
+    assert (caught.value.stage,caught.value.reason)==('event','identity')
+    assert str(caught.value)=='Public profile inputs rejected'
+    assert (handoff,slate)==before
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('sport',['nfl','nba'])
 @pytest.mark.parametrize('public_mode',['valid','invalid','changed_market','changed_slate','unknown_market'])

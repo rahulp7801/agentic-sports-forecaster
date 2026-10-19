@@ -201,8 +201,12 @@ def _public_profile_identities(handoff, slate, sport, now, diagnostic):
                 or type(game.get('completed')) is not bool or _name(home)==_name(away)):
             raise ValueError('Ambiguous profile event')
         seen_ids.add(event_id)
-        for key in ('home_abbr','away_abbr'):
-            if not isinstance(game.get(key),str) or not re.fullmatch('[A-Z]{2,3}',game[key]):
+        for side in ('home','away'):
+            abbreviation=game.get(side+'_abbr')
+            # ESPN's official Utah identity has four letters; retain its raw pair.
+            espn_utah=sport=='nba' and abbreviation=='UTAH' and game[side+'_name']=='Utah Jazz'
+            if (not isinstance(abbreviation,str)
+                    or not (re.fullmatch('[A-Z]{2,3}',abbreviation) or espn_utah)):
                 raise ValueError('Invalid profile team abbreviation')
         if game['home_abbr']==game['away_abbr']: raise ValueError('Ambiguous profile teams')
         if game['completed'] or not now<start<=now+timedelta(days=7): continue
