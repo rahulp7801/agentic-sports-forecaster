@@ -8,6 +8,8 @@ from datetime import datetime
 import psycopg
 from sportsbet.diagnostics import emit_failure
 
+CAPTURE_QUERY = "SELECT payload -> 'captured_at' FROM public.dashboard_snapshots WHERE snapshot_key=%s"
+
 
 def receipt_entries(report):
     entries = []
@@ -36,6 +38,12 @@ def verify_captures(report, read):
     return len(entries)
 
 
+def read_capture(connection, key):
+    """Read only the original JSON capture value, retaining its JSON type."""
+    row = connection.execute(CAPTURE_QUERY, (key,)).fetchone()
+    return {'captured_at': row[0]} if row else None
+
+
 def main():
     stage = 'receipt'
     try:
@@ -54,9 +62,9 @@ def main():
             def read(key):
                 nonlocal stage
                 stage = 'snapshot_read'
-                row = conn.execute('SELECT payload FROM public.dashboard_snapshots WHERE snapshot_key=%s', (key,)).fetchone()
+                value = read_capture(conn, key)
                 stage = 'verify'
-                return row[0] if row else None
+                return value
             stage = 'verify'
             count = verify_captures(report, read)
             stage = 'close'

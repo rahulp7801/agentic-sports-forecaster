@@ -140,3 +140,73 @@ def test_dashboard_snapshot_batch_commits_together_and_rolls_back_second_row_fai
     finally:
         with pg_engine.begin() as conn:
             conn.execute(sa.text('DELETE FROM dashboard_snapshots WHERE snapshot_key IN (:first,:second)'), parameters)
+
+
+def test_publication_receipt_projection_preserves_real_jsonb_types_and_exact_clock(
+        pg_engine: sa.Engine) -> None:
+    """Read only the receipt scalar through psycopg without normalizing its value."""
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        'postgres_receipt_verifier', Path('.github/scripts/verify-published-snapshots.py'))
+    verifier = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(verifier)
+    captured = '2026-10-19T15:02:27.893939+00:00'
+    equivalent_clock = '2026-10-19T15:02:27.893939Z'
+    fixtures = [
+        ('exact', {'captured_at': captured, 'unrelated': 'x' * (256 * 1024)}, captured),
+        ('equivalent', {'captured_at': equivalent_clock}, equivalent_clock),
+        ('null', {'captured_at': None}, None),
+        ('missing-field', {'unrelated': captured}, None),
+        ('number-field', {'captured_at': 1792422147}, 1792422147),
+        ('bool-field', {'captured_at': True}, True),
+        ('list-field', {'captured_at': [captured]}, [captured]),
+        ('object-field', {'captured_at': {'clock': captured}}, {'clock': captured}),
+        ('array-payload', [{'captured_at': captured}], None),
+        ('string-payload', captured, None),
+        ('number-payload', 1792422147, None),
+        ('bool-payload', True, None),
+        ('null-payload', None, None),
+    ]
+    prefix = 'receipt-projection-test:' + uuid.uuid4().hex + ':'
+    rows = [{'key': prefix + name, 'payload': json.dumps(payload, allow_nan=False)}
+            for name, payload, _ in fixtures]
+    missing_key = prefix + 'missing-row'
+    report = {'markets': {'nfl': {'captured_at': captured}}}
+    try:
+        with pg_engine.begin() as conn:
+            conn.execute(sa.text('''INSERT INTO dashboard_snapshots(snapshot_key,payload)
+                VALUES (:key,CAST(:payload AS JSONB))'''), rows)
+            # This is the real psycopg connection: %s parameters and JSONB scalar
+            # decoding match the hosted receipt verifier's driver path.
+            driver = conn.connection.driver_connection
+            for name, _, expected in fixtures:
+                key = prefix + name
+                projected = verifier.read_capture(driver, key)
+                assert projected == {'captured_at': expected}
+                assert type(projected['captured_at']) is type(expected)
+                assert set(projected) == {'captured_at'}
+
+                def read(receipt_key):
+                    assert receipt_key == 'markets:nfl'
+                    return verifier.read_capture(driver, key)
+
+                if name == 'exact':
+                    assert verifier.verify_captures(report, read) == 1
+                    # Even equivalent ISO spellings must retain the original
+                    # capture string; neither side may substitute a new clock.
+                    different_report = {'markets': {'nfl': {'captured_at': equivalent_clock}}}
+                    with pytest.raises(ValueError, match='does not match this run'):
+                        verifier.verify_captures(different_report, read)
+                else:
+                    with pytest.raises(ValueError, match='does not match this run'):
+                        verifier.verify_captures(report, read)
+
+            assert verifier.read_capture(driver, missing_key) is None
+            with pytest.raises(ValueError, match='does not match this run'):
+                verifier.verify_captures(report, lambda _: verifier.read_capture(driver, missing_key))
+    finally:
+        with pg_engine.begin() as conn:
+            conn.execute(sa.text('DELETE FROM dashboard_snapshots WHERE snapshot_key=:key'),
+                         [{'key': row['key']} for row in rows])
