@@ -18,7 +18,7 @@ from sportsbet.diagnostics import error_fields
 from sportsbet.db.connection import create_async_pool
 from sportsbet.graph.graph import create_graph
 from sportsbet.ingestion.prop_odds import PlayerPropSnapshotCreate, parse_event_quotes, write_player_prop_snapshots
-from sportsbet.nba_source_asof import ReleaseLedger as Ledger
+from sportsbet.live_settlement_ledger import Ledger
 from sportsbet.credit_projection import next_rolling_credit_release
 from sportsbet.model_contract import MODEL_VERSION
 from sportsbet.nba_source_asof import NBA_MODEL_VERSION, model_version_for, history_policy_for

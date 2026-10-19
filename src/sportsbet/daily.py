@@ -18,7 +18,7 @@ from langgraph.graph import END, START, StateGraph
 from sportsbet.dashboard import load_snapshot, publish_snapshot
 from sportsbet.diagnostics import error_fields, failure_stage
 from sportsbet.market_watch import run as watch, DEFAULT_GAME_LIMIT
-from sportsbet.nba_source_asof import ReleaseLedger as Ledger
+from sportsbet.live_settlement_ledger import Ledger
 from sportsbet.model_contract import MODEL_VERSION
 from sportsbet.nba_source_asof import model_version_for
 from sportsbet.picks import build_pick_board

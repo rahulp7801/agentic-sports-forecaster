@@ -187,15 +187,8 @@ def verified_settlement_evidence(payload: dict, outcome, source, source_ref,
                 or not re.fullmatch('[0-9a-f]{64}', proof.get('stat_record_sha256', ''))):
             return False
         identity_version=proof.get('schedule_identity_version',1)
-        if identity_version not in (1,2,3):
+        if identity_version not in (1,2):
             return False
-        if identity_version==3:
-            from sportsbet.schedules import scheduled_stat_teams
-            if (type(identity_version) is not int or sport!='nba'
-                    or proof['stat_provider'] not in ('nba','espn')
-                    or row.get('team_abbreviation') not in scheduled_stat_teams(
-                        sport,proof,identity_version=3)):
-                return False
         if identity_version==2:
             from sportsbet.schedules import scheduled_stat_teams
             team_field='team_abbreviation' if sport in ('nba','cfb') else 'team'
@@ -472,7 +465,7 @@ class Ledger:
                 # Only literal parameter markers enter the SQL text; IDs remain bound values.
                 query=f'SELECT id,payload FROM predictions WHERE id IN ({placeholders})'
                 rows=dict(db.execute(query,keys).fetchall())
-                updates=[];guarded_updates=[]
+                updates=[]
                 for key,outcome in batch:
                     if outcome is not None and type(outcome) is not bool and outcome not in ('push','void'):
                         raise ValueError('Settlement must be true/false/push/void/null')
@@ -490,43 +483,9 @@ class Ledger:
                     if source == VERIFIED_SETTLEMENT_SOURCE and not verified_settlement_evidence(
                             json.loads(payload),outcome,source,source_ref,stamp,actual,encoded):
                         raise ValueError('Verified settlement evidence is invalid')
-                    update=(json.dumps(outcome),source,source_ref,stamp.isoformat(),actual,encoded,key)
-                    if (source==VERIFIED_SETTLEMENT_SOURCE and isinstance(proof,dict)
-                            and proof.get('schedule_identity_version')==3):
-                        # Recheck the raw durable state, then compare it in the UPDATE.
-                        # A prior decoder result or an earlier read is not a write grant.
-                        prior=db.execute('''SELECT outcome,outcome_source,outcome_ref,
-                            outcome_observed_at,actual_value,outcome_evidence
-                            FROM predictions WHERE id=?''',(key,)).fetchone()
-                        if prior is None:
-                            raise ValueError('Utah settlement prior state is unavailable')
-                        if all(value is None for value in prior):
-                            condition='''outcome IS NULL AND outcome_source IS NULL
-                                AND outcome_ref IS NULL AND outcome_observed_at IS NULL
-                                AND actual_value IS NULL AND outcome_evidence IS NULL'''
-                            expected=()
-                        else:
-                            previous=json_object(prior[5])
-                            if (any(value is None for value in prior) or not isinstance(previous,dict)
-                                    or type(previous.get('schedule_identity_version')) is not int
-                                    or previous['schedule_identity_version']!=3
-                                    or not verified_settlement_evidence(json.loads(payload),
-                                        json.loads(prior[0]),prior[1],prior[2],prior[3],prior[4],previous)):
-                                raise ValueError('Utah settlement cannot replace retained evidence')
-                            condition='''outcome=? AND outcome_source=? AND outcome_ref=?
-                                AND outcome_observed_at=? AND actual_value=? AND outcome_evidence=?'''
-                            expected=tuple(prior)
-                        guarded_updates.append((update,condition,expected))
-                    else:
-                        updates.append(update)
+                    updates.append((json.dumps(outcome),source,source_ref,stamp.isoformat(),actual,encoded,key))
                 db.executemany('''UPDATE predictions SET outcome=?,outcome_source=?,outcome_ref=?,
                     outcome_observed_at=?,actual_value=?,outcome_evidence=? WHERE id=?''',updates)
-                for update,condition,expected in guarded_updates:
-                    cursor=db.execute('''UPDATE predictions SET outcome=?,outcome_source=?,outcome_ref=?,
-                        outcome_observed_at=?,actual_value=?,outcome_evidence=? WHERE id=? AND '''+condition,
-                        (*update,*expected))
-                    if cursor.rowcount!=1:
-                        raise ValueError('Utah settlement prior state changed')
 
     def _prediction_records(self, *, ordered: bool = False):
         """Read raw records; audit subclasses may narrow their registered universe."""

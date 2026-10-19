@@ -14,6 +14,7 @@ from unittest.mock import patch
 from sportsbet.ingestion.upsert import upsert_rows
 from sportsbet.ingestion.provenance import stat_row_sha256
 from sportsbet.ledger import Ledger
+from sportsbet.live_settlement_ledger import Ledger as LiveSettlementLedger
 from sportsbet.scan import evaluate_event, quotes_from_event
 from sportsbet.settlement import settle_final_props
 
@@ -27,7 +28,8 @@ pytestmark = pytest.mark.skipif(
 ])
 def test_final_prop_settlement_uses_real_postgres_and_retains_provenance(
         home_name,home_abbr,stat_team,identity_version):
-    url=os.environ['SPORTSBET_TEST_DATABASE_URL'];ledger=Ledger(database_url=url)
+    url=os.environ['SPORTSBET_TEST_DATABASE_URL']
+    ledger=(LiveSettlementLedger if identity_version==3 else Ledger)(database_url=url)
     identity=uuid.uuid4().hex[:16];player_id=int(uuid.uuid4().int%900000000)+1
     now=datetime.now(timezone.utc);day=(now-timedelta(days=1)).date()
     payload=dict(game_id=identity,player='Settlement Fixture',player_id=str(player_id),sport='nba',
@@ -74,6 +76,8 @@ def test_final_prop_settlement_uses_real_postgres_and_retains_provenance(
             assert corrected_row['outcome_evidence']['schedule_identity_version']==3
             assert corrected_row['outcome_evidence']['home_abbr']=='UTAH'
             assert ledger.report(model_version=identity)['unverified_settlements']==0
+            frozen_report=Ledger(database_url=url).report(model_version=identity)
+            assert frozen_report['settled_count']==0 and frozen_report['unverified_settlements']==1
     finally:
         with engine.begin() as conn:
             conn.execute(sa.text('DELETE FROM nba_player_gamelogs WHERE game_id=:id'),{'id':identity})

@@ -36,10 +36,26 @@ settlement fields must also prevent treating a record as fresh. The selected
 contract remains part of the stat cache scope and the generated proof. The write
 boundary checks the retained state again and conditionally updates that same
 state, so a concurrent legacy result cannot be overwritten by the new contract.
+Existing recovery writers retain the three-value `_candidate` interface and
+legacy identity policy; only the ordinary settlement path selects the new
+version-aware helper.
 
 All player, game, stat provenance, source and record hash, finality, observed-time
 and outcome checks remain required. Profile roster joins continue to use the raw
 ESPN `UTAH` identity introduced in PR #374.
+
+The entire original `ledger.py` stays byte-identical to the released dependency
+with normalized SHA-256
+`e33611de7f85c376b2967f3d1f1bf4a02e80ce093d85c7a1182d29b8799fe2b1`.
+The separate `live_settlement_ledger` runtime inherits the existing NBA source-time
+admission, recording, quote and budget guards. Its version 3 verifier also binds
+the stat row's canonical player ID and date to the recorded prediction. Its live
+reports explicitly identify `live-settlement-v3`.
+
+Frozen research consumers keep the original ledger and verifier. They continue
+to reject version 3 results; no existing dependency pins or research protocols
+are refreshed, and these results cannot enter an old frozen study through the
+new live reader.
 
 ## Verification scope
 
