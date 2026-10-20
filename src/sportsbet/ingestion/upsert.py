@@ -2,7 +2,10 @@
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy import MetaData, Table, and_, case
 
-def upsert_rows(keys: list[str], *, preserve_observation_on_unchanged: bool = False):
+def upsert_rows(keys: list[str], *, preserve_observation_on_unchanged: bool = False,
+                skip_unchanged_updates: bool = False):
+    if skip_unchanged_updates and not preserve_observation_on_unchanged:
+        raise ValueError('Skipping unchanged updates requires observation preservation')
     target = None
 
     def write(table, conn, columns, data_iter):
@@ -34,6 +37,10 @@ def upsert_rows(keys: list[str], *, preserve_observation_on_unchanged: bool = Fa
                     updates[name]=case((unchanged,target.c[name]),else_=stmt.excluded[name])
             updates['source_observed_at']=case(
                 (unchanged,target.c.source_observed_at),else_=stmt.excluded.source_observed_at)
-        stmt = stmt.on_conflict_do_update(index_elements=keys,set_=updates)
+        # The preserve predicate already makes every effective value identical.
+        # Opted-in source writers can avoid UPDATE/trigger work for that replay;
+        # conflicting tuples may still be locked by PostgreSQL.
+        stmt = stmt.on_conflict_do_update(index_elements=keys,set_=updates,
+            where=~unchanged if skip_unchanged_updates else None)
         return conn.execute(stmt).rowcount
     return write

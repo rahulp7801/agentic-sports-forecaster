@@ -265,8 +265,8 @@ def test_compare_and_set_keeps_concurrent_policy_and_rolls_back_other_batch_upda
                 def execute(self, sql, args=()):
                     nonlocal injected
                     cursor = db.execute(sql, args)
-                    if 'SELECT outcome,outcome_source,outcome_ref,' in sql and args == (key,) and not injected:
-                        prior = cursor.fetchone()
+                    if sql.startswith('SELECT id,payload,outcome,outcome_source,outcome_ref,') and key in args and not injected:
+                        retained = cursor.fetchall()
                         injected = True
                         with original_connect() as concurrent:
                             concurrent.execute('''UPDATE predictions SET outcome=?,outcome_source=?,outcome_ref=?,
@@ -274,9 +274,9 @@ def test_compare_and_set_keeps_concurrent_policy_and_rolls_back_other_batch_upda
                                 ('true', 'observed_final_stats', reference(concurrent_proof), CAPTURED,
                                     21, canonical(concurrent_proof), key))
 
-                        class Prior:
-                            def fetchone(self): return prior
-                        return Prior()
+                        class Snapshot:
+                            def fetchall(self): return retained
+                        return Snapshot()
                     return cursor
 
                 def executemany(self, *args): return db.executemany(*args)

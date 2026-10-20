@@ -17,6 +17,7 @@ FAILURE_STAGES = {
     'market_watch': frozenset({'publication'}),
     'daily': frozenset({'initialize', 'histories', 'markets', 'schedules',
                        'settlements', 'props', 'report', 'report_write'}),
+    'daily_settlement': frozenset({'ledger', 'settlement', 'publication'}),
     'cfb_settlement': frozenset({'history', 'ledger', 'pending_offsets', 'schedules',
                                 'settlement', 'predictions', 'publications', 'report_publish'}),
     'published_snapshot_receipt': frozenset({'receipt', 'dsn', 'connect', 'snapshot_read',
