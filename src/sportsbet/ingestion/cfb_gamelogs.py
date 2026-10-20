@@ -175,5 +175,5 @@ def ingest_cfb_gamelogs_season(season: int, engine: sa.Engine) -> dict:
     records,coverage=normalize_assets(player_bytes,schedule_bytes,season)
     pd.DataFrame.from_records(records).to_sql('cfb_player_gamelogs',engine,if_exists='append',
         index=False,chunksize=500,method=upsert_rows(['athlete_id','game_id'],
-            preserve_observation_on_unchanged=True))
+            preserve_observation_on_unchanged=True,skip_unchanged_updates=True))
     return coverage

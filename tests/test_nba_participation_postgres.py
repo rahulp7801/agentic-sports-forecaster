@@ -36,9 +36,11 @@ def db():
 
 def write(conn,rows,complete=False):
     prepared=prepare_participation(rows)
-    pd.DataFrame(rows).to_sql('nba_player_gamelogs',conn,if_exists='append',index=False,
-        method=upsert_rows(['player_id','game_id'],preserve_observation_on_unchanged=True))
+    count=pd.DataFrame(rows).to_sql('nba_player_gamelogs',conn,if_exists='append',index=False,
+        method=upsert_rows(['player_id','game_id'],preserve_observation_on_unchanged=True,
+            skip_unchanged_updates=True))
     store_participation(conn,prepared,complete_season=rows[0]['season'] if complete else None)
+    return count
 
 
 def versions(conn,player,game):
@@ -70,6 +72,31 @@ class Adapter:
 
 def split(conn,subject,candidate,stamp=None):
     return asyncio.run(_nba_split(Adapter(conn),str(subject),2024,date(2026,9,30),'points',15.5,'over',candidate,stamp))
+
+
+def test_unchanged_official_replay_skips_stat_tuple_update_and_retains_minutes_receipts(db):
+    rows,_,participant,_=fixture_rows()
+    assert write(db,rows)==len(rows)
+    params=dict(p=participant,g=rows[1]['game_id'])
+    before=db.execute(sa.text('SELECT ctid::text,xmin::text,to_jsonb(n) FROM nba_player_gamelogs n '
+        'WHERE player_id=:p AND game_id=:g'),params).one()
+    prior=versions(db,participant,rows[1]['game_id'])
+    repeated=[r|dict(source_sha256='b'*64,
+        source_observed_at=r['source_observed_at']+timedelta(seconds=1)) for r in rows]
+
+    assert write(db,repeated)==0
+
+    assert db.execute(sa.text('SELECT ctid::text,xmin::text,to_jsonb(n) FROM nba_player_gamelogs n '
+        'WHERE player_id=:p AND game_id=:g'),params).one()==before
+    assert versions(db,participant,rows[1]['game_id'])==prior
+    # CTID distinguishes an UPDATE inside this same transaction; xmin alone does not.
+    corrected=repeated[1]|dict(minutes=0)
+    assert corrected['source_record_sha256']==rows[1]['source_record_sha256']
+    assert write(db,[corrected])==1
+    after=db.execute(sa.text('SELECT ctid::text,minutes,source_sha256,source_observed_at '
+        'FROM nba_player_gamelogs WHERE player_id=:p AND game_id=:g'),params).one()
+    assert after[0]!=before[0] and tuple(after[1:])==(0,'b'*64,corrected['source_observed_at'])
+    assert len(versions(db,participant,rows[1]['game_id']))==2
 
 
 def test_minutes_only_correction_preserves_earlier_comparison_and_first_retry_receipt(db):
@@ -253,6 +280,34 @@ def test_official_ingester_commits_provider_minutes_and_rolls_back_both_writes(d
     assert versions(db,2544,'0022300001')==original_proofs
 
 
+def test_official_ingester_still_writes_missing_participation_after_stat_noop(db,monkeypatch):
+    from sportsbet.ingestion import nba_gamelogs
+    from tests.test_nba_gamelogs_ingest import _make_sample_df
+    response=MagicMock();response.get_data_frames.return_value=[_make_sample_df()]
+    monkeypatch.setattr(nba_gamelogs,'PlayerGameLogs',lambda **kwargs:response)
+    monkeypatch.setattr(nba_gamelogs.time,'sleep',lambda seconds:None)
+    original_store=nba_gamelogs.store_participation;calls=[]
+    def delayed_participation(conn,rows,**kwargs):
+        calls.append(len(rows))
+        if len(calls)>1:original_store(conn,rows,**kwargs)
+    monkeypatch.setattr(nba_gamelogs,'store_participation',delayed_participation)
+    class BoundEngine:
+        @contextmanager
+        def begin(self):
+            with db.begin_nested():yield db
+    assert nba_gamelogs.ingest_nba_gamelogs_season(2023,BoundEngine())==3
+    assert versions(db,2544,'0022300001')==[]
+    before=db.execute(sa.text("SELECT ctid::text,to_jsonb(n) FROM nba_player_gamelogs n "
+        "WHERE player_id=2544 AND game_id='0022300001'")).one()
+
+    assert nba_gamelogs.ingest_nba_gamelogs_season(2023,BoundEngine())==3
+
+    assert calls==[3,3]
+    assert db.execute(sa.text("SELECT ctid::text,to_jsonb(n) FROM nba_player_gamelogs n "
+        "WHERE player_id=2544 AND game_id='0022300001'")).one()==before
+    assert len(versions(db,2544,'0022300001'))==1
+
+
 def test_recent_nba_context_uses_actual_source_proofs_with_old_history_kept_separate(db):
     rows,subject,participant,candidate=fixture_rows()
     prepared=[]
@@ -266,3 +321,42 @@ def test_recent_nba_context_uses_actual_source_proofs_with_old_history_kept_sepa
     assert recent['active']==dict(games=1,mean=30.,hit_rate=1.)
     assert recent['absent']==dict(games=1,mean=25.,hit_rate=1.)
     assert recent['unknown_games']==0 and recent['sample_window']['active']['newest']=='2026-09-02'
+
+
+@pytest.mark.skipif(not os.environ.get('SPORTSBET_TEST_DATABASE_URL'),
+    reason='Disposable PostgreSQL required')
+def test_opted_in_writer_repairs_missing_observation_and_default_still_updates():
+    engine=sa.create_engine(os.environ['SPORTSBET_TEST_DATABASE_URL'])
+    table=sa.Table('noop_writer_'+uuid.uuid4().hex[:12],sa.MetaData(),
+        sa.Column('id',sa.Integer,primary_key=True),sa.Column('value',sa.Integer),
+        sa.Column('source_provider',sa.Text),sa.Column('source_sha256',sa.Text),
+        sa.Column('source_record_sha256',sa.Text),
+        sa.Column('source_observed_at',sa.DateTime(timezone=True)))
+    observed=datetime.now(timezone.utc)-timedelta(minutes=1)
+    row=dict(id=1,value=None,source_provider='fixture',source_sha256='a'*64,
+        source_record_sha256='b'*64,source_observed_at=observed)
+    opted=upsert_rows(['id'],preserve_observation_on_unchanged=True,skip_unchanged_updates=True)
+    default=upsert_rows(['id'],preserve_observation_on_unchanged=True)
+    try:
+        with engine.connect() as conn:
+            transaction=conn.begin()
+            try:
+                table.create(conn)
+                conn.execute(table.insert(),row|dict(source_observed_at=None))
+                assert pd.DataFrame([row]).to_sql(table.name,conn,if_exists='append',
+                    index=False,method=opted)==1
+                assert conn.execute(sa.select(table.c.source_observed_at)).scalar_one()==observed
+                before=conn.execute(sa.text('SELECT ctid::text FROM '+table.name)).scalar_one()
+                repeated=row|dict(source_sha256='c'*64,source_observed_at=observed+timedelta(seconds=1))
+                assert pd.DataFrame([repeated]).to_sql(table.name,conn,if_exists='append',
+                    index=False,method=opted)==0
+                assert conn.execute(sa.text('SELECT ctid::text FROM '+table.name)).scalar_one()==before
+                assert pd.DataFrame([repeated]).to_sql(table.name,conn,if_exists='append',
+                    index=False,method=default)==1
+                assert conn.execute(sa.text('SELECT ctid::text FROM '+table.name)).scalar_one()!=before
+                assert conn.execute(sa.select(table.c.source_sha256,
+                    table.c.source_observed_at)).one()==('a'*64,observed)
+            finally:
+                transaction.rollback()
+    finally:
+        engine.dispose()

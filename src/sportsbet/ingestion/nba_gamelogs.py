@@ -164,7 +164,8 @@ def ingest_nba_gamelogs_season(
     participation=prepare_participation(df.to_dict('records'))
     with engine.begin() as conn:
         df.to_sql("nba_player_gamelogs", conn, if_exists="append", index=False, chunksize=500,
-            method=upsert_rows(["player_id", "game_id"], preserve_observation_on_unchanged=True))
+            method=upsert_rows(["player_id", "game_id"], preserve_observation_on_unchanged=True,
+                skip_unchanged_updates=True))
         store_participation(conn,participation,complete_season=season)
 
     log.info(

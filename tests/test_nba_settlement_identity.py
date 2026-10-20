@@ -346,15 +346,15 @@ def test_v3_compare_and_set_blocks_concurrent_legacy_result_and_rolls_back_other
                 def execute(self,sql,args=()):
                     nonlocal injected
                     cursor=db.execute(sql,args)
-                    if 'SELECT outcome,outcome_source,outcome_ref,' in sql and args==(key,) and not injected:
-                        prior=cursor.fetchone();injected=True
+                    if sql.startswith('SELECT id,payload,outcome,outcome_source,outcome_ref,') and key in args and not injected:
+                        retained=cursor.fetchall();injected=True
                         with original_connect() as concurrent:
                             concurrent.execute('''UPDATE predictions SET outcome=?,outcome_source=?,outcome_ref=?,
                                 outcome_observed_at=?,actual_value=?,outcome_evidence=? WHERE id=?''',
                                 ('true','observed_final_stats',reference(old),CAPTURED,21,canonical(old),key))
-                        class Prior:
-                            def fetchone(self): return prior
-                        return Prior()
+                        class Snapshot:
+                            def fetchall(self): return retained
+                        return Snapshot()
                     return cursor
                 def executemany(self,*args): return db.executemany(*args)
             yield Proxy()

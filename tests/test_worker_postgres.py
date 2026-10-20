@@ -30,7 +30,7 @@ pytestmark = pytest.mark.skipif(
 def test_final_prop_settlement_uses_real_postgres_and_retains_provenance(
         home_name,home_abbr,stat_team,identity_version):
     url=os.environ['SPORTSBET_TEST_DATABASE_URL']
-    ledger=(LiveSettlementLedger if identity_version in (3,4) else Ledger)(database_url=url)
+    ledger=LiveSettlementLedger(database_url=url)
     identity=uuid.uuid4().hex[:16];player_id=int(uuid.uuid4().int%900000000)+1
     now=datetime.now(timezone.utc);day=(now-timedelta(days=1)).date()
     payload=dict(game_id=identity,player='Settlement Fixture',player_id=str(player_id),sport='nba',
@@ -79,6 +79,14 @@ def test_final_prop_settlement_uses_real_postgres_and_retains_provenance(
             assert ledger.report(model_version=identity)['unverified_settlements']==0
             frozen_report=Ledger(database_url=url).report(model_version=identity)
             assert frozen_report['settled_count']==0 and frozen_report['unverified_settlements']==1
+            with ledger.connect() as db:
+                retained=db.execute('SELECT outcome,outcome_source,outcome_ref,outcome_observed_at,'
+                    'actual_value,outcome_evidence FROM predictions WHERE id=?',(key,)).fetchone()
+            with pytest.raises(ValueError,match='Legacy settlement cannot replace retained evidence'):
+                ledger.settle({key:True},source='manual')
+            with ledger.connect() as db:
+                assert db.execute('SELECT outcome,outcome_source,outcome_ref,outcome_observed_at,'
+                    'actual_value,outcome_evidence FROM predictions WHERE id=?',(key,)).fetchone()==retained
     finally:
         with engine.begin() as conn:
             conn.execute(sa.text('DELETE FROM nba_player_gamelogs WHERE game_id=:id'),{'id':identity})
@@ -110,6 +118,58 @@ def test_postgres_settlement_writes_multiple_predictions_in_one_batch():
                 conn.execute(sa.text('DELETE FROM analytics.quotes WHERE identity=:identity'),
                     {'identity':ledger.quote_identity(payload)})
         engine.dispose()
+
+def test_live_postgres_settlement_rejects_stale_batched_state_and_rolls_back(monkeypatch):
+    from contextlib import contextmanager
+    url=os.environ['SPORTSBET_TEST_DATABASE_URL'];ledger=LiveSettlementLedger(database_url=url)
+    scan_id=uuid.uuid4().hex[:16];now=datetime.now(timezone.utc)
+    base=dict(game_id=scan_id,player='Concurrent Batch Fixture',player_id='7',sport='nba',
+        game_date=(now+timedelta(days=1)).date().isoformat(),home_team='Home',away_team='Away',
+        prop_type='points',direction='over',sportsbook='book',american_odds=100,
+        model_probability=.6,captured_at=now.isoformat(),
+        game_start_time=(now+timedelta(days=1)).isoformat(),model_version=scan_id)
+    values=[base|{'line':19.5},base|{'line':20.5}]
+    engine=sa.create_engine(url);original_connect=ledger.connect;injected=False
+    try:
+        other,raced=ledger.record_many(scan_id,values)
+
+        @contextmanager
+        def connection():
+            nonlocal injected
+            with original_connect() as db:
+                class Proxy:
+                    def execute(self,sql,args=()):
+                        nonlocal injected
+                        cursor=db.execute(sql,args)
+                        if sql.startswith('SELECT id,payload,outcome,outcome_source,outcome_ref,') and not injected:
+                            retained=cursor.fetchall();injected=True
+                            with original_connect() as concurrent:
+                                concurrent.execute('''UPDATE predictions SET outcome=?,outcome_source=?,outcome_ref=?,
+                                    outcome_observed_at=?,actual_value=? WHERE id=?''',
+                                    ('false','manual','concurrent',now.isoformat(),17,raced))
+                            class Snapshot:
+                                def fetchall(self): return retained
+                            return Snapshot()
+                        return cursor
+                yield Proxy()
+
+        monkeypatch.setattr(ledger,'connect',connection)
+        with pytest.raises(ValueError,match='prior state changed'):
+            ledger.settle({other:True,raced:True},source='manual')
+        with original_connect() as db:
+            rows=dict((row[0],row[1:]) for row in db.execute('SELECT id,outcome,outcome_source,outcome_ref,'
+                'outcome_observed_at,actual_value,outcome_evidence FROM predictions WHERE id IN (?,?)',
+                (other,raced)).fetchall())
+        assert injected and rows[other]==(None,)*6
+        assert rows[raced]==('false','manual','concurrent',now,17,None)
+    finally:
+        with engine.begin() as conn:
+            conn.execute(sa.text('DELETE FROM analytics.predictions WHERE scan_id=:id'),{'id':scan_id})
+            for value in values:
+                conn.execute(sa.text('DELETE FROM analytics.quotes WHERE identity=:identity'),
+                    {'identity':ledger.quote_identity(value)})
+        engine.dispose()
+
 
 def test_nfl_receptions_settle_with_real_postgres_and_committed_stat():
     url=os.environ['SPORTSBET_TEST_DATABASE_URL'];ledger=Ledger(database_url=url)

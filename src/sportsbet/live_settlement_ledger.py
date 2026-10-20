@@ -120,8 +120,10 @@ class Ledger(ReleaseLedger):
                 batch=items[offset:offset+250]
                 keys=[key for key,_ in batch]
                 placeholders=','.join('?' for _ in keys)
-                query=f'SELECT id,payload FROM predictions WHERE id IN ({placeholders})'
-                rows=dict(db.execute(query,keys).fetchall())
+                query=(f'SELECT id,payload,outcome,outcome_source,outcome_ref,'
+                    f'outcome_observed_at,actual_value,outcome_evidence FROM predictions '
+                    f'WHERE id IN ({placeholders})')
+                rows={row[0]:row[1:] for row in db.execute(query,keys).fetchall()}
                 guarded=[]
                 for key,outcome in batch:
                     if outcome is not None and type(outcome) is not bool and outcome not in ('push','void'):
@@ -132,9 +134,11 @@ class Ledger(ReleaseLedger):
                         if not actual.is_finite():
                             raise ValueError('Settlement actual value is invalid')
                         actual=int(actual) if actual==actual.to_integral_value() else str(actual)
-                    payload=rows.get(key)
-                    if payload is None:
+                    retained=rows.get(key)
+                    if retained is None or retained[0] is None:
                         raise ValueError(f'Unknown prediction ID: {key}')
+                    payload=retained[0]
+                    prior=retained[1:]
                     proof=(evidence or {}).get(key)
                     encoded=(json.dumps(proof,sort_keys=True,separators=(',',':'),allow_nan=False)
                         if proof is not None else None)
@@ -142,13 +146,8 @@ class Ledger(ReleaseLedger):
                     if source==VERIFIED_SETTLEMENT_SOURCE and not verify(json.loads(payload),
                             outcome,source,source_ref,stamp,actual,encoded):
                         raise ValueError('Verified settlement evidence is invalid')
-                    # Re-read raw state inside the write transaction. Neither a
+                    # Read raw state with the payload inside the write transaction. Neither a
                     # decoded null nor a legacy/manual route can migrate a live proof.
-                    prior=db.execute('''SELECT outcome,outcome_source,outcome_ref,
-                        outcome_observed_at,actual_value,outcome_evidence
-                        FROM predictions WHERE id=?''',(key,)).fetchone()
-                    if prior is None:
-                        raise ValueError('NBA settlement prior state is unavailable')
                     previous=json_object(prior[5])
                     if live_batch:
                         if not all(value is None for value in prior):
