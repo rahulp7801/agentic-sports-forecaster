@@ -2,7 +2,7 @@
 
 Legacy evaluators retain their original Ledger and v1/v2 evidence interpretation.
 This runtime keeps the release's NBA source-time admission checks and opts only
-exact Utah v3 settlements into separately identified live reports.
+exact NBA identity v3/v4 settlements into separately identified live reports.
 """
 from __future__ import annotations
 
@@ -26,19 +26,19 @@ from sportsbet.quant.backtest import BacktestEngine, BacktestSignal
 from sportsbet.schedules import scheduled_stat_teams
 
 
-VERSION='live-settlement-v3'
+VERSION='live-settlement-v4'
 
 
 def verified_settlement_evidence(payload: dict, outcome, source, source_ref,
                                  observed_at, actual_value, evidence) -> bool:
-    """Verify v3 directly; retain the unchanged legacy verifier for v1/v2."""
+    """Verify explicit v3/v4 identities; keep legacy v1/v2 interpretation."""
     proof=json_object(evidence)
     if not isinstance(proof,dict) or proof.get('schedule_identity_version',1) in (1,2):
         return legacy_verified_settlement_evidence(payload,outcome,source,source_ref,
             observed_at,actual_value,evidence)
     try:
         version=proof.get('schedule_identity_version')
-        if type(version) is not int or version!=3 or payload['sport']!='nba':
+        if type(version) is not int or version not in (3,4) or payload['sport']!='nba':
             return False
         match=SETTLEMENT_REF.fullmatch(source_ref or '')
         if source!=VERIFIED_SETTLEMENT_SOURCE or not match:
@@ -65,7 +65,7 @@ def verified_settlement_evidence(payload: dict, outcome, source, source_ref,
                 or str(row['player_id'])!=player_id
                 or row.get('game_date')!=payload['game_date']):
             return False
-        if row.get('team_abbreviation') not in scheduled_stat_teams('nba',proof,identity_version=3):
+        if row.get('team_abbreviation') not in scheduled_stat_teams('nba',proof,identity_version=version):
             return False
         if stat_row_sha256('nba',row)!=proof['stat_record_sha256']:
             return False
@@ -80,6 +80,8 @@ def verified_settlement_evidence(payload: dict, outcome, source, source_ref,
         game_time=utc_timestamp(proof['game_time'])
         stat_time=utc_timestamp(proof['stat_observed_at'])
         settlement_time=observed_at if isinstance(observed_at,datetime) else utc_timestamp(observed_at)
+        if version==4 and (settlement_time.tzinfo is None or settlement_time.utcoffset() is None):
+            return False
         return game_time<=stat_time<=settlement_time.astimezone(timezone.utc)
     except (ArithmeticError,KeyError,TypeError,ValueError):
         return False
@@ -94,16 +96,19 @@ class Ledger(ReleaseLedger):
                observed_at: datetime | None = None, actual_values: dict | None = None,
                evidence: dict | None = None) -> None:
         proofs=[(evidence or {}).get(key) for key in outcomes]
-        if not any(isinstance(proof,dict) and proof.get('schedule_identity_version')==3
-                   for proof in proofs):
-            return super().settle(outcomes,source=source,source_ref=source_ref,
-                observed_at=observed_at,actual_values=actual_values,evidence=evidence)
-        if (source!=VERIFIED_SETTLEMENT_SOURCE
-                or any(not isinstance(proof,dict)
-                    or type(proof.get('schedule_identity_version')) is not int
-                    or proof['schedule_identity_version']!=3 for proof in proofs)):
-            raise ValueError('Version3 settlements require one verified version3 batch')
-        if not isinstance(source_ref,str) or not source_ref.strip() or len(source_ref)>200:
+        live_batch=any(isinstance(proof,dict)
+            and proof.get('schedule_identity_version') in (3,4) for proof in proofs)
+        identity_version=None
+        if live_batch:
+            if (source!=VERIFIED_SETTLEMENT_SOURCE
+                    or any(not isinstance(proof,dict)
+                        or type(proof.get('schedule_identity_version')) is not int
+                        or proof['schedule_identity_version'] not in (3,4) for proof in proofs)
+                    or len({proof['schedule_identity_version'] for proof in proofs})!=1):
+                raise ValueError('Live settlements require one verified identity-version batch')
+            identity_version=proofs[0]['schedule_identity_version']
+        if (not isinstance(source,str) or not source.strip() or len(source)>40
+                or not isinstance(source_ref,str) or not source_ref.strip() or len(source_ref)>200):
             raise ValueError('Settlement provenance is invalid')
         stamp=observed_at or datetime.now(timezone.utc)
         if stamp.tzinfo is None or stamp.utcoffset() is None:
@@ -131,42 +136,49 @@ class Ledger(ReleaseLedger):
                     if payload is None:
                         raise ValueError(f'Unknown prediction ID: {key}')
                     proof=(evidence or {}).get(key)
-                    encoded=json.dumps(proof,sort_keys=True,separators=(',',':'),allow_nan=False)
-                    if not verified_settlement_evidence(json.loads(payload),outcome,source,
-                            source_ref,stamp,actual,encoded):
+                    encoded=(json.dumps(proof,sort_keys=True,separators=(',',':'),allow_nan=False)
+                        if proof is not None else None)
+                    verify=(verified_settlement_evidence if live_batch else legacy_verified_settlement_evidence)
+                    if source==VERIFIED_SETTLEMENT_SOURCE and not verify(json.loads(payload),
+                            outcome,source,source_ref,stamp,actual,encoded):
                         raise ValueError('Verified settlement evidence is invalid')
-                    # Decoded None values and an earlier read cannot grant a write.
+                    # Re-read raw state inside the write transaction. Neither a
+                    # decoded null nor a legacy/manual route can migrate a live proof.
                     prior=db.execute('''SELECT outcome,outcome_source,outcome_ref,
                         outcome_observed_at,actual_value,outcome_evidence
                         FROM predictions WHERE id=?''',(key,)).fetchone()
                     if prior is None:
-                        raise ValueError('Utah settlement prior state is unavailable')
-                    if all(value is None for value in prior):
-                        statement='''UPDATE predictions SET outcome=?,outcome_source=?,outcome_ref=?,
-                            outcome_observed_at=?,actual_value=?,outcome_evidence=?
-                            WHERE id=? AND outcome IS NULL AND outcome_source IS NULL
-                            AND outcome_ref IS NULL AND outcome_observed_at IS NULL
-                            AND actual_value IS NULL AND outcome_evidence IS NULL'''
-                        expected=()
-                    else:
-                        previous=json_object(prior[5])
-                        if (any(value is None for value in prior) or not isinstance(previous,dict)
-                                or type(previous.get('schedule_identity_version')) is not int
-                                or previous['schedule_identity_version']!=3
-                                or not verified_settlement_evidence(json.loads(payload),
-                                    json.loads(prior[0]),prior[1],prior[2],prior[3],prior[4],previous)):
-                            raise ValueError('Utah settlement cannot replace retained evidence')
-                        statement='''UPDATE predictions SET outcome=?,outcome_source=?,outcome_ref=?,
-                            outcome_observed_at=?,actual_value=?,outcome_evidence=?
-                            WHERE id=? AND outcome=? AND outcome_source=? AND outcome_ref=?
-                            AND outcome_observed_at=? AND actual_value=? AND outcome_evidence=?'''
-                        expected=tuple(prior)
+                        raise ValueError('NBA settlement prior state is unavailable')
+                    previous=json_object(prior[5])
+                    if live_batch:
+                        if not all(value is None for value in prior):
+                            if (any(value is None for value in prior) or not isinstance(previous,dict)
+                                    or type(previous.get('schedule_identity_version')) is not int
+                                    or previous['schedule_identity_version']!=identity_version
+                                    or not verified_settlement_evidence(json.loads(payload),
+                                        json.loads(prior[0]),prior[1],prior[2],prior[3],prior[4],previous)):
+                                raise ValueError('NBA settlement cannot replace retained evidence')
+                    elif (isinstance(previous,dict)
+                            and previous.get('schedule_identity_version') in (3,4)):
+                        raise ValueError('Legacy settlement cannot replace retained evidence')
+                    # Bound null flags make this portable across SQLite/Postgres.
+                    # All six raw fields participate, including partially populated
+                    # legacy state. A concurrent write rolls back the entire call.
+                    expected=tuple(item for value in prior for item in (int(value is None),value))
                     update=(json.dumps(outcome),source,source_ref,stamp.isoformat(),actual,encoded,key)
-                    guarded.append((update,statement,expected))
-                for update,statement,expected in guarded:
-                    cursor=db.execute(statement,(*update,*expected))
+                    guarded.append((update,expected))
+                for update,expected in guarded:
+                    cursor=db.execute('''UPDATE predictions SET outcome=?,outcome_source=?,outcome_ref=?,
+                        outcome_observed_at=?,actual_value=?,outcome_evidence=? WHERE id=?
+                        AND ((outcome IS NULL AND ?=1) OR outcome=?)
+                        AND ((outcome_source IS NULL AND ?=1) OR outcome_source=?)
+                        AND ((outcome_ref IS NULL AND ?=1) OR outcome_ref=?)
+                        AND ((outcome_observed_at IS NULL AND ?=1) OR outcome_observed_at=?)
+                        AND ((actual_value IS NULL AND ?=1) OR actual_value=?)
+                        AND ((outcome_evidence IS NULL AND ?=1) OR outcome_evidence=?)''',
+                        (*update,*expected))
                     if cursor.rowcount!=1:
-                        raise ValueError('Utah settlement prior state changed')
+                        raise ValueError('NBA settlement prior state changed')
 
     def report(self, recommendations_only: bool = False, model_version: str | None = None,
                sport: str | None = None, captured_after: str | None = None) -> dict:
