@@ -6,6 +6,7 @@ from requests.exceptions import RequestException
 
 from sportsbet.db.connection import get_sync_engine
 from sportsbet.dashboard import publish_snapshot
+from sportsbet.diagnostics import error_fields
 from sportsbet.ingestion.games import ingest_games_seasons
 from sportsbet.ingestion.cfb_gamelogs import ingest_cfb_gamelogs_season
 from sportsbet.ingestion.nba_gamelogs import ingest_nba_gamelogs_season
@@ -67,7 +68,7 @@ def refresh_history(sport: str, today: date, backfill: bool = False) -> dict:
         coverage=refresh(sport,today,backfill)
         result=dict(status='complete',finished_at=datetime.now(timezone.utc).isoformat(),coverage=coverage)
     except Exception as exc:
-        result=dict(status='failed',finished_at=datetime.now(timezone.utc).isoformat(),error_type=type(exc).__name__)
+        result=dict(status='failed',finished_at=datetime.now(timezone.utc).isoformat(),**error_fields(exc))
     publish_snapshot('refresh:'+sport,result)
     return result
 
