@@ -36,11 +36,10 @@ def db():
 
 def write(conn,rows,complete=False):
     prepared=prepare_participation(rows)
-    count=pd.DataFrame(rows).to_sql('nba_player_gamelogs',conn,if_exists='append',index=False,
+    pd.DataFrame(rows).to_sql('nba_player_gamelogs',conn,if_exists='append',index=False,
         method=upsert_rows(['player_id','game_id'],preserve_observation_on_unchanged=True,
             skip_unchanged_updates=True))
     store_participation(conn,prepared,complete_season=rows[0]['season'] if complete else None)
-    return count
 
 
 def versions(conn,player,game):
@@ -76,23 +75,29 @@ def split(conn,subject,candidate,stamp=None):
 
 def test_unchanged_official_replay_skips_stat_tuple_update_and_retains_minutes_receipts(db):
     rows,_,participant,_=fixture_rows()
-    assert write(db,rows)==len(rows)
+    write(db,rows)
+    names=dict(subject=rows[0]['player_name'],participant=rows[1]['player_name'])
+    assert db.execute(sa.text('SELECT count(*) FROM nba_player_gamelogs '
+        'WHERE player_name=:subject OR player_name=:participant'),names).scalar_one()==len(rows)
     params=dict(p=participant,g=rows[1]['game_id'])
     before=db.execute(sa.text('SELECT ctid::text,xmin::text,to_jsonb(n) FROM nba_player_gamelogs n '
         'WHERE player_id=:p AND game_id=:g'),params).one()
     prior=versions(db,participant,rows[1]['game_id'])
+    assert len(prior)==1
     repeated=[r|dict(source_sha256='b'*64,
         source_observed_at=r['source_observed_at']+timedelta(seconds=1)) for r in rows]
 
-    assert write(db,repeated)==0
+    write(db,repeated)
 
+    assert db.execute(sa.text('SELECT count(*) FROM nba_player_gamelogs '
+        'WHERE player_name=:subject OR player_name=:participant'),names).scalar_one()==len(rows)
     assert db.execute(sa.text('SELECT ctid::text,xmin::text,to_jsonb(n) FROM nba_player_gamelogs n '
         'WHERE player_id=:p AND game_id=:g'),params).one()==before
     assert versions(db,participant,rows[1]['game_id'])==prior
     # CTID distinguishes an UPDATE inside this same transaction; xmin alone does not.
     corrected=repeated[1]|dict(minutes=0)
     assert corrected['source_record_sha256']==rows[1]['source_record_sha256']
-    assert write(db,[corrected])==1
+    write(db,[corrected])
     after=db.execute(sa.text('SELECT ctid::text,minutes,source_sha256,source_observed_at '
         'FROM nba_player_gamelogs WHERE player_id=:p AND game_id=:g'),params).one()
     assert after[0]!=before[0] and tuple(after[1:])==(0,'b'*64,corrected['source_observed_at'])
@@ -343,17 +348,19 @@ def test_opted_in_writer_repairs_missing_observation_and_default_still_updates()
             try:
                 table.create(conn)
                 conn.execute(table.insert(),row|dict(source_observed_at=None))
-                assert pd.DataFrame([row]).to_sql(table.name,conn,if_exists='append',
-                    index=False,method=opted)==1
+                pd.DataFrame([row]).to_sql(table.name,conn,if_exists='append',
+                    index=False,method=opted)
+                assert conn.execute(sa.select(sa.func.count()).select_from(table)).scalar_one()==1
                 assert conn.execute(sa.select(table.c.source_observed_at)).scalar_one()==observed
                 before=conn.execute(sa.text('SELECT ctid::text FROM '+table.name)).scalar_one()
                 repeated=row|dict(source_sha256='c'*64,source_observed_at=observed+timedelta(seconds=1))
-                assert pd.DataFrame([repeated]).to_sql(table.name,conn,if_exists='append',
-                    index=False,method=opted)==0
+                pd.DataFrame([repeated]).to_sql(table.name,conn,if_exists='append',
+                    index=False,method=opted)
                 assert conn.execute(sa.text('SELECT ctid::text FROM '+table.name)).scalar_one()==before
-                assert pd.DataFrame([repeated]).to_sql(table.name,conn,if_exists='append',
-                    index=False,method=default)==1
+                pd.DataFrame([repeated]).to_sql(table.name,conn,if_exists='append',
+                    index=False,method=default)
                 assert conn.execute(sa.text('SELECT ctid::text FROM '+table.name)).scalar_one()!=before
+                assert conn.execute(sa.select(sa.func.count()).select_from(table)).scalar_one()==1
                 assert conn.execute(sa.select(table.c.source_sha256,
                     table.c.source_observed_at)).one()==('a'*64,observed)
             finally:

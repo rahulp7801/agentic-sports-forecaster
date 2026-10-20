@@ -85,15 +85,17 @@ def test_opted_in_cfb_replay_skips_update_trigger_but_correction_retains_revisio
                 conn.execute(sa.text('''CREATE TRIGGER aa_test_cfb_noop_update
                     BEFORE UPDATE ON public.cfb_player_gamelogs FOR EACH ROW
                     EXECUTE FUNCTION pg_temp.count_cfb_noop_update()'''))
-                assert pd.DataFrame([row]).to_sql('cfb_player_gamelogs',conn,if_exists='append',
-                    index=False,method=writer)==1
+                pd.DataFrame([row]).to_sql('cfb_player_gamelogs',conn,if_exists='append',
+                    index=False,method=writer)
+                assert conn.execute(sa.text('SELECT count(*) FROM cfb_player_gamelogs '
+                    'WHERE athlete_id=:a AND game_id=:g'),identity).scalar_one()==1
                 before=conn.execute(sa.text('SELECT ctid::text,xmin::text,to_jsonb(c) '
                     'FROM cfb_player_gamelogs c WHERE athlete_id=:a AND game_id=:g'),identity).one()
                 repeated=primary(game_id=game,source_player_sha256='e'*64,
                     source_schedule_sha256='f'*64,source_observed_at=observed+timedelta(seconds=1))
 
-                assert pd.DataFrame([repeated]).to_sql('cfb_player_gamelogs',conn,if_exists='append',
-                    index=False,method=writer)==0
+                pd.DataFrame([repeated]).to_sql('cfb_player_gamelogs',conn,if_exists='append',
+                    index=False,method=writer)
 
                 assert conn.execute(sa.text('SELECT calls FROM cfb_noop_update_calls')).scalar_one()==0
                 assert conn.execute(sa.text('SELECT ctid::text,xmin::text,to_jsonb(c) '
@@ -102,13 +104,18 @@ def test_opted_in_cfb_replay_skips_update_trigger_but_correction_retains_revisio
                     'WHERE athlete_id=:a AND game_id=:g'),identity).scalar_one()==0
                 corrected=repeated|dict(rushing_yards=69)
                 corrected['source_record_sha256']=stat_row_sha256('cfb',corrected)
-                assert pd.DataFrame([corrected]).to_sql('cfb_player_gamelogs',conn,if_exists='append',
-                    index=False,method=writer)==1
+                pd.DataFrame([corrected]).to_sql('cfb_player_gamelogs',conn,if_exists='append',
+                    index=False,method=writer)
                 assert conn.execute(sa.text('SELECT calls FROM cfb_noop_update_calls')).scalar_one()==1
                 current=conn.execute(sa.text('SELECT ctid::text,rushing_yards,source_observed_at '
                     'FROM cfb_player_gamelogs WHERE athlete_id=:a AND game_id=:g'),identity).one()
                 assert current[0]!=before[0] and current[1]==69
                 assert current[2]>observed and current[2]>=corrected['source_observed_at']
+                assert conn.execute(sa.text('SELECT source_record_sha256,source_sha256, '
+                    'source_player_sha256,source_schedule_sha256 FROM cfb_player_gamelogs '
+                    'WHERE athlete_id=:a AND game_id=:g'),identity).one()==tuple(corrected[key]
+                        for key in ('source_record_sha256','source_sha256',
+                            'source_player_sha256','source_schedule_sha256'))
                 old=conn.execute(sa.text('SELECT row_data FROM cfb_primary_revisions '
                     'WHERE athlete_id=:a AND game_id=:g'),identity).scalar_one()
                 assert old['source_record_sha256']==row['source_record_sha256']
