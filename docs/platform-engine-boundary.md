@@ -238,6 +238,21 @@ history contains no summary/card data. A mismatched source-read cutoff remains
 unavailable. This preparation has no live-approval or settlement state and does
 not switch history routes or browser components to a new service.
 
+`PlayerHistoryDisplay` is a standalone prepared consumer of this public contract.
+It checks a separate expected binding before rendering supplied ten/twenty-game,
+recent-form, calendar and participation output. It formats supplied metrics and
+selects a display window without recalculating cohorts, means or rates. Invalid
+or unavailable output receives generic unavailable wording; internal diagnostic
+reasons are never rendered. Its serializable props contain only the display,
+independent binding and optional initial window. The caller must derive that
+binding from trusted forecast/source context, not from the untrusted display.
+
+The public source-closure check now includes this component, the public decoder
+and its stylesheet while excluding private history producers and resolvers.
+The existing `PlayerHistory` component and live routes still use their existing
+implementation. This renderer is not mounted, no private service is activated,
+and the entire frontend is not yet ready for a clean public export.
+
 `forecast_record_sha256` hashes canonical projected public fields; it is **not**
 the immutable ledger's `payload_sha256`, which hashes original stored TEXT bytes.
 An actual private resolver must verify the retained database receipt, preserve
