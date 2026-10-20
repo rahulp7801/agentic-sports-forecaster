@@ -11,10 +11,38 @@ import httpx
 
 SPORTS = {'nba':'basketball/nba', 'nfl':'football/nfl', 'cfb':'football/college-football'}
 STAT_TEAM_ALIASES = {'nba':{}, 'nfl':{'LAR':'LA', 'WSH':'WAS'}, 'cfb':{}}
+NBA_ADDITIONAL_STAT_IDENTITIES = {
+    'GS': ('Golden State Warriors', 'GSW'),
+    'NO': ('New Orleans Pelicans', 'NOP'),
+    'NY': ('New York Knicks', 'NYK'),
+    'SA': ('San Antonio Spurs', 'SAS'),
+    'WSH': ('Washington Wizards', 'WAS'),
+}
 
 
 def scheduled_stat_teams(sport: str, game: dict, *, identity_version: int = 2) -> frozenset[str]:
     """Translate exact ESPN abbreviations to the stat provider's identities."""
+    if type(identity_version) is int and identity_version == 4:
+        if sport != 'nba':
+            raise ValueError('Unsupported schedule identity version')
+        projected={};additional=False
+        for side in ('home','away'):
+            value=game.get(side+'_abbr')
+            identity=NBA_ADDITIONAL_STAT_IDENTITIES.get(value) if isinstance(value,str) else None
+            if identity is not None:
+                name,canonical=identity
+                if game.get(side+'_name')!=name:
+                    raise ValueError('Invalid NBA schedule identity')
+                value=canonical;additional=True
+            elif value=='UTAH':
+                if game.get(side+'_name')!='Utah Jazz':
+                    raise ValueError('Invalid Utah schedule identity')
+                value='UTA'
+            projected[side+'_abbr']=value
+        if not additional:
+            raise ValueError('Additional NBA schedule identity is required')
+        # Canonical comparisons are opt-in; the raw schedule and old proofs stay unchanged.
+        return scheduled_stat_teams(sport,projected)
     if type(identity_version) is int and identity_version == 3:
         if sport != 'nba':
             raise ValueError('Unsupported schedule identity version')

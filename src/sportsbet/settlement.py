@@ -16,7 +16,7 @@ from sportsbet.live_settlement_ledger import (
     verified_settlement_evidence as live_verified_settlement_evidence)
 from sportsbet.ingestion.provenance import (
     LEGACY_NFL_STAT_FIELDS, STAT_FIELDS, stat_row_sha256)
-from sportsbet.schedules import scheduled_stat_teams
+from sportsbet.schedules import NBA_ADDITIONAL_STAT_IDENTITIES, scheduled_stat_teams
 
 STAT_COLUMNS={
     'nba':{'points':'points','rebounds':'rebounds','assists':'assists'},
@@ -102,15 +102,20 @@ def _prediction_terms(prediction: dict, sport: str):
 
 
 def _schedule_identity_version(prediction: dict, sport: str, game: dict, db=None) -> int:
-    """Opt new Utah results in without upgrading any retained legacy outcome."""
+    """Select a new live identity contract without migrating retained outcomes."""
     proof=prediction.get('outcome_evidence')
     if (isinstance(proof,dict) and type(proof.get('schedule_identity_version')) is int
-            and proof['schedule_identity_version']==3
+            and proof['schedule_identity_version'] in (3,4)
             and live_verified_settlement_evidence(prediction,prediction.get('outcome'),
                 prediction.get('outcome_source'),prediction.get('outcome_ref'),
                 prediction.get('outcome_observed_at'),prediction.get('actual_value'),proof)):
-        return 3
-    if sport!='nba' or not any(game.get(side+'_abbr')=='UTAH' for side in ('home','away')):
+        return proof['schedule_identity_version']
+    if sport!='nba':
+        return 2
+    aliases=[game.get(side+'_abbr') for side in ('home','away')]
+    identity_version=(4 if any(isinstance(value,str) and value in NBA_ADDITIONAL_STAT_IDENTITIES
+        for value in aliases) else 3 if 'UTAH' in aliases else 2)
+    if identity_version==2:
         return 2
     retained_fields=('outcome','outcome_source','outcome_ref','outcome_evidence',
                      'outcome_observed_at','actual_value')
@@ -121,7 +126,7 @@ def _schedule_identity_version(prediction: dict, sport: str, game: dict, db=None
             AND outcome_observed_at IS NULL AND actual_value IS NULL''',
             (prediction['prediction_id'],)).fetchone()
         if empty is not None:
-            return 3
+            return identity_version
     return 2
 
 

@@ -25,11 +25,12 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.mark.parametrize(('home_name','home_abbr','stat_team','identity_version'),[
     ('Home','HOM','HOM',2),('Utah Jazz','UTAH','UTA',3),
+    ('Golden State Warriors','GS','GSW',4),
 ])
 def test_final_prop_settlement_uses_real_postgres_and_retains_provenance(
         home_name,home_abbr,stat_team,identity_version):
     url=os.environ['SPORTSBET_TEST_DATABASE_URL']
-    ledger=(LiveSettlementLedger if identity_version==3 else Ledger)(database_url=url)
+    ledger=(LiveSettlementLedger if identity_version in (3,4) else Ledger)(database_url=url)
     identity=uuid.uuid4().hex[:16];player_id=int(uuid.uuid4().int%900000000)+1
     now=datetime.now(timezone.utc);day=(now-timedelta(days=1)).date()
     payload=dict(game_id=identity,player='Settlement Fixture',player_id=str(player_id),sport='nba',
@@ -62,8 +63,8 @@ def test_final_prop_settlement_uses_real_postgres_and_retains_provenance(
         assert row['outcome_evidence']['home_abbr']==home_abbr
         report=ledger.report(model_version=identity)
         assert report['settled_count']==1 and report['unverified_settlements']==0
-        if identity_version==3:
-            # Exercise the PostgreSQL write guard with nonempty prior v3 fields.
+        if identity_version in (3,4):
+            # Exercise the PostgreSQL write guard with nonempty versioned fields.
             assert settle_final_props(ledger,'nba',schedule)['settled']==1
             corrected=stat|{'points':19}
             with engine.begin() as conn:
@@ -73,8 +74,8 @@ def test_final_prop_settlement_uses_real_postgres_and_retains_provenance(
             assert settle_final_props(ledger,'nba',schedule)['settled']==1
             corrected_row=next(item for item in ledger.predictions() if item['prediction_id']==key)
             assert corrected_row['outcome'] is False and corrected_row['actual_value']==19
-            assert corrected_row['outcome_evidence']['schedule_identity_version']==3
-            assert corrected_row['outcome_evidence']['home_abbr']=='UTAH'
+            assert corrected_row['outcome_evidence']['schedule_identity_version']==identity_version
+            assert corrected_row['outcome_evidence']['home_abbr']==home_abbr
             assert ledger.report(model_version=identity)['unverified_settlements']==0
             frozen_report=Ledger(database_url=url).report(model_version=identity)
             assert frozen_report['settled_count']==0 and frozen_report['unverified_settlements']==1
