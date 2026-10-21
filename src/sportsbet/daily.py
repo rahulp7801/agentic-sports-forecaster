@@ -391,7 +391,16 @@ def create_daily_graph():
             props={s:{k:v for k,v in r.items() if k not in ('attempts','coverage')} for s,r in state['props'].items()})
         if public:
             result['scope']=PUBLIC_SCOPES[state['mode']]
-        publish_snapshot('pipeline:'+state['mode'],result)
+        try:
+            publish_snapshot('pipeline:'+state['mode'],result)
+        except Exception as exc:
+            if not public:
+                raise
+            # Preserve the local source report without claiming hosted summary
+            # publication or changing any component's original capture clock.
+            emit_failure(exc,operation='daily',stage='report')
+            result.update(status='degraded',
+                report_publication=dict(status='failed',**error_fields(exc)))
         return {'report':result}
 
     graph.add_node('initialize',_diagnosed_node(initialize,'initialize'))

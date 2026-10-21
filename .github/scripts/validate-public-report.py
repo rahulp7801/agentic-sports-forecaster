@@ -115,11 +115,25 @@ def validate_report(path, *, mode, sport, producer_status, started_at, now=None)
     report = json.loads(raw, object_pairs_hook=_object,
                         parse_float=_finite_float, parse_constant=_reject_constant)
     expected = {'mode', 'finished_at', 'status', 'execution_ready', 'scope', *GROUPS}
+    publication_failed = isinstance(report, dict) and 'report_publication' in report
+    if publication_failed:
+        expected.add('report_publication')
     if (not isinstance(report, dict) or set(report) != expected or report['mode'] != mode
             or report['execution_ready'] is not False
             or report['status'] != ('observed' if producer_status == 0 else 'degraded')
             or not isinstance(report['scope'], str) or not 1 <= len(report['scope']) <= 2048):
         raise ValueError('Public producer report scope or status changed')
+    if publication_failed:
+        failure = report['report_publication']
+        if (not isinstance(failure, dict)
+                or not {'status', 'error_type'} <= set(failure) <= {'status', 'error_type', 'sqlstate'}
+                or failure['status'] != 'failed' or producer_status != 2
+                or report['status'] != 'degraded'
+                or type(failure['error_type']) is not str
+                or not re.fullmatch('[A-Za-z_][A-Za-z0-9_]{0,63}', failure['error_type'])
+                or ('sqlstate' in failure and (type(failure['sqlstate']) is not str
+                    or not re.fullmatch('[0-9A-Z]{5}', failure['sqlstate'])))):
+            raise ValueError('Invalid report publication failure diagnostic')
     finished = _clock(report['finished_at'])
     if not started <= finished <= now:
         raise ValueError('Public producer report is outside this invocation')
@@ -156,7 +170,7 @@ def validate_report(path, *, mode, sport, producer_status, started_at, now=None)
     health_groups = ('markets', 'schedules') + (('histories', 'settlements', 'profiles')
                                                if mode == 'public_daily' else ())
     healthy = all(value['status'] in ('complete', 'observed')
-                  for group in health_groups for value in report[group].values())
+                  for group in health_groups for value in report[group].values()) and not publication_failed
     if report['status'] != ('observed' if healthy else 'degraded'):
         raise ValueError('Public producer status contradicts component coverage')
     entries = _receipt_entries(report)
