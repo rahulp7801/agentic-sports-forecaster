@@ -9,6 +9,8 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+from sportsbet.diagnostics import failure_stage
+
 SPORTS = {'nba':'basketball/nba', 'nfl':'football/nfl', 'cfb':'football/college-football'}
 STAT_TEAM_ALIASES = {'nba':{}, 'nfl':{'LAR':'LA', 'WSH':'WAS'}, 'cfb':{}}
 NBA_ADDITIONAL_STAT_IDENTITIES = {
@@ -132,36 +134,42 @@ async def collect(sport: str, now: datetime | None = None, *, offsets: tuple[int
 async def publish_slate(sport: str, now: datetime | None = None, *,
                         receipt: dict[str,str] | None = None) -> str:
     """Publish current/upcoming games and optionally retain original capture metadata."""
-    if sport not in SPORTS:
-        raise ValueError('Unsupported sport')
-    if receipt is not None:
-        receipt.clear()
-    from sportsbet.dashboard import load_snapshot, publish_snapshot
-    now=now or datetime.now(timezone.utc)
-    today=str(now.astimezone(ZoneInfo('America/New_York')).date())
-    previous=load_snapshot('slate:'+sport) or {}
-    try:
-        age=now-datetime.fromisoformat(previous['captured_at'].replace('Z','+00:00'))
-        if (previous.get('as_of_date')==today and previous.get('status') in ('complete','partial')
-                and timedelta(0)<=age<=timedelta(minutes=10)):
-            if receipt is not None:
-                receipt['captured_at']=previous['captured_at']
-            return 'cached'
-    except (KeyError,ValueError,TypeError,AttributeError):
-        pass
-    slate=await collect(sport,now,offsets=tuple(range(7)))
-    games=sorted((game for game in slate.get('games',[]) if game.get('completed') is False),
-        key=lambda game:(datetime.fromisoformat(game['game_time']),game['provider_event_id']))
-    truncated=len(games)>100
-    status=slate['status']
-    if status=='complete' and truncated:
-        status='partial'
-    bounded={**slate,'games':games[:100],'partial':status=='partial','status':status}
-    if status in ('complete','partial'):
-        captured=bounded['captured_at']
-        publish_snapshot('slate:'+sport,bounded)
+    with failure_stage('slate_publication','arguments'):
+        if sport not in SPORTS:
+            raise ValueError('Unsupported sport')
+    with failure_stage('slate_publication','initialize'):
         if receipt is not None:
-            receipt['captured_at']=captured
+            receipt.clear()
+        from sportsbet.dashboard import load_snapshot, publish_snapshot
+        now=now or datetime.now(timezone.utc)
+        today=str(now.astimezone(ZoneInfo('America/New_York')).date())
+    with failure_stage('slate_publication','cache_read'):
+        previous=load_snapshot('slate:'+sport) or {}
+        try:
+            age=now-datetime.fromisoformat(previous['captured_at'].replace('Z','+00:00'))
+            if (previous.get('as_of_date')==today and previous.get('status') in ('complete','partial')
+                    and timedelta(0)<=age<=timedelta(minutes=10)):
+                if receipt is not None:
+                    receipt['captured_at']=previous['captured_at']
+                return 'cached'
+        except (KeyError,ValueError,TypeError,AttributeError):
+            pass
+    with failure_stage('slate_publication','collection'):
+        slate=await collect(sport,now,offsets=tuple(range(7)))
+    with failure_stage('slate_publication','projection'):
+        games=sorted((game for game in slate.get('games',[]) if game.get('completed') is False),
+            key=lambda game:(datetime.fromisoformat(game['game_time']),game['provider_event_id']))
+        truncated=len(games)>100
+        status=slate['status']
+        if status=='complete' and truncated:
+            status='partial'
+        bounded={**slate,'games':games[:100],'partial':status=='partial','status':status}
+    if status in ('complete','partial'):
+        with failure_stage('slate_publication','publication'):
+            captured=bounded['captured_at']
+            publish_snapshot('slate:'+sport,bounded)
+            if receipt is not None:
+                receipt['captured_at']=captured
     return status
 
 
@@ -187,16 +195,22 @@ def main() -> None:
     args=parser.parse_args()
     try:
         receipt={}
-        status=asyncio.run(publish_slate(args.sport,receipt=receipt)
-                           if args.report_output else publish_slate(args.sport))
-        if status not in ('complete','partial','cached','unavailable'):
-            raise ValueError('Invalid schedule publication status')
+        # The CLI aggregate phase follows any more precise internal failure.
+        with failure_stage('slate_publication','publish'):
+            status=asyncio.run(publish_slate(args.sport,receipt=receipt)
+                               if args.report_output else publish_slate(args.sport))
+        with failure_stage('slate_publication','status'):
+            if status not in ('complete','partial','cached','unavailable'):
+                raise ValueError('Invalid schedule publication status')
         if status=='unavailable':
-            print(status)
+            with failure_stage('slate_publication','output'):
+                print(status)
             raise SystemExit(2)
         if args.report_output:
-            _write_slate_receipt(args.report_output,args.sport,receipt)
-        print(status)
+            with failure_stage('slate_publication','receipt_write'):
+                _write_slate_receipt(args.report_output,args.sport,receipt)
+        with failure_stage('slate_publication','output'):
+            print(status)
     except Exception as exc:
         raise SystemExit(f'Schedule publication unavailable ({type(exc).__name__})') from None
 
