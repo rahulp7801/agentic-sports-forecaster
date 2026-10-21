@@ -6,7 +6,7 @@ from requests.exceptions import RequestException
 
 from sportsbet.db.connection import get_sync_engine
 from sportsbet.dashboard import publish_snapshot
-from sportsbet.diagnostics import error_fields
+from sportsbet.diagnostics import emit_failure, error_fields, failure_stage
 from sportsbet.ingestion.games import ingest_games_seasons
 from sportsbet.ingestion.cfb_gamelogs import ingest_cfb_gamelogs_season
 from sportsbet.ingestion.nba_gamelogs import ingest_nba_gamelogs_season
@@ -44,11 +44,16 @@ def refresh(sport: str, today: date, backfill: bool = False):
                     rows=ingest_nba_gamelogs_season(season, engine)
                     nba_seasons.append({'season':season,'rows':rows,
                                         'status':'empty' if rows==0 else 'complete'})
-                except RequestException:
+                except RequestException as exc:
                     if backfill:
+                        emit_failure(exc,operation='history_refresh',stage='nba_primary')
                         raise  # Bounded recent updates cannot substitute for a full backfill.
                     from sportsbet.ingestion.nba_espn import refresh_recent
-                    return refresh_recent(season,today,engine)
+                    with failure_stage('history_refresh','nba_fallback'):
+                        return refresh_recent(season,today,engine)
+                except Exception as exc:
+                    emit_failure(exc,operation='history_refresh',stage='nba_primary')
+                    raise
         else:
             coverage=[ingest_cfb_gamelogs_season(season,engine) for season in years]
             return {'provider':'sportsdataverse_espn','seasons':coverage}
