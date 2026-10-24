@@ -7,7 +7,8 @@ import re
 
 from sportsbet.arbitrage.ev import compute_expected_return, quote_terms
 from sportsbet.ledger import (settlement_identity_valid,
-                              utc_timestamp, validated_selection, verified_settlement_evidence)
+                              utc_timestamp, validated_selection)
+from sportsbet.live_settlement_ledger import verified_settlement_evidence
 from sportsbet.model_contract import CFB_MODEL_VERSION, NFL_MODEL_VERSION
 from sportsbet.nba_source_asof import NBA_MODEL_VERSION, forecast_version_valid, quote_evidence_valid
 from sportsbet.prop.admission import LOCK_BEFORE_START

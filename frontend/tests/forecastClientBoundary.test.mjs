@@ -7,13 +7,16 @@ import ts from 'typescript';
 
 const frontend=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const roots=['lib/fetchForecasts.ts','lib/forecastDisplayPacket.ts','lib/forecastDisplayAuthority.ts',
-  'lib/signalDisplay.ts','components/Arbitrage.tsx'];
-const reviewed=new Set([...roots,'lib/displayMath.ts','lib/types.ts']);
+  'lib/signalDisplay.ts','components/Arbitrage.tsx','components/PlayerHistoryDisplay.tsx'];
+const reviewed=new Set([...roots,'lib/displayMath.ts','lib/types.ts','lib/forecastHistoryDisplay.ts',
+  'components/ResearchViews.module.css']);
 const packages=new Set(['react']);
 const privateSources=new Set(['lib/signalMetrics.ts','lib/bestPicks.ts','lib/forecastPage.ts',
   'lib/forecastDisplayProducer.ts','lib/forecastDisplayPacketProducer.ts','lib/pickBoard.ts',
   'lib/python.ts','lib/database.ts','lib/metricCohort.ts','lib/publicBenchmarks.ts','lib/backtestLab.ts',
-  'lib/forecastHistory.ts','lib/contextWindow.ts','lib/recentParticipation.ts',
+  'lib/forecastHistory.ts','lib/contextWindow.ts','lib/recentParticipation.ts','components/PlayerHistory.tsx',
+  'lib/forecastHistoryDisplayProducer.ts','lib/immutableForecastHistoryDisplay.ts',
+  'lib/immutableForecastHistory.ts','lib/immutableForecastReceipt.ts','lib/immutableHistoryCalculations.ts',
   'data/week-one-demo-history.json','data/nfl-week1-2026.json']);
 
 function importClosure(root,includeTypes) {

@@ -11,9 +11,12 @@ from zoneinfo import ZoneInfo
 
 from sportsbet.ledger import (Ledger, VERIFIED_SETTLEMENT_SOURCE, utc_timestamp,
     verified_settlement_evidence)
+from sportsbet.live_settlement_ledger import (
+    VERSION as LIVE_SETTLEMENT_PROTOCOL,
+    verified_settlement_evidence as live_verified_settlement_evidence)
 from sportsbet.ingestion.provenance import (
     LEGACY_NFL_STAT_FIELDS, STAT_FIELDS, stat_row_sha256)
-from sportsbet.schedules import scheduled_stat_teams
+from sportsbet.schedules import NBA_ADDITIONAL_STAT_IDENTITIES, scheduled_stat_teams
 
 STAT_COLUMNS={
     'nba':{'points':'points','rebounds':'rebounds','assists':'assists'},
@@ -52,6 +55,9 @@ def pending_schedule_offsets(ledger: Ledger, sport: str, now: datetime) -> tuple
     if sport not in STAT_COLUMNS or now.tzinfo is None or now.utcoffset() is None:
         raise ValueError('Invalid settlement catch-up scope')
     today=now.astimezone(ZoneInfo('America/New_York')).date()
+    verify=(live_verified_settlement_evidence
+        if getattr(ledger,'settlement_evidence_protocol',None)==LIVE_SETTLEMENT_PROTOCOL
+        else verified_settlement_evidence)
     offsets=set()
     for row in ledger.predictions():
         if row.get('sport')!=sport or row.get('prop_type') not in STAT_COLUMNS[sport]:
@@ -59,7 +65,7 @@ def pending_schedule_offsets(ledger: Ledger, sport: str, now: datetime) -> tuple
         if row.get('outcome') is not None:
             if row.get('outcome_source') not in AUTO_SOURCES:
                 continue
-            if row.get('outcome_source')==AUTO_SOURCE and verified_settlement_evidence(
+            if row.get('outcome_source')==AUTO_SOURCE and verify(
                     row,row['outcome'],row.get('outcome_source'),row.get('outcome_ref'),
                     row.get('outcome_observed_at'),row.get('actual_value'),row.get('outcome_evidence')):
                 continue
@@ -95,7 +101,42 @@ def _prediction_terms(prediction: dict, sport: str):
     return day,line,home,away
 
 
+def _schedule_identity_version(prediction: dict, sport: str, game: dict, db=None) -> int:
+    """Select a new live identity contract without migrating retained outcomes."""
+    proof=prediction.get('outcome_evidence')
+    if (isinstance(proof,dict) and type(proof.get('schedule_identity_version')) is int
+            and proof['schedule_identity_version'] in (3,4)
+            and live_verified_settlement_evidence(prediction,prediction.get('outcome'),
+                prediction.get('outcome_source'),prediction.get('outcome_ref'),
+                prediction.get('outcome_observed_at'),prediction.get('actual_value'),proof)):
+        return proof['schedule_identity_version']
+    if sport!='nba':
+        return 2
+    aliases=[game.get(side+'_abbr') for side in ('home','away')]
+    identity_version=(4 if any(isinstance(value,str) and value in NBA_ADDITIONAL_STAT_IDENTITIES
+        for value in aliases) else 3 if 'UTAH' in aliases else 2)
+    if identity_version==2:
+        return 2
+    retained_fields=('outcome','outcome_source','outcome_ref','outcome_evidence',
+                     'outcome_observed_at','actual_value')
+    if all(prediction.get(field) is None for field in retained_fields) and db is not None:
+        # Decoders intentionally hide malformed legacy JSON; only SQL NULLs are fresh.
+        empty=db.execute('''SELECT 1 FROM predictions WHERE id=? AND outcome IS NULL
+            AND outcome_source IS NULL AND outcome_ref IS NULL AND outcome_evidence IS NULL
+            AND outcome_observed_at IS NULL AND actual_value IS NULL''',
+            (prediction['prediction_id'],)).fetchone()
+        if empty is not None:
+            return identity_version
+    return 2
+
+
 def _candidate(prediction: dict, sport: str, games: list[dict]):
+    """Keep the legacy triple consumed by frozen NFL/CFB recovery writers."""
+    matched=_versioned_candidate(prediction,sport,games)
+    return None if matched is None else matched[:3]
+
+
+def _versioned_candidate(prediction: dict, sport: str, games: list[dict], db=None, *, allow_v3=False):
     day,line,home,away=_prediction_terms(prediction,sport)
     matches=[]
     for game in games:
@@ -111,11 +152,13 @@ def _candidate(prediction: dict, sport: str, games: list[dict]):
     if len(matches)!=1:
         return None
     utc_timestamp(matches[0]['game_time'])
-    scheduled_stat_teams(sport,matches[0])
-    return matches[0],day,line
+    identity_version=(_schedule_identity_version(prediction,sport,matches[0],db)
+        if allow_v3 and db is not None else 2)
+    scheduled_stat_teams(sport,matches[0],identity_version=identity_version)
+    return matches[0],day,line,identity_version
 
 
-def _actual(db, prediction: dict, sport: str, day: str, game: dict):
+def _actual(db, prediction: dict, sport: str, day: str, game: dict, identity_version: int = 2):
     column=STAT_COLUMNS[sport][prediction['prop_type']]
     player_id=str(prediction.get('player_id',''))
     if sport=='nba':
@@ -171,7 +214,7 @@ def _actual(db, prediction: dict, sport: str, day: str, game: dict):
         if type(record['is_home']) is int and record['is_home'] in (0,1):
             record['is_home']=bool(record['is_home'])
     team_field='team_abbreviation' if sport in ('nba','cfb') else 'team'
-    if record[team_field] not in scheduled_stat_teams(sport,game):
+    if record[team_field] not in scheduled_stat_teams(sport,game,identity_version=identity_version):
         return None
     if record[column] is None or type(record[column]) is bool:
         return None
@@ -219,6 +262,8 @@ def settle_final_props(ledger: Ledger, sport: str, schedule: dict) -> dict:
     """Settle supported props; uncertain finality, identity, or stats stay pending."""
     if sport not in STAT_COLUMNS or not isinstance(schedule.get('games'),list):
         raise ValueError('Invalid settlement scope')
+    allow_v3=getattr(ledger,'settlement_evidence_protocol',None)==LIVE_SETTLEMENT_PROTOCOL
+    verify=live_verified_settlement_evidence if allow_v3 else verified_settlement_evidence
     game_dates=set()
     for game in schedule['games']:
         try:
@@ -242,7 +287,7 @@ def settle_final_props(ledger: Ledger, sport: str, schedule: dict) -> dict:
     def unresolved(prediction, reason):
         # A missing refreshed source cannot erase an independently valid stored
         # result. Report its failed recheck separately; do not rewrite it.
-        retained = prediction.get('outcome_source')==AUTO_SOURCE and verified_settlement_evidence(
+        retained = prediction.get('outcome_source')==AUTO_SOURCE and verify(
             prediction,prediction.get('outcome'),prediction.get('outcome_source'),
             prediction.get('outcome_ref'),prediction.get('outcome_observed_at'),
             prediction.get('actual_value'),prediction.get('outcome_evidence'))
@@ -250,18 +295,18 @@ def settle_final_props(ledger: Ledger, sport: str, schedule: dict) -> dict:
     with ledger.connect() as db:
         for prediction in candidates:
             try:
-                matched=_candidate(prediction,sport,schedule['games'])
+                matched=_versioned_candidate(prediction,sport,schedule['games'],db,allow_v3=allow_v3)
                 if matched is None:
                     unresolved(prediction,'final_game_not_matched')
                     continue
-                game,day,line=matched
+                game,day,line,identity_version=matched
                 # Frozen model versions can select different evidence tables.
                 # Neither a result nor a missing row may cross that boundary.
                 stat_key=(day,game['provider_event_id'],game['home_abbr'],game['away_abbr'],
                     prediction.get('player_id'),prediction['prop_type'],
-                    prediction.get('model_version'))
+                    prediction.get('model_version'),identity_version)
                 if stat_key not in stat_cache:
-                    stat_cache[stat_key]=_actual(db,prediction,sport,day,game)
+                    stat_cache[stat_key]=_actual(db,prediction,sport,day,game,identity_version)
                 observed=stat_cache[stat_key]
                 if observed is None:
                     unresolved(prediction,'stat_not_found_or_ambiguous')
@@ -271,15 +316,15 @@ def settle_final_props(ledger: Ledger, sport: str, schedule: dict) -> dict:
                 if not game_time <= provenance['observed_at'].astimezone(timezone.utc) <= datetime.now(timezone.utc):
                     raise StatProvenanceError('Stat observation time is outside the evidence window')
                 outcome='push' if actual==line else ((actual>line)==(prediction['direction']=='over'))
-                resolved.append((prediction,game,outcome,actual,provenance))
+                resolved.append((prediction,game,outcome,actual,provenance,identity_version))
             except StatProvenanceError:
                 unresolved(prediction,'stat_provenance_invalid')
             except (KeyError,TypeError,ValueError,ArithmeticError):
                 unresolved(prediction,'invalid_prediction_or_evidence')
     schedule_observed=utc_timestamp(schedule['captured_at'])
     batches={}
-    for prediction,game,outcome,actual,provenance in resolved:
-        evidence=dict(schedule_identity_version=2,
+    for prediction,game,outcome,actual,provenance,identity_version in resolved:
+        evidence=dict(schedule_identity_version=identity_version,
             provider_event_id=game['provider_event_id'],date=_canonical_date(game['date']),
             home_abbr=game['home_abbr'],away_abbr=game['away_abbr'],
             home_name=game['home_name'],away_name=game['away_name'],completed=True,

@@ -16,9 +16,9 @@ from typing import TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from sportsbet.dashboard import load_snapshot, publish_snapshot
-from sportsbet.diagnostics import error_fields, failure_stage
+from sportsbet.diagnostics import emit_failure, error_fields, failure_stage
 from sportsbet.market_watch import run as watch, DEFAULT_GAME_LIMIT
-from sportsbet.nba_source_asof import ReleaseLedger as Ledger
+from sportsbet.live_settlement_ledger import Ledger
 from sportsbet.model_contract import MODEL_VERSION
 from sportsbet.nba_source_asof import model_version_for
 from sportsbet.picks import build_pick_board
@@ -345,7 +345,8 @@ def create_daily_graph():
         try:
             ledger=Ledger()
         except Exception as exc:
-            return {'settlements':{sport:{'status':'failed','error_type':type(exc).__name__}
+            emit_failure(exc,operation='daily_settlement',stage='ledger')
+            return {'settlements':{sport:dict(status='failed',**error_fields(exc))
                 for sport in state['sports']}}
         results={}
         for sport in state['sports']:
@@ -356,7 +357,8 @@ def create_daily_graph():
                 results[sport]=await asyncio.to_thread(
                     settle_final_props,ledger,sport,state['schedule_evidence'][sport])
             except Exception as exc:
-                results[sport]={'status':'failed','error_type':type(exc).__name__}
+                emit_failure(exc,operation='daily_settlement',stage='settlement')
+                results[sport]=dict(status='failed',**error_fields(exc))
         try:
             publish_snapshot('metrics:all',ledger.report(model_version=MODEL_VERSION))
             publish_snapshot('metrics:recommendations',ledger.report(True,model_version=MODEL_VERSION))
@@ -369,9 +371,10 @@ def create_daily_graph():
                 from sportsbet.quant.history_shadow_audit import publish_history_shadow
                 publish_history_shadow(prediction_rows,sport,publish_snapshot)
         except Exception as exc:
+            emit_failure(exc,operation='daily_settlement',stage='publication')
             for result in results.values():
                 if result['status']=='complete':
-                    result.update(status='failed',error_type=type(exc).__name__)
+                    result.update(status='failed',**error_fields(exc))
         return {'settlements':results}
 
     def report(state):
@@ -388,7 +391,16 @@ def create_daily_graph():
             props={s:{k:v for k,v in r.items() if k not in ('attempts','coverage')} for s,r in state['props'].items()})
         if public:
             result['scope']=PUBLIC_SCOPES[state['mode']]
-        publish_snapshot('pipeline:'+state['mode'],result)
+        try:
+            publish_snapshot('pipeline:'+state['mode'],result)
+        except Exception as exc:
+            if not public:
+                raise
+            # Preserve the local source report without claiming hosted summary
+            # publication or changing any component's original capture clock.
+            emit_failure(exc,operation='daily',stage='report')
+            result.update(status='degraded',
+                report_publication=dict(status='failed',**error_fields(exc)))
         return {'report':result}
 
     graph.add_node('initialize',_diagnosed_node(initialize,'initialize'))

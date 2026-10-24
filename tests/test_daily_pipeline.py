@@ -264,6 +264,50 @@ async def test_settlement_failure_is_redacted_and_degrades_without_suppressing_s
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('stage',['ledger','settlement','publication'])
+@pytest.mark.parametrize('wrapped',[False,True])
+async def test_caught_daily_settlement_database_errors_retain_only_safe_metadata(
+        monkeypatch,capsys,stage,wrapped):
+    from psycopg.errors import QueryCanceled
+    from sqlalchemy.exc import OperationalError
+    failure=QueryCanceled('postgresql://private-db.invalid/private-password')
+    if wrapped:
+        failure=OperationalError('SELECT private_sql',{'private_parameter':'private_value'},failure)
+    stored={}
+    def publish(key,value):
+        if stage=='publication' and key=='metrics:all':
+            raise failure
+        stored[key]=deepcopy(value)
+    def unavailable(*args,**kwargs):
+        raise failure
+    monkeypatch.setattr(daily,'publish_snapshot',publish)
+    monkeypatch.setattr(daily,'refresh_history',lambda *args:{'status':'complete'})
+    monkeypatch.setattr(daily,'watch',AsyncMock(return_value=({'sources':{'kalshi':{
+        'status':'observed','partial_coverage':False}},
+        'captured_at':datetime.now(timezone.utc).isoformat()},None)))
+    if stage=='ledger':
+        monkeypatch.setattr(daily,'Ledger',unavailable)
+    elif stage=='settlement':
+        monkeypatch.setattr(daily,'settle_final_props',unavailable)
+    result=await daily.run(['nfl'],'public_daily',20)
+    failure_result=result['settlements']['nfl']
+    error_type='OperationalError' if wrapped else 'QueryCanceled'
+    assert result['status']=='degraded' and result['execution_ready'] is False
+    assert failure_result['status']=='failed'
+    assert failure_result['error_type']==error_type and failure_result['sqlstate']=='57014'
+    assert stored['pipeline:public_daily']['settlements']==result['settlements']
+    if stage!='publication':
+        assert set(failure_result)=={'status','error_type','sqlstate'}
+    output=capsys.readouterr()
+    assert json.loads(output.err)==dict(schema_version=1,diagnostic_kind='operation_failure',
+        operation='daily_settlement',stage=stage,error_type=error_type,sqlstate='57014')
+    public_text=json.dumps(result)+json.dumps(stored)+output.out+output.err
+    for secret in ('private-db.invalid','private-password','private_sql',
+                   'private_parameter','private_value'):
+        assert secret not in public_text
+
+
+@pytest.mark.asyncio
 async def test_full_monitor_real_collector_shares_budget_and_preserves_other_venues(monkeypatch,tmp_path):
     import json
     import httpx

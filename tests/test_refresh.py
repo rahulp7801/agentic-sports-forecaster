@@ -1,5 +1,10 @@
 from datetime import date
+import json
+import sys
 from unittest.mock import MagicMock, patch
+
+import pytest
+from sqlalchemy.exc import OperationalError
 
 from sportsbet.refresh import refresh
 
@@ -24,6 +29,63 @@ def test_manual_refresh_publishes_failure_then_recovery_without_error_text(monke
     assert stored[-1][1]['coverage']=={'provider':'espn','rows':0}
     monkeypatch.setattr(module,'refresh',lambda *args:{'provider':'nflverse'})
     assert module.refresh_history('nfl',date(2026,9,11))['status']=='complete'
+
+
+@pytest.mark.parametrize('sqlstate,expected',[
+    ('08006','08006'),('57014','57014'),
+    ('08006 https://private-provider.invalid/?key=private-refresh-key',None),
+])
+def test_wrapped_database_failure_publishes_bounded_fields_and_cli_recovers(
+        monkeypatch,capsys,sqlstate,expected):
+    from sportsbet import refresh as module
+
+    class ProviderError(Exception):
+        pass
+
+    private_sql='SELECT PRIVATE_REFRESH_SQL FROM private_table'
+    private_url='postgresql://worker:private-refresh-password@private-db.invalid/database'
+    cause=ProviderError('private-refresh-key '+private_url)
+    cause.sqlstate=sqlstate
+    failure=OperationalError(private_sql,{'private_parameter':'private-refresh-key'},cause)
+    stored=[];calls=[]
+    coverage={'provider':'nflverse','rows':12}
+    monkeypatch.setattr(module,'publish_snapshot',lambda key,value:stored.append((key,value)))
+    monkeypatch.setattr(sys,'argv',['refresh','--sport','nfl'])
+
+    def unavailable(*args):
+        calls.append(args)
+        raise failure
+
+    monkeypatch.setattr(module,'refresh',unavailable)
+    with pytest.raises(SystemExit) as caught:
+        module.main()
+
+    assert caught.value.code==1 and len(calls)==1
+    assert [(key,value['status']) for key,value in stored]==[
+        ('refresh:nfl','running'),('refresh:nfl','failed')]
+    failed=stored[-1][1]
+    assert failed['error_type']=='OperationalError'
+    assert set(failed)=={'status','finished_at','error_type'}|({'sqlstate'} if expected else set())
+    assert failed.get('sqlstate')==expected
+    output=capsys.readouterr()
+    assert json.loads(output.out)=={'sport':'nfl',**failed}
+    published_and_output=json.dumps(stored)+output.out+output.err
+    for secret in ('PRIVATE_REFRESH_SQL','private-refresh-password','private-refresh-key',
+                   'private-db.invalid','private-provider.invalid','private_parameter'):
+        assert secret not in published_and_output
+
+    def available(*args):
+        calls.append(args)
+        return coverage
+
+    monkeypatch.setattr(module,'refresh',available)
+    module.main()
+    assert [(args[0],args[2]) for args in calls]==[('nfl',False),('nfl',False)]
+    recovered=stored[-1][1]
+    assert recovered['status']=='complete' and recovered['coverage']==coverage
+    assert set(recovered)=={'status','finished_at','coverage'}
+    assert json.loads(capsys.readouterr().out)=={'sport':'nfl',**recovered}
+    assert [value['status'] for _,value in stored]==['running','failed','running','complete']
 
 
 def test_opening_season_backfill_and_daily_refresh():
