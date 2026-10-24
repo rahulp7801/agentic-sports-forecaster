@@ -12,21 +12,22 @@ type Detail={observed_at:string;event:{slug:string;title:string;starts_at:string
 const cents=(value:number|null)=>value===null ? '—' : (value*100).toFixed(1)+'¢';
 
 export default function PolymarketResearch({sport}:{sport:Sport}) {
+  return <PolymarketResearchForSport key={sport} sport={sport}/>;
+}
+
+function PolymarketResearchForSport({sport}:{sport:Sport}) {
   const [listing,setListing]=useState<Listing|null>(null);
   const [selected,setSelected]=useState('');
-  const [detail,setDetail]=useState<Detail|null>(null);
   const [error,setError]=useState('');
-  const [detailError,setDetailError]=useState('');
-  const [now,setNow]=useState(0);
+  const [now,setNow]=useState(()=>Date.now());
   useEffect(()=>{
     const update=()=>setNow(Date.now());
-    update();const timer=setInterval(update,5000);
+    const timer=setInterval(update,5000);
     document.addEventListener('visibilitychange',update);window.addEventListener('focus',update);
     return ()=>{clearInterval(timer);document.removeEventListener('visibilitychange',update);window.removeEventListener('focus',update);};
   },[]);
   useEffect(()=>{
     const controller=new AbortController();
-    setListing(null);setSelected('');setDetail(null);setError('');
     async function load() {
       try {
         const response=await fetch('/api/polymarket?sport='+sport,
@@ -41,28 +42,8 @@ export default function PolymarketResearch({sport}:{sport:Sport}) {
     void load();
     return ()=>controller.abort();
   },[sport]);
-  useEffect(()=>{
-    if(!selected)return;
-    const controller=new AbortController();
-    setDetail(null);setDetailError('');
-    async function load() {
-      try {
-        const response=await fetch('/api/polymarket?sport='+sport+'&event='+encodeURIComponent(selected),
-          {signal:controller.signal,cache:'no-store'});
-        if(!response.ok) throw new Error('Contract details unavailable.');
-        const body=await response.json() as Detail;
-        if(!controller.signal.aborted) setDetail(body);
-      } catch {
-        if(!controller.signal.aborted) setDetailError('Contract details are temporarily unavailable.');
-      }
-    }
-    void load();
-    return ()=>controller.abort();
-  },[sport,selected]);
   const events=listing && now ? upcomingMarketEvents(listing.events,now) : [];
   const selectedUpcoming=events.some(event=>event.slug===selected);
-  const activeDetail=detail && selectedUpcoming && detail.event.slug===selected
-    && Date.parse(detail.event.starts_at)>now ? detail : null;
   return <section className={styles.predictionResearch} aria-labelledby="polymarket-title">
     <header className={styles.predictionHeader}>
       <div><small>Public prediction market research</small><h3 id="polymarket-title">Polymarket · {sport.toUpperCase()}</h3></div>
@@ -81,6 +62,35 @@ export default function PolymarketResearch({sport}:{sport:Sport}) {
       </div>}
     </>}
     {selected && !selectedUpcoming && !!events.length && <div className={styles.notice}>Selected event has started. Choose another upcoming event.</div>}
+    {selected && <PolymarketContracts key={selected} sport={sport} selected={selected}
+      selectedUpcoming={selectedUpcoming} now={now}/>}
+  </section>;
+}
+
+function PolymarketContracts({sport,selected,selectedUpcoming,now}:{
+  sport:Sport;selected:string;selectedUpcoming:boolean;now:number;
+}) {
+  const [detail,setDetail]=useState<Detail|null>(null);
+  const [detailError,setDetailError]=useState('');
+  useEffect(()=>{
+    const controller=new AbortController();
+    async function load() {
+      try {
+        const response=await fetch('/api/polymarket?sport='+sport+'&event='+encodeURIComponent(selected),
+          {signal:controller.signal,cache:'no-store'});
+        if(!response.ok) throw new Error('Contract details unavailable.');
+        const body=await response.json() as Detail;
+        if(!controller.signal.aborted) setDetail(body);
+      } catch {
+        if(!controller.signal.aborted) setDetailError('Contract details are temporarily unavailable.');
+      }
+    }
+    void load();
+    return ()=>controller.abort();
+  },[sport,selected]);
+  const activeDetail=detail && selectedUpcoming && detail.event.slug===selected
+    && Date.parse(detail.event.starts_at)>now ? detail : null;
+  return <>
     {detailError && selectedUpcoming && <div className={styles.notice} role="status">{detailError}</div>}
     {selectedUpcoming && !activeDetail && !detailError && <div className={styles.notice}>Loading contract quotes…</div>}
     {activeDetail && <div className={styles.predictionDetail}>
@@ -99,5 +109,5 @@ export default function PolymarketResearch({sport}:{sport:Sport}) {
         </article>)}
       </div>}
     </div>}
-  </section>;
+  </>;
 }
