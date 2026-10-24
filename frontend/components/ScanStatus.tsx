@@ -14,11 +14,14 @@ function tone(state: string) {
 }
 
 export default function ScanStatus({sport}:{sport?:Sport}) {
+  return <SportScanStatus key={sport ?? 'all'} sport={sport} />;
+}
+
+function SportScanStatus({sport}:{sport?:Sport}) {
   const [data, setData] = useState<[Sport, Status][] | null>(null);
   const [error, setError] = useState('');
 
   useEffect(() => {
-    setData(null);setError('');
     const controller = new AbortController();
     async function load() {
       try {

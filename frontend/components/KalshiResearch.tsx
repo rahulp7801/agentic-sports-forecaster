@@ -11,19 +11,22 @@ type Listing={observed_at:string;scope:string;events:Event[]};
 const cents=(value:number|null)=>value===null ? '—' : (value*100).toFixed(1)+'¢';
 
 export default function KalshiResearch({sport}:{sport:Sport}) {
+  return <KalshiResearchForSport key={sport} sport={sport}/>;
+}
+
+function KalshiResearchForSport({sport}:{sport:Sport}) {
   const [listing,setListing]=useState<Listing|null>(null);
   const [selected,setSelected]=useState('');
   const [error,setError]=useState('');
-  const [now,setNow]=useState(0);
+  const [now,setNow]=useState(()=>Date.now());
   useEffect(()=>{
     const update=()=>setNow(Date.now());
-    update();const timer=setInterval(update,5000);
+    const timer=setInterval(update,5000);
     document.addEventListener('visibilitychange',update);window.addEventListener('focus',update);
     return ()=>{clearInterval(timer);document.removeEventListener('visibilitychange',update);window.removeEventListener('focus',update);};
   },[]);
   useEffect(()=>{
     const controller=new AbortController();
-    setListing(null);setSelected('');setError('');
     async function load(){
       try {
         const response=await fetch('/api/kalshi-research?sport='+sport,

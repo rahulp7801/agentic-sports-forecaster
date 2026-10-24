@@ -1,7 +1,7 @@
 'use client';
 import Performance from "@/components/Performance";
 import {REASONS} from '@/components/PredictionEvidence';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import type { EVSignal, Sport } from '@/lib/types';
 import {fetchForecasts} from '@/lib/fetchForecasts';
 import styles from './ResearchViews.module.css';
@@ -311,48 +311,75 @@ function SignalDetailPanel({ signal, onClose, onAddToParlay, inParlay }: {
   );
 }
 
-export default function EVDashboard({ sport, onAddToParlay, parlayIds = new Set() }: EVDashboardProps) {
+type SignalFilter = 'all' | 'eligible' | 'gated';
+type SignalSort = 'ev' | 'kelly' | 'prob';
+
+export default function EVDashboard(props: EVDashboardProps) {
+  const [filter, setFilter] = useState<SignalFilter>('all');
+  const [sortBy, setSortBy] = useState<SignalSort>('ev');
+  return <SportEVDashboard key={props.sport} {...props}
+    filter={filter} setFilter={setFilter} sortBy={sortBy} setSortBy={setSortBy} />;
+}
+
+function SportEVDashboard({ sport, onAddToParlay, parlayIds = new Set(), filter, setFilter, sortBy, setSortBy }:
+  EVDashboardProps & {
+    filter: SignalFilter;
+    setFilter: (value: SignalFilter) => void;
+    sortBy: SignalSort;
+    setSortBy: (value: SignalSort) => void;
+  }) {
   const [data, setData] = useState<SignalCache | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [selected, setSelected] = useState<EVSignal | null>(null);
-  const [filter, setFilter] = useState<'all' | 'eligible' | 'gated'>('all');
-  const [sortBy, setSortBy] = useState<'ev' | 'kelly' | 'prob'>('ev');
   // Game picker
   const [espnGames, setEspnGames] = useState<ESPNGame[]>([]);
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
+  const requestController = useRef<AbortController | null>(null);
+  const requestVersion = useRef(0);
 
-  const fetchSignals = useCallback(async () => {
-    try {
-      const json = await fetchForecasts(sport);
-      setData(json);
-
-    } catch {
-      setData({ generated_at: null, game: null, signals: [], error: 'Failed to fetch signals' });
-    } finally {
-      setLoading(false);
-    }
+  const fetchSignals = useCallback((signal: AbortSignal) => {
+    if (signal.aborted) return;
+    const version = ++requestVersion.current;
+    return fetchForecasts(sport, signal)
+      .then(json => {
+        if (signal.aborted || version !== requestVersion.current) return;
+        setData(json);
+        setLoading(false);
+        setRefreshing(false);
+      })
+      .catch(() => {
+        if (signal.aborted || version !== requestVersion.current) return;
+        setData({ generated_at: null, game: null, signals: [], error: 'Failed to fetch signals' });
+        setLoading(false);
+        setRefreshing(false);
+      });
   }, [sport]);
 
   useEffect(() => {
-    fetchSignals();
+    const controller = new AbortController();
+    requestController.current = controller;
+    void fetchSignals(controller.signal);
     // Fetch ESPN schedule for the game picker
-    fetch(`/api/games?sport=${sport}`, { cache: 'no-store' })
+    fetch(`/api/games?sport=${sport}`, { cache: 'no-store', signal: controller.signal })
       .then(r => r.json())
-      .then(d => setEspnGames(d.games || []))
+      .then(d => {
+        if (!controller.signal.aborted) setEspnGames(d.games || []);
+      })
       .catch(() => {});
+    const timer = setInterval(() => { void fetchSignals(controller.signal); }, 30000);
+    return () => {
+      clearInterval(timer);
+      controller.abort();
+      if (requestController.current === controller) requestController.current = null;
+    };
   }, [fetchSignals, sport]);
 
-  useEffect(() => { setSelectedGameId(null); }, [sport]);
-  useEffect(() => {
-    const timer = setInterval(fetchSignals, 30000);
-    return () => clearInterval(timer);
-  }, [fetchSignals]);
-
-  const handleRefresh = async () => {
+  const handleRefresh = () => {
+    const controller = requestController.current;
+    if (!controller || controller.signal.aborted) return;
     setRefreshing(true);
-    await fetchSignals();
-    setRefreshing(false);
+    void fetchSignals(controller.signal);
   };
 
   // Merge cached games + ESPN games into a unified picker list (deduped by game_id)

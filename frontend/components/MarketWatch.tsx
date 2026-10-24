@@ -47,21 +47,19 @@ function hasPropFunnel(value: Partial<PropFunnel>): value is PropFunnel {
 }
 
 export default function MarketWatch({ sport }: { sport: Sport }) {
+  return <SportMarketWatch key={sport} sport={sport} />;
+}
+
+function SportMarketWatch({ sport }: { sport: Sport }) {
   const [data, setData] = useState<Observation | null>(null);
   const [error, setError] = useState('');
   const [propScreen, setPropScreen] = useState<PropScreen | null>(null);
   const [propError, setPropError] = useState('');
   const [slate,setSlate]=useState<Slate|null>(null);
-  const [now, setNow] = useState(Date.now());
+  const [now, setNow] = useState(0);
 
   useEffect(() => {
     const controller = new AbortController();
-    setData(null);
-    setError('');
-    setPropScreen(null);
-    setPropError('');
-    setSlate(null);
-
     async function load() {
       try {
         const response = await fetch(`/api/markets?sport=${sport}`, { signal: controller.signal, cache: 'no-store' });
