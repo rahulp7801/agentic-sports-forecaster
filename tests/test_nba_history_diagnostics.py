@@ -280,3 +280,106 @@ def test_refresh_failure_snapshot_does_not_expose_implicit_provider_content(monk
     engine.dispose.assert_called_once_with()
     assert records(capsys) == [dict(schema_version=1, diagnostic_kind='operation_failure',
         operation='history_refresh', stage='nba_primary', error_type='ValueError')]
+
+
+@pytest.mark.parametrize('kind', ['schedule', 'player', 'team'])
+@pytest.mark.parametrize('rejection', ['empty', 'confidence'])
+def test_fallback_empty_crosswalk_identifies_only_table_without_writes(monkeypatch, capsys, kind, rejection):
+    sources = {
+        'schedule': (
+            'season,espn_game_id,nba_game_id,game_date,home_espn_team_id,away_espn_team_id,'
+            'nba_home_team_id,nba_away_team_id,match_method,match_confidence\n'
+            '2027,123,0022600001,2026-10-29,1,2,101,102,both,1\n'),
+        'player': (
+            'season,espn_athlete_id,nba_player_id,nba_player_name,match_method,match_confidence\n'
+            '2027,1,1000,PRIVATE_PLAYER,exact_name,1\n'),
+        'team': (
+            'season,espn_team_id,nba_team_id,nba_team_abbreviation,match_method,match_confidence\n'
+            '2027,1,101,LAL,exact_name,1\n'),
+    }
+    sources[kind] = (sources[kind].splitlines()[0] + '\n' if rejection == 'empty'
+                     else sources[kind].replace(',1\n', ',0.999999999\n'))
+    client = MagicMock()
+    session = client.__enter__.return_value
+
+    def response(url):
+        table = next(name for name in sources if f'nba_{name}_crosswalk_2027.csv' in url)
+        return httpx.Response(200, text=sources[table], request=httpx.Request('GET', url))
+
+    session.get.side_effect = response
+    monkeypatch.setattr(nba_espn.httpx, 'Client', lambda **kwargs: client)
+    monkeypatch.setattr(nba_espn.time, 'sleep', lambda _: None)
+    archive, store = MagicMock(), MagicMock()
+    monkeypatch.setattr(nba_espn, 'write_archive', archive)
+    monkeypatch.setattr(nba_espn, 'store_rows', store)
+    original_validation_error = nba_espn._validation_error
+    failures = []
+
+    def capture_error(*args, **kwargs):
+        error = original_validation_error(*args, **kwargs)
+        failures.append(error)
+        return error
+
+    monkeypatch.setattr(nba_espn, '_validation_error', capture_error)
+    primary = MagicMock(side_effect=RequestException('PRIVATE_PRIMARY_BODY'))
+    fallback = MagicMock(side_effect=nba_espn.refresh_recent)
+    engine = setup_refresh(monkeypatch, primary, fallback)
+    with pytest.raises(ValueError, match='^No verified crosswalk identities$') as raised:
+        refresh_module.refresh('nba', date(2026, 10, 30))
+    assert type(raised.value) is ValueError and failures == [raised.value]
+    primary.assert_called_once_with(2026, engine)
+    fallback.assert_called_once_with(2026, date(2026, 10, 30), engine)
+    assert session.get.call_count == 3
+    engine.connect.assert_not_called()
+    engine.begin.assert_not_called()
+    archive.assert_not_called()
+    store.assert_not_called()
+    engine.dispose.assert_called_once_with()
+    assert records(capsys) == [
+        validation_record('crosswalk_empty') | {'crosswalk_kind': kind},
+        dict(schema_version=1, diagnostic_kind='operation_failure',
+             operation='history_refresh', stage='nba_fallback', error_type='ValueError'),
+    ]
+
+
+@pytest.mark.parametrize('kind', ['schedule', 'player', 'team'])
+def test_crosswalk_kind_is_finite_scoped_metadata(kind):
+    error = ValueError('PRIVATE_NAME /private/path source-sha256')
+    error.add_note('PRIVATE_NOTE')
+    base = validation_record('crosswalk_empty')
+    assert diagnostics.failure_record(error, operation='nba_history_validation',
+                                      stage='crosswalk_empty') == base
+    assert diagnostics.failure_record(error, operation='nba_history_validation',
+                                      stage='crosswalk_empty', crosswalk_kind=kind) == (
+                                          base | {'crosswalk_kind': kind})
+    for operation, stage in [('daily', 'histories'), ('nba_history_validation', 'crosswalk_season')]:
+        with pytest.raises(ValueError, match='^Invalid crosswalk diagnostic kind$'):
+            diagnostics.failure_record(error, operation=operation, stage=stage, crosswalk_kind=kind)
+
+
+@pytest.mark.parametrize('kind', ['', 'PRIVATE_PLAYER', '/private/path', 'a' * 64,
+                                'schedule\nPRIVATE_BODY', True, 1, ['schedule']])
+def test_crosswalk_kind_rejects_non_enum_metadata(kind):
+    with pytest.raises(ValueError, match='^Invalid crosswalk diagnostic kind$'):
+        diagnostics.failure_record(ValueError('PRIVATE_BODY'), operation='nba_history_validation',
+                                   stage='crosswalk_empty', crosswalk_kind=kind)
+
+
+def test_crosswalk_kind_does_not_accept_string_subclasses():
+    class Kind(str):
+        pass
+
+    with pytest.raises(ValueError, match='^Invalid crosswalk diagnostic kind$'):
+        diagnostics.failure_record(ValueError('PRIVATE_BODY'), operation='nba_history_validation',
+                                   stage='crosswalk_empty', crosswalk_kind=Kind('schedule'))
+
+
+def test_crosswalk_kind_broken_stream_preserves_original_guard(monkeypatch):
+    class BrokenStream:
+        def write(self, value):
+            raise OSError('PRIVATE_STREAM_FAILURE')
+
+    monkeypatch.setattr(diagnostics.sys, 'stderr', BrokenStream())
+    with pytest.raises(ValueError, match='^No verified crosswalk identities$') as raised:
+        nba_espn.index_rows([], 'source', ('target',), 'exact_name', 2027, crosswalk_kind='player')
+    assert type(raised.value) is ValueError
