@@ -54,19 +54,30 @@ def error_fields(error: Exception) -> dict:
     return result
 
 
-def failure_record(error: Exception, *, operation: str, stage: str) -> dict:
+def failure_record(error: Exception, *, operation: str, stage: str,
+                   crosswalk_kind: str | None = None) -> dict:
     """Allowlisted operational metadata only; never inspect exception text/notes."""
     if (type(operation) is not str or operation not in FAILURE_STAGES
             or type(stage) is not str or stage not in FAILURE_STAGES[operation]):
         raise ValueError('Invalid failure diagnostic scope')
-    return {'schema_version': 1, 'diagnostic_kind': 'operation_failure',
-            'operation': operation, 'stage': stage, **error_fields(error)}
+    if crosswalk_kind is not None and (
+            operation != 'nba_history_validation' or stage != 'crosswalk_empty'
+            or type(crosswalk_kind) is not str
+            or crosswalk_kind not in ('schedule', 'player', 'team')):
+        raise ValueError('Invalid crosswalk diagnostic kind')
+    result = {'schema_version': 1, 'diagnostic_kind': 'operation_failure',
+              'operation': operation, 'stage': stage, **error_fields(error)}
+    if crosswalk_kind is not None:
+        result['crosswalk_kind'] = crosswalk_kind
+    return result
 
 
-def emit_failure(error: Exception, *, operation: str, stage: str) -> None:
+def emit_failure(error: Exception, *, operation: str, stage: str,
+                 crosswalk_kind: str | None = None) -> None:
     """Best effort: a diagnostic failure must not replace the original failure."""
     try:
-        print(json.dumps(failure_record(error, operation=operation, stage=stage),
+        print(json.dumps(failure_record(error, operation=operation, stage=stage,
+                                       crosswalk_kind=crosswalk_kind),
                          separators=(',', ':'), allow_nan=False), file=sys.stderr)
     except Exception:
         pass

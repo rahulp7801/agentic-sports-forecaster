@@ -26,14 +26,17 @@ CROSSWALKS = 'https://github.com/sportsdataverse/sportsdataverse-data/releases/d
 ESPN = 'https://site.api.espn.com/apis/site/v2/sports/basketball/nba'
 
 
-def _validation_error(stage: str, message: str) -> ValueError:
+def _validation_error(stage: str, message: str, *,
+                      crosswalk_kind: str | None = None) -> ValueError:
     """Identify an existing rejection without logging source text or identities."""
     error=ValueError(message)
-    emit_failure(error,operation='nba_history_validation',stage=stage)
+    emit_failure(error,operation='nba_history_validation',stage=stage,
+                 crosswalk_kind=crosswalk_kind)
     return error
 
 
-def index_rows(rows: list[dict], key: str, required: tuple[str, ...], method: str, year: int) -> dict:
+def index_rows(rows: list[dict], key: str, required: tuple[str, ...], method: str, year: int,
+               *, crosswalk_kind: str | None = None) -> dict:
     result={}
     for row in rows:
         if row.get('season')!=str(year):
@@ -49,7 +52,8 @@ def index_rows(rows: list[dict], key: str, required: tuple[str, ...], method: st
             raise _validation_error('crosswalk_identity','Ambiguous crosswalk identity')
         result[identity]=row
     if not result:
-        raise _validation_error('crosswalk_empty','No verified crosswalk identities')
+        raise _validation_error('crosswalk_empty','No verified crosswalk identities',
+                                crosswalk_kind=crosswalk_kind)
     target_ids=[row[required[0]] for row in result.values()]
     if len(set(target_ids))!=len(target_ids):
         raise _validation_error('crosswalk_target','Crosswalk target has multiple source identities')
@@ -184,9 +188,11 @@ def refresh_recent(season: int, today: date, engine) -> dict:
         tables={kind:list(csv.DictReader(io.StringIO(fetch(f'{CROSSWALKS}/nba_{kind}_crosswalk_{year}.csv')[0])))
                 for kind in ('schedule','player','team')}
         games=index_rows(tables['schedule'],'espn_game_id',('nba_game_id','game_date','home_espn_team_id',
-            'away_espn_team_id','nba_home_team_id','nba_away_team_id'),'both',year)
-        players=index_rows(tables['player'],'espn_athlete_id',('nba_player_id','nba_player_name'),'exact_name',year)
-        teams=index_rows(tables['team'],'espn_team_id',('nba_team_id','nba_team_abbreviation'),'exact_name',year)
+            'away_espn_team_id','nba_home_team_id','nba_away_team_id'),'both',year,crosswalk_kind='schedule')
+        players=index_rows(tables['player'],'espn_athlete_id',('nba_player_id','nba_player_name'),
+                           'exact_name',year,crosswalk_kind='player')
+        teams=index_rows(tables['team'],'espn_team_id',('nba_team_id','nba_team_abbreviation'),
+                         'exact_name',year,crosswalk_kind='team')
         with engine.connect() as conn:
             known=set(conn.execute(text('SELECT game_id FROM nba_player_gamelogs WHERE season=:season GROUP BY game_id HAVING count(*)>=10 AND count(DISTINCT team_abbreviation)=2'),{'season':season}).scalars())
             identities=conn.execute(text("SELECT DISTINCT player_id,player_name FROM nba_player_gamelogs WHERE source_provider='nba' AND player_name IS NOT NULL")).all()
