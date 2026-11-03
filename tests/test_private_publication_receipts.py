@@ -143,6 +143,98 @@ def test_receipt_main_distinguishes_connection_read_mismatch_and_success(monkeyp
         assert json.loads(output.out)=={'verified_snapshot_receipts':1} and output.err==''
 
 
+@pytest.mark.parametrize('fault,stage', [
+    (None, None), ('repeated_read', 'snapshot_read'), ('mismatch', 'verify'),
+    ('cancel', 'snapshot_read'), ('replay_close', 'close'), ('first_cleanup', 'close'),
+])
+def test_interrupted_native_read_replays_only_the_original_receipt(monkeypatch, tmp_path, capsys, fault, stage):
+    from psycopg.errors import ConnectionFailure, QueryCanceled
+
+    captured = '2026-11-03T17:00:00.123456+00:00'
+    changed = '2026-11-03T17:01:00.123456+00:00'
+    receipt = tmp_path / 'receipt.json'
+    receipt.write_text(json.dumps({'markets': {'nfl': {'captured_at': captured}},
+                                   'slates': {'cfb': {'captured_at': captured}}}), encoding='utf-8')
+    dsn = 'postgresql://fixture@localhost/db?sslmode=verify-full'
+    first_error = ConnectionFailure('private_first_interruption')
+    terminal = QueryCanceled('private_cancel') if fault == 'cancel' else ConnectionFailure('private_terminal')
+    opened = []
+    closed = []
+    reads = []
+
+    class Connection:
+        def __init__(self, attempt):
+            self.attempt = attempt
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            closed.append(self.attempt)
+            if (self.attempt, fault) in ((1, 'first_cleanup'), (2, 'replay_close')):
+                raise terminal
+
+        def execute(self, query, params):
+            assert query == "SELECT payload -> 'captured_at' FROM public.dashboard_snapshots WHERE snapshot_key=%s"
+            key, = params
+            reads.append((self.attempt, key))
+            if self.attempt == 1 and key == 'slate:cfb':
+                # Even if the report path changes, retry only the report already loaded by main.
+                receipt.write_text(json.dumps({'slates': {'cfb': {'captured_at': changed}}}), encoding='utf-8')
+                raise first_error
+            if self.attempt == 2 and key == 'slate:cfb' and fault in ('repeated_read', 'cancel'):
+                raise terminal
+            value = changed if self.attempt == 2 and fault == 'mismatch' else captured
+            return SimpleNamespace(fetchone=lambda: (value,))
+
+    def connect(value, **kwargs):
+        assert value == dsn
+        assert kwargs == {'connect_timeout': 5,
+                          'options': '-c statement_timeout=5000 -c default_transaction_read_only=on'}
+        assert len(opened) == len(closed)
+        connection = Connection(len(opened) + 1)
+        opened.append(connection)
+        return connection
+
+    monkeypatch.setattr(module.psycopg, 'connect', connect)
+    monkeypatch.setenv('PUBLIC_DATA_REPORT_PATH', str(receipt))
+    monkeypatch.setenv('DATABASE_URL', dsn)
+    if fault is None:
+        module.main()
+    else:
+        with pytest.raises(ValueError if fault == 'mismatch' else type(terminal)) as raised:
+            module.main()
+        if fault != 'mismatch':
+            assert raised.value is terminal
+
+    output = capsys.readouterr()
+    assert 'private_' not in output.out + output.err
+    expected_reads = [(1, 'markets:nfl'), (1, 'slate:cfb')]
+    diagnostic = {'schema_version': 1, 'operation': 'published_snapshot_receipt'}
+    expected_diagnostics = []
+    if fault == 'first_cleanup':
+        assert len(opened) == 1 and closed == [1]
+    else:
+        assert len(opened) == 2 and closed == [1, 2]
+        expected_reads.append((2, 'markets:nfl'))
+        if fault != 'mismatch':
+            expected_reads.append((2, 'slate:cfb'))
+        expected_diagnostics.append(dict(diagnostic, diagnostic_kind='operation_retry', stage='snapshot_read',
+                                         error_type='ConnectionFailure', sqlstate='08006'))
+    assert reads == expected_reads
+    if fault is None:
+        assert json.loads(output.out) == {'verified_snapshot_receipts': 2}
+    else:
+        assert not output.out
+        failure = dict(diagnostic, diagnostic_kind='operation_failure', stage=stage)
+        if fault == 'mismatch':
+            failure['error_type'] = 'ValueError'
+        else:
+            failure.update(error_type=type(terminal).__name__, sqlstate=terminal.sqlstate)
+        expected_diagnostics.append(failure)
+    assert [json.loads(line) for line in output.err.splitlines()] == expected_diagnostics
+
+
 @pytest.mark.parametrize('value',[
     '2026-10-06T20:00:00+00:00', None, 17, True,
     ['2026-10-06T20:00:00+00:00'], {'nested':'2026-10-06T20:00:00+00:00'},
