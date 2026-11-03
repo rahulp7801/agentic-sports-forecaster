@@ -106,7 +106,12 @@ function SportMarketWatch({ sport }: { sport: Sport }) {
     void load();
     void loadProps();
     void loadSlate();
-    const timer = setInterval(() => { void load(); void loadProps(); void loadSlate(); }, 60_000);
+    const timer = setInterval(() => {
+      setNow(Date.now());
+      void load();
+      void loadProps();
+      void loadSlate();
+    }, 60_000);
     return () => { controller.abort(); clearInterval(timer); };
   }, [sport]);
 
