@@ -2,11 +2,12 @@
 import importlib.util
 import json
 import os
+import sys
 from pathlib import Path
 from datetime import datetime
 
 import psycopg
-from sportsbet.diagnostics import emit_failure
+from sportsbet.diagnostics import emit_failure, failure_record
 
 CAPTURE_QUERY = "SELECT payload -> 'captured_at' FROM public.dashboard_snapshots WHERE snapshot_key=%s"
 
@@ -44,6 +45,16 @@ def read_capture(connection, key):
     return {'captured_at': row[0]} if row else None
 
 
+def emit_read_retry(error: Exception) -> None:
+    try:
+        record = failure_record(error, operation='published_snapshot_receipt', stage='snapshot_read')
+        record['diagnostic_kind'] = 'operation_retry'
+        print(json.dumps(record, separators=(',', ':'), allow_nan=False), file=sys.stderr)
+    except Exception:
+        # A diagnostic failure must not replace the interrupted read.
+        pass
+
+
 def main():
     stage = 'receipt'
     try:
@@ -57,17 +68,34 @@ def main():
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         dsn = module.hosted_read_dsn(os.environ['DATABASE_URL'])
-        stage = 'connect'
-        with psycopg.connect(dsn, connect_timeout=5, options='-c statement_timeout=5000 -c default_transaction_read_only=on') as conn:
-            def read(key):
-                nonlocal stage
-                stage = 'snapshot_read'
-                value = read_capture(conn, key)
-                stage = 'verify'
-                return value
-            stage = 'verify'
-            count = verify_captures(report, read)
-            stage = 'close'
+        for attempt in range(2):
+            interrupted_read = None
+            try:
+                stage = 'connect'
+                with psycopg.connect(dsn, connect_timeout=5,
+                                     options='-c statement_timeout=5000 -c default_transaction_read_only=on') as conn:
+                    def read(key):
+                        nonlocal stage, interrupted_read
+                        stage = 'snapshot_read'
+                        try:
+                            value = read_capture(conn, key)
+                        except psycopg.errors.ConnectionFailure as error:
+                            interrupted_read = error
+                            raise
+                        stage = 'verify'
+                        return value
+                    stage = 'verify'
+                    count = verify_captures(report, read)
+                    stage = 'close'
+            except Exception as error:
+                if interrupted_read is not None and error is not interrupted_read:
+                    stage = 'close'
+                # Only the original read error may trigger a replay after the connection closes.
+                if attempt or error is not interrupted_read:
+                    raise
+                emit_read_retry(error)
+            else:
+                break
         stage = 'output'
         print(json.dumps({'verified_snapshot_receipts': count}))
     except Exception as error:
