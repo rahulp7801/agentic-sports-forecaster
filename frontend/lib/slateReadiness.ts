@@ -98,9 +98,14 @@ function cfbSettlementReport(value:unknown) {
     || typeof report.settlement!=='object' || Array.isArray(report.settlement)) return null;
   const settlement=report.settlement as Record<string,unknown>;
   if(settlement.sport!=='cfb' || settlement.execution_ready!==false
-    || (settlement.status!=='complete' && settlement.status!=='degraded')
+    || (settlement.status!=='complete' && settlement.status!=='degraded')) return null;
+  const reasons=settlement.reasons as Record<string,unknown>|undefined;
+  const missingStats=(count(reasons?.stat_not_found_or_ambiguous) ?? 0)
+    +(count(reasons?.stat_provenance_invalid) ?? 0);
+  if(report.final_stat_evidence_pending!==missingStats
+    || (reason==='final_stat_evidence_unavailable')!==(missingStats>0)
     || (status==='complete' && (settlement.status!=='complete' || report.schedule_status!=='complete'
-      || report.final_stat_evidence_pending!==0))) return null;
+      || missingStats!==0))) return null;
   // The dedicated worker can be degraded even when its bounded schedule pass completes.
   return {finished_at,settlements:{cfb:{...settlement,status,reason}}};
 }

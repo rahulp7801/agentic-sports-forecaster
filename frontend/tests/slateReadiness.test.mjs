@@ -118,6 +118,10 @@ test('CFB slate preserves degraded final-stat evidence and blocked history statu
   assert.equal(value.blocked,'Waiting for verified final player stats');
   assert.deepEqual(value.reasons,[{label:'Final player stat missing or ambiguous',count:19}]);
   assert.equal(JSON.stringify(value).includes('not display data'),false);
+  for(const patch of [{status:'complete',final_stat_evidence_pending:0},{reason:undefined},{final_stat_evidence_pending:18}]) {
+    const invalid={...report,...patch};
+    assert.equal(settlementProgress([],'cfb',now,invalid),null);
+  }
   const blocked=settlementProgress([olderCfb],'cfb',now,cfbReport({status:'blocked',
     reason:'history_refresh_unavailable',settlement:undefined}));
   assert.equal(blocked.status,'blocked');assert.equal(blocked.candidates,null);
