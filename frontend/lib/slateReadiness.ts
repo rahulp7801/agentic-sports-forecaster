@@ -85,9 +85,32 @@ export function slateReadiness(games:SlateGame[],scan:Record<string,unknown>|nul
   }).sort((a,b)=>Date.parse(a.game_time)-Date.parse(b.game_time));
 }
 
-export function settlementProgress(reports:unknown[],sport:Sport,now=Date.now()) {
+function cfbSettlementReport(value:unknown) {
+  if(!value || typeof value!=='object' || Array.isArray(value)) return null;
+  const report=value as Record<string,unknown>;
+  if(report.mode!=='public_cfb_settlement' || report.sport!=='cfb' || report.execution_ready!==false) return null;
+  const {status,reason,finished_at}=report;
+  if(status==='blocked' || status==='failed') {
+    if(report.settlement!==undefined) return null;
+    return {finished_at,settlements:{cfb:{status,reason}}};
+  }
+  if((status!=='complete' && status!=='degraded') || !report.settlement
+    || typeof report.settlement!=='object' || Array.isArray(report.settlement)) return null;
+  const settlement=report.settlement as Record<string,unknown>;
+  if(settlement.sport!=='cfb' || settlement.execution_ready!==false
+    || (settlement.status!=='complete' && settlement.status!=='degraded')
+    || (status==='complete' && (settlement.status!=='complete' || report.schedule_status!=='complete'
+      || report.final_stat_evidence_pending!==0))) return null;
+  // The dedicated worker can be degraded even when its bounded schedule pass completes.
+  return {finished_at,settlements:{cfb:{...settlement,status,reason}}};
+}
+
+export function settlementProgress(reports:unknown[],sport:Sport,now=Date.now(),cfbReport?:unknown) {
   const values=reports.filter(value=>value && typeof value==='object' && !Array.isArray(value)) as Array<Record<string,unknown>>;
-  const latest=values.filter(value=>stamp(value.finished_at) && Date.parse(value.finished_at as string)<=now+60000
+  const dedicated=sport==='cfb' ? cfbSettlementReport(cfbReport) : null;
+  const candidatesForLatest=values.filter(value=>value.mode!=='public_cfb_settlement');
+  if(dedicated) candidatesForLatest.unshift(dedicated);
+  const latest=candidatesForLatest.filter(value=>stamp(value.finished_at) && Date.parse(value.finished_at as string)<=now+60000
     && ['complete','degraded','blocked','failed'].includes(String(
       (value.settlements as Record<string,Record<string,unknown>>|undefined)?.[sport]?.status)))
     .sort((a,b)=>Date.parse(b.finished_at as string)-Date.parse(a.finished_at as string))[0];
@@ -109,7 +132,8 @@ export function settlementProgress(reports:unknown[],sport:Sport,now=Date.now())
   return {checked_at:latest.finished_at as string,status:String(result.status),stale:now-Date.parse(latest.finished_at as string)>36*3600000,
     candidates,settled,pending,retained_verified,retained_accounting:result.retained_verified!==undefined,
     outside_schedule:count(result.outside_schedule),
-    blocked:result.reason==='history_refresh_unavailable' ? 'Waiting for verified player-history refresh' : null,
+    blocked:result.reason==='history_refresh_unavailable' ? 'Waiting for verified player-history refresh'
+      : sport==='cfb' && result.reason==='final_stat_evidence_unavailable' ? 'Waiting for verified final player stats' : null,
     retained_recheck_reasons:retainedReasons,
     reasons:Object.entries(reasons).flatMap(([key,label])=>count(raw[key]) ? [{label,count:count(raw[key])!}] : [])};
 }

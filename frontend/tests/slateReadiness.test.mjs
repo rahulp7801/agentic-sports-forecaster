@@ -88,6 +88,54 @@ test('settlement progress cannot fabricate verified totals from impossible count
     settlements:{nfl:{status:'not_requested'}}}],'nfl',now).settled,2);
   assert.equal(settlementProgress([{...report,settlements:{nfl:{...report.settlements.nfl,settled:20}}}],'nfl',now),null);
 });
+
+const emptyCfbSettlement={sport:'cfb',status:'complete',execution_ready:false,candidates:0,settled:0,
+  retained_verified:0,pending:0,outside_schedule:537,reasons:{},retained_recheck_reasons:{}};
+const cfbReport=(patch={})=>({mode:'public_cfb_settlement',sport:'cfb',status:'complete',execution_ready:false,
+  finished_at:new Date(now).toISOString(),schedule_status:'complete',final_stat_evidence_pending:0,
+  settlement:emptyCfbSettlement,...patch});
+const olderCfb={finished_at:new Date(now-1000).toISOString(),settlements:{cfb:{...emptyCfbSettlement,outside_schedule:9}}};
+
+test('CFB slate uses the latest dedicated check without turning out-of-window records into pending results',()=>{
+  const report=cfbReport({finished_at:'2026-09-23T11:00:00-07:00'});
+  const current=Date.parse(report.finished_at);
+  const old={...olderCfb,finished_at:new Date(current-1000).toISOString()};
+  const value=settlementProgress([old],'cfb',current,report);
+  assert.equal(value.checked_at,report.finished_at);
+  assert.equal(value.status,'complete');assert.equal(value.candidates,0);
+  assert.equal(value.pending,0);assert.equal(value.outside_schedule,537);
+  for(const sport of ['nfl','nba']) assert.equal(settlementProgress([old],sport,current,report),null);
+  const newer={...old,finished_at:new Date(current+1000).toISOString()};
+  assert.equal(settlementProgress([newer],'cfb',current,report).outside_schedule,9);
+});
+
+test('CFB slate preserves degraded final-stat evidence and blocked history status',()=>{
+  const report=cfbReport({status:'degraded',reason:'final_stat_evidence_unavailable',final_stat_evidence_pending:19,
+    private:'not display data',settlement:{...emptyCfbSettlement,candidates:103,settled:84,pending:19,
+      reasons:{stat_not_found_or_ambiguous:19,private:'not display data'}}});
+  const value=settlementProgress([olderCfb],'cfb',now,report);
+  assert.equal(value.status,'degraded');assert.equal(value.pending,19);
+  assert.equal(value.blocked,'Waiting for verified final player stats');
+  assert.deepEqual(value.reasons,[{label:'Final player stat missing or ambiguous',count:19}]);
+  assert.equal(JSON.stringify(value).includes('not display data'),false);
+  const blocked=settlementProgress([olderCfb],'cfb',now,cfbReport({status:'blocked',
+    reason:'history_refresh_unavailable',settlement:undefined}));
+  assert.equal(blocked.status,'blocked');assert.equal(blocked.candidates,null);
+  assert.equal(blocked.blocked,'Waiting for verified player-history refresh');
+});
+
+test('CFB settlement rejects wrong scope or invalid clocks and keeps newest malformed counts fail closed',()=>{
+  for(const patch of [{mode:'public_monitor'},{sport:'nfl'},{status:'not_requested'},{execution_ready:true},
+    {settlement:{...emptyCfbSettlement,sport:'nfl'}},{settlement:{...emptyCfbSettlement,status:'degraded'}},
+    {finished_at:'2026-09-23T18:00:00'},{finished_at:new Date(now+60001).toISOString()}]) {
+    const report=cfbReport({...patch,settlements:{cfb:emptyCfbSettlement}});
+    assert.equal(settlementProgress([olderCfb],'cfb',now,report).checked_at,olderCfb.finished_at);
+  }
+  assert.equal(settlementProgress([cfbReport({sport:'nfl',settlements:{cfb:emptyCfbSettlement}})],'cfb',now),null);
+  assert.equal(settlementProgress([olderCfb],'cfb',now,cfbReport({settlement:{...emptyCfbSettlement,candidates:1}})),null);
+  const invalidNewer={finished_at:new Date(now+1000).toISOString(),settlements:{cfb:{...emptyCfbSettlement,candidates:1}}};
+  assert.equal(settlementProgress([olderCfb,invalidNewer],'cfb',now,cfbReport()),null);
+});
 test('static retrospective demo retains both correct and missed baselines and never produces a pick or profit',()=>{
   const results=WEEK_ONE_DEMO.map(demoResult);assert.equal(results.filter(r=>r.correct).length,2);
   assert.equal(WEEK_ONE_DEMO[DEFAULT_DEMO_INDEX].player,'Brock Purdy');
