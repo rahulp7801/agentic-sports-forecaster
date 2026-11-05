@@ -1,4 +1,5 @@
 """Offline regressions for bounded NBA history failure diagnostics."""
+import hashlib
 import json
 from datetime import date, datetime, timezone
 from unittest.mock import MagicMock
@@ -282,9 +283,10 @@ def test_refresh_failure_snapshot_does_not_expose_implicit_provider_content(monk
         operation='history_refresh', stage='nba_primary', error_type='ValueError')]
 
 
-@pytest.mark.parametrize('kind', ['schedule', 'player', 'team'])
-@pytest.mark.parametrize('rejection', ['empty', 'confidence'])
-def test_fallback_empty_crosswalk_identifies_only_table_without_writes(monkeypatch, capsys, kind, rejection):
+@pytest.mark.parametrize(('kind', 'rejection'), [
+    (kind, rejection) for kind in ('schedule', 'player', 'team') for rejection in ('empty', 'confidence')
+] + [('team', 'mixed')])
+def test_fallback_empty_crosswalk_reports_eligibility_without_database_io(monkeypatch, capsys, kind, rejection):
     sources = {
         'schedule': (
             'season,espn_game_id,nba_game_id,game_date,home_espn_team_id,away_espn_team_id,'
@@ -297,8 +299,15 @@ def test_fallback_empty_crosswalk_identifies_only_table_without_writes(monkeypat
             'season,espn_team_id,nba_team_id,nba_team_abbreviation,match_method,match_confidence\n'
             '2027,1,101,LAL,exact_name,1\n'),
     }
-    sources[kind] = (sources[kind].splitlines()[0] + '\n' if rejection == 'empty'
-                     else sources[kind].replace(',1\n', ',0.999999999\n'))
+    if rejection == 'empty':
+        sources[kind] = sources[kind].splitlines()[0] + '\n'
+    elif rejection == 'confidence':
+        sources[kind] = sources[kind].replace(',1\n', ',0.999999999\n')
+    else:
+        sources[kind] = sources[kind].splitlines()[0] + '\n' + (
+            '2027,1,101,LAL,PRIVATE_METHOD,1\n'
+            '2027,2,102,BOS,exact_name,0.999999999\n'
+            '2027,3,103,,exact_name,1.0\n')
     client = MagicMock()
     session = client.__enter__.return_value
 
@@ -335,11 +344,29 @@ def test_fallback_empty_crosswalk_identifies_only_table_without_writes(monkeypat
     archive.assert_not_called()
     store.assert_not_called()
     engine.dispose.assert_called_once_with()
+    expected = validation_record('crosswalk_empty') | {'crosswalk_kind': kind}
+    if kind == 'team':
+        parsed, method, confidence = {'empty': (0, 0, 0), 'confidence': (1, 1, 0), 'mixed': (3, 2, 1)}[rejection]
+        expected.update(crosswalk_eligibility=dict(parsed=parsed, exact_method=method,
+            exact_confidence=confidence, required_fields=0),
+            crosswalk_asset_sha256=hashlib.sha256(sources[kind].encode()).hexdigest())
     assert records(capsys) == [
-        validation_record('crosswalk_empty') | {'crosswalk_kind': kind},
+        expected,
         dict(schema_version=1, diagnostic_kind='operation_failure',
              operation='history_refresh', stage='nba_fallback', error_type='ValueError'),
     ]
+
+
+def test_team_crosswalk_eligibility_rejects_wrong_scope_and_unbounded_metadata():
+    options = dict(operation='nba_history_validation', stage='crosswalk_empty', crosswalk_kind='team',
+                   crosswalk_eligibility=(3, 2, 1, 0), crosswalk_asset_sha256='a'*64)
+    for patch in [{'crosswalk_kind': 'player'}, {'crosswalk_kind': None},
+                  {'crosswalk_eligibility': (2, 3, 1, 0)}, {'crosswalk_eligibility': (3, 2, 1, 1)},
+                  {'crosswalk_eligibility': (3, 2, True, 0)}, {'crosswalk_eligibility': (2**53, 2, 1, 0)},
+                  {'crosswalk_eligibility': None}, {'crosswalk_asset_sha256': None},
+                  {'crosswalk_asset_sha256': 'A'*64}, {'crosswalk_asset_sha256': 'https://private.example'}]:
+        with pytest.raises(ValueError, match='^Invalid team crosswalk diagnostic$'):
+            diagnostics.failure_record(ValueError('PRIVATE_BODY'), **(options | patch))
 
 
 @pytest.mark.parametrize('kind', ['schedule', 'player', 'team'])
