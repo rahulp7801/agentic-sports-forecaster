@@ -5,9 +5,11 @@ import type { Sport } from '@/lib/types';
 import { marketFreshness } from '@/lib/marketFreshness';
 import {
   marketCoverageText,
+  propLinkageCoverageText,
   propQuoteCoverageText,
   sourceFailureText,
   type MarketCoverage,
+  type PropLinkageCoverage,
   type PropQuoteCoverage,
 } from '@/lib/marketCoverage';
 import PolymarketResearch from './PolymarketResearch';
@@ -20,8 +22,8 @@ interface Observation {
   captured_at: string;
   scope: string;
   sources: Record<string, { status: string; count: number; partial_coverage: boolean; reason?: string;
-    coverage?: (MarketCoverage & Partial<PropQuoteCoverage> & { discovery_complete: boolean; omitted_markets: number;
-      prop_discovery_complete?: boolean; prop_series_observed?: number; prop_series_expected?: number; prop_open_markets?: number; prop_open_events?: number; prop_linked_markets?: number; prop_linked_events?: number; prop_player_resolved_quote_markets?: number }) }>;
+    coverage?: (MarketCoverage & PropLinkageCoverage & Partial<PropQuoteCoverage> & { discovery_complete: boolean; omitted_markets: number;
+      prop_series_observed?: number; prop_series_expected?: number; prop_player_resolved_quote_markets?: number }) }>;
   comparisons: { identity: string; kind: string; title: string; gross_cost: string; gross_gap_to_one_dollar: string;
     reasons: string[]; legs: { book: string; team: string; cost: string; observed_at: string }[];
     exchange_fee_scenarios?: { combined_cost: { direct: string; non_direct: string }; scope: string; schedule_effective_date: string };
@@ -151,8 +153,9 @@ function SportMarketWatch({ sport }: { sport: Sport }) {
       {data && (
         <>
           <div className={styles.sourceGrid}>
-            {Object.entries(data.sources).map(([name, source]) => (
-              <article className={styles.sourceCard} key={name}>
+            {Object.entries(data.sources).map(([name, source]) => {
+              const propLinkage=source.coverage ? propLinkageCoverageText(source.coverage) : null;
+              return <article className={styles.sourceCard} key={name}>
                 <div className={styles.sourceCardHeader}><span>{name}</span><span>{source.reason==='collection_cadence' ? 'Waiting for capture' : SOURCE_LABELS[source.status] ?? 'Unavailable'}</span></div>
                 <p>{source.count} source records{source.partial_coverage ? ' · partial coverage' : ''}
                   {sourceFailureText(source.reason) && ` · ${sourceFailureText(source.reason)}`}
@@ -161,12 +164,12 @@ function SportMarketWatch({ sport }: { sport: Sport }) {
                   {source.coverage && ` · ${marketCoverageText(source.coverage)}`}
                   {source.coverage && !source.coverage.discovery_complete && ' · discovery incomplete'}
                   {source.coverage && source.coverage.omitted_markets > 0 && ` · ${source.coverage.omitted_markets} markets omitted`}
-                  {source.coverage?.prop_series_expected !== undefined && ` · ${source.coverage.prop_linked_markets} player props linked across ${source.coverage.prop_linked_events} events`}
+                  {propLinkage && ` · ${propLinkage}`}
                   {source.coverage?.prop_structured_quote_markets !== undefined && ` · ${propQuoteCoverageText(source.coverage as PropQuoteCoverage)}`}
                   {source.coverage?.prop_player_resolved_quote_markets !== undefined && ` · ${source.coverage.prop_player_resolved_quote_markets} player identities resolved`}
                 </p></details>}
-              </article>
-            ))}
+              </article>;
+            })}
           </div>
 
           <div className={styles.notice}>
