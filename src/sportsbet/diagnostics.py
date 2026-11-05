@@ -55,7 +55,9 @@ def error_fields(error: Exception) -> dict:
 
 
 def failure_record(error: Exception, *, operation: str, stage: str,
-                   crosswalk_kind: str | None = None) -> dict:
+                   crosswalk_kind: str | None = None,
+                   crosswalk_eligibility: tuple[int, int, int, int] | None = None,
+                   crosswalk_asset_sha256: str | None = None) -> dict:
     """Allowlisted operational metadata only; never inspect exception text/notes."""
     if (type(operation) is not str or operation not in FAILURE_STAGES
             or type(stage) is not str or stage not in FAILURE_STAGES[operation]):
@@ -69,15 +71,32 @@ def failure_record(error: Exception, *, operation: str, stage: str,
               'operation': operation, 'stage': stage, **error_fields(error)}
     if crosswalk_kind is not None:
         result['crosswalk_kind'] = crosswalk_kind
+    if crosswalk_eligibility is not None or crosswalk_asset_sha256 is not None:
+        if (operation != 'nba_history_validation' or stage != 'crosswalk_empty' or crosswalk_kind != 'team'
+                or type(crosswalk_eligibility) is not tuple or len(crosswalk_eligibility) != 4
+                or any(type(value) is not int or not 0 <= value <= 2**53-1 for value in crosswalk_eligibility)
+                or type(crosswalk_asset_sha256) is not str
+                or re.fullmatch(r'[a-f0-9]{64}', crosswalk_asset_sha256) is None):
+            raise ValueError('Invalid team crosswalk diagnostic')
+        parsed, method, confidence, required = crosswalk_eligibility
+        if not parsed >= method >= confidence >= required == 0:
+            raise ValueError('Invalid team crosswalk diagnostic')
+        result['crosswalk_eligibility'] = dict(parsed=parsed, exact_method=method,
+                                              exact_confidence=confidence, required_fields=required)
+        result['crosswalk_asset_sha256'] = crosswalk_asset_sha256
     return result
 
 
 def emit_failure(error: Exception, *, operation: str, stage: str,
-                 crosswalk_kind: str | None = None) -> None:
+                 crosswalk_kind: str | None = None,
+                 crosswalk_eligibility: tuple[int, int, int, int] | None = None,
+                 crosswalk_asset_sha256: str | None = None) -> None:
     """Best effort: a diagnostic failure must not replace the original failure."""
     try:
         print(json.dumps(failure_record(error, operation=operation, stage=stage,
-                                       crosswalk_kind=crosswalk_kind),
+                                       crosswalk_kind=crosswalk_kind,
+                                       crosswalk_eligibility=crosswalk_eligibility,
+                                       crosswalk_asset_sha256=crosswalk_asset_sha256),
                          separators=(',', ':'), allow_nan=False), file=sys.stderr)
     except Exception:
         pass

@@ -27,33 +27,44 @@ ESPN = 'https://site.api.espn.com/apis/site/v2/sports/basketball/nba'
 
 
 def _validation_error(stage: str, message: str, *,
-                      crosswalk_kind: str | None = None) -> ValueError:
+                      crosswalk_kind: str | None = None,
+                      crosswalk_eligibility: tuple[int, int, int, int] | None = None,
+                      crosswalk_asset_sha256: str | None = None) -> ValueError:
     """Identify an existing rejection without logging source text or identities."""
     error=ValueError(message)
     emit_failure(error,operation='nba_history_validation',stage=stage,
-                 crosswalk_kind=crosswalk_kind)
+                 crosswalk_kind=crosswalk_kind,crosswalk_eligibility=crosswalk_eligibility,
+                 crosswalk_asset_sha256=crosswalk_asset_sha256)
     return error
 
 
 def index_rows(rows: list[dict], key: str, required: tuple[str, ...], method: str, year: int,
-               *, crosswalk_kind: str | None = None) -> dict:
+               *, crosswalk_kind: str | None = None, crosswalk_asset_sha256: str | None = None) -> dict:
     result={}
+    exact_method=exact_confidence=required_fields=0
     for row in rows:
         if row.get('season')!=str(year):
             raise _validation_error('crosswalk_season','Crosswalk season mismatch')
         confidence=row.get('match_confidence')
-        if (row.get('match_method')!=method or not isinstance(confidence,str)
-                or re.fullmatch(r'1(?:\.0+)?',confidence) is None):
+        if row.get('match_method')!=method:
             continue  # Never promote fuzzy/unmatched identifier suggestions.
+        exact_method+=1
+        if not isinstance(confidence,str) or re.fullmatch(r'1(?:\.0+)?',confidence) is None:
+            continue  # Never promote fuzzy/unmatched identifier suggestions.
+        exact_confidence+=1
         if not all(row.get(field) for field in (key,*required)):
             continue
+        required_fields+=1
         identity=row[key]
         if identity in result and any(result[identity][field]!=row[field] for field in required):
             raise _validation_error('crosswalk_identity','Ambiguous crosswalk identity')
         result[identity]=row
     if not result:
+        eligibility=(len(rows),exact_method,exact_confidence,required_fields) if (
+            crosswalk_kind=='team' and crosswalk_asset_sha256 is not None) else None
         raise _validation_error('crosswalk_empty','No verified crosswalk identities',
-                                crosswalk_kind=crosswalk_kind)
+                                crosswalk_kind=crosswalk_kind,crosswalk_eligibility=eligibility,
+                                crosswalk_asset_sha256=crosswalk_asset_sha256 if eligibility is not None else None)
     target_ids=[row[required[0]] for row in result.values()]
     if len(set(target_ids))!=len(target_ids):
         raise _validation_error('crosswalk_target','Crosswalk target has multiple source identities')
@@ -185,14 +196,16 @@ def refresh_recent(season: int, today: date, engine) -> dict:
             return response.text,digest
 
         year=season+1
-        tables={kind:list(csv.DictReader(io.StringIO(fetch(f'{CROSSWALKS}/nba_{kind}_crosswalk_{year}.csv')[0])))
-                for kind in ('schedule','player','team')}
+        tables={};digests={}
+        for kind in ('schedule','player','team'):
+            body,digests[kind]=fetch(f'{CROSSWALKS}/nba_{kind}_crosswalk_{year}.csv')
+            tables[kind]=list(csv.DictReader(io.StringIO(body)))
         games=index_rows(tables['schedule'],'espn_game_id',('nba_game_id','game_date','home_espn_team_id',
             'away_espn_team_id','nba_home_team_id','nba_away_team_id'),'both',year,crosswalk_kind='schedule')
         players=index_rows(tables['player'],'espn_athlete_id',('nba_player_id','nba_player_name'),
                            'exact_name',year,crosswalk_kind='player')
         teams=index_rows(tables['team'],'espn_team_id',('nba_team_id','nba_team_abbreviation'),
-                         'exact_name',year,crosswalk_kind='team')
+                         'exact_name',year,crosswalk_kind='team',crosswalk_asset_sha256=digests['team'])
         with engine.connect() as conn:
             known=set(conn.execute(text('SELECT game_id FROM nba_player_gamelogs WHERE season=:season GROUP BY game_id HAVING count(*)>=10 AND count(DISTINCT team_abbreviation)=2'),{'season':season}).scalars())
             identities=conn.execute(text("SELECT DISTINCT player_id,player_name FROM nba_player_gamelogs WHERE source_provider='nba' AND player_name IS NOT NULL")).all()
