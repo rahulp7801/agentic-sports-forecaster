@@ -18,6 +18,14 @@ export interface PropQuoteCoverage {
   prop_unquoted_markets?:number;
 }
 
+export interface PropLinkageCoverage {
+  prop_discovery_complete?:boolean;
+  prop_linked_markets?:number;
+  prop_linked_events?:number;
+  prop_open_markets?:number;
+  prop_open_events?:number;
+}
+
 export function sourceFailureText(reason:unknown):string|null {
   if (reason==='collection_cadence') return 'waiting for scheduled sportsbook capture';
   if (reason==='access_denied') return 'provider access denied';
@@ -28,18 +36,41 @@ export function sourceFailureText(reason:unknown):string|null {
 }
 
 export function marketCoverageText(coverage:MarketCoverage):string {
-  const {attempted_games:attempted,observed_games:observed,event_failed_games:eventFailed,
+  const {discovered_games:discovered,attempted_games:attempted,observed_games:observed,event_failed_games:eventFailed,
     market_failed_games:marketFailed,sample_complete_games:complete,quoted_games:quoted}=coverage;
   if ([attempted,observed,eventFailed,marketFailed,complete,quoted]
       .every(value=>Number.isSafeInteger(value))
       && eventFailed!==undefined && marketFailed!==undefined && complete!==undefined
       && attempted>=0 && observed>=0 && eventFailed>=0 && marketFailed>=0 && complete>=0
       && attempted===observed+eventFailed && observed===complete+marketFailed) {
-    return `${observed}/${attempted} event records observed, ${eventFailed} event failures, `+
+    const sample=Number.isSafeInteger(discovered) && attempted<discovered
+      ? `${attempted}/${discovered} discovered games attempted · ` : '';
+    return `${sample}${observed}/${attempted} event records observed, ${eventFailed} event failures, `+
       `${complete} sampled games complete, ${marketFailed} with partial market failures, ${quoted} with quotes`;
   }
   return `${observed}/${coverage.discovered_games} discovered games inspected, `+
     `${quoted} with quotes, ${coverage.failed_games} with collection failures`;
+}
+
+function validCount(value:unknown):value is number {
+  return typeof value==='number' && Number.isSafeInteger(value) && value>=0;
+}
+
+export function propLinkageCoverageText(coverage:PropLinkageCoverage):string|null {
+  const {prop_linked_markets:linked,prop_linked_events:linkedEvents,
+    prop_open_markets:open,prop_open_events:openEvents}=coverage;
+  if (!validCount(linked) || !validCount(linkedEvents) || linkedEvents>linked
+      || (linked>0 && linkedEvents===0)
+      || (open!==undefined && (!validCount(open) || linked>open))
+      || (openEvents!==undefined && (!validCount(openEvents) || linkedEvents>openEvents))) return null;
+  const discovery=coverage.prop_discovery_complete===false ? ' · prop discovery incomplete' : '';
+  if (open===undefined || openEvents===undefined) {
+    return `${linked} player props linked to sampled games across ${linkedEvents} prop events${discovery}`;
+  }
+  if (openEvents>open || (open>0 && openEvents===0) || open-linked<openEvents-linkedEvents) return null;
+  if (open===0) return `0 observed open player props across discovered series${discovery}`;
+  return `${linked} of ${open} observed open player props linked to sampled games across `+
+    `${linkedEvents} of ${openEvents} prop events (open totals across discovered series)${discovery}`;
 }
 
 export function propQuoteCoverageText(coverage:PropQuoteCoverage):string {
