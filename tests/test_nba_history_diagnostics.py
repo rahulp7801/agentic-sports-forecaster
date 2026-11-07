@@ -450,6 +450,79 @@ def test_team_crosswalk_eligibility_rejects_wrong_scope_and_unbounded_metadata()
             diagnostics.failure_record(ValueError('PRIVATE_BODY'), **(options | patch))
 
 
+@pytest.mark.parametrize('scope', ['admitted', 'unadmitted', 'invalid_date'])
+def test_old_history_gap_reports_unique_scope_without_more_requests_or_writes(monkeypatch, capsys, scope):
+    old_date='0000-13-99' if scope=='invalid_date' else '2026-10-20'
+    method='both' if scope=='admitted' else 'PRIVATE_UNADMITTED_METHOD'
+    old=f'2027,123,0022600001,{old_date},1,2,101,102,{method},1\n'
+    sources={
+        'schedule': ('season,espn_game_id,nba_game_id,game_date,home_espn_team_id,away_espn_team_id,'
+            'nba_home_team_id,nba_away_team_id,match_method,match_confidence\n'
+            '2027,321,0022600002,2026-11-06,1,2,101,102,both,1\n'+old+old),
+        'player': ('season,espn_athlete_id,nba_player_id,nba_player_name,match_method,match_confidence\n'
+            '2027,1,1000,PRIVATE_PLAYER,exact_name,1\n'),
+        'team': ('season,espn_team_id,nba_team_id,nba_team_abbreviation,match_method,match_confidence\n'
+            '2027,1,101,LAL,exact_name,1\n'),
+    }
+    client=MagicMock()
+    session=client.__enter__.return_value
+    def response(url):
+        table=next(name for name in sources if f'nba_{name}_crosswalk_2027.csv' in url)
+        return httpx.Response(200,text=sources[table],request=httpx.Request('GET',url))
+    session.get.side_effect=response
+    monkeypatch.setattr(nba_espn.httpx,'Client',lambda **kwargs:client)
+    monkeypatch.setattr(nba_espn.time,'sleep',lambda _:None)
+    archive,store=MagicMock(),MagicMock()
+    monkeypatch.setattr(nba_espn,'write_archive',archive)
+    monkeypatch.setattr(nba_espn,'store_rows',store)
+    engine=setup_refresh(monkeypatch,MagicMock(side_effect=RequestException('PRIVATE_PRIMARY_BODY')),
+                         MagicMock(side_effect=nba_espn.refresh_recent))
+    conn=engine.connect.return_value.__enter__.return_value
+    known,identities=MagicMock(),MagicMock()
+    known.scalars.return_value=[]
+    identities.all.return_value=[]
+    conn.execute.side_effect=[known,identities]
+    with pytest.raises(ValueError,match='^History gap predates the seven-day fallback window; backfill required$'):
+        refresh_module.refresh('nba',date(2026,11,7))
+    assert session.get.call_count==3 and conn.execute.call_count==2
+    engine.begin.assert_not_called()
+    archive.assert_not_called()
+    store.assert_not_called()
+    engine.dispose.assert_called_once_with()
+    expected=dict(season=2026,window_start='2026-11-01',missing_games=1,
+        admitted_games=int(scope=='admitted'),unadmitted_games=int(scope!='admitted'),
+        invalid_date_rows=2 if scope=='invalid_date' else 0,
+        oldest_missing_date=None if scope=='invalid_date' else old_date,
+        newest_missing_date=None if scope=='invalid_date' else old_date,
+        schedule_asset_sha256=hashlib.sha256(sources['schedule'].encode()).hexdigest())
+    assert records(capsys)==[validation_record('history_gap') | {'history_gap':expected},
+        dict(schema_version=1,diagnostic_kind='operation_failure',operation='history_refresh',
+             stage='nba_fallback',error_type='ValueError')]
+
+
+def test_history_gap_metadata_is_all_or_none_bounded_and_scoped():
+    gap=dict(season=2026,window_start='2026-11-01',missing_games=3,admitted_games=2,unadmitted_games=1,
+        invalid_date_rows=0,oldest_missing_date='2026-10-20',newest_missing_date='2026-10-22',
+        schedule_asset_sha256='a'*64)
+    options=dict(operation='nba_history_validation',stage='history_gap')
+    assert diagnostics.failure_record(ValueError('PRIVATE_BODY'),**options)==validation_record('history_gap')
+    record=diagnostics.failure_record(ValueError('PRIVATE_BODY'),**options,history_gap=gap)
+    assert record==validation_record('history_gap') | {'history_gap':gap}
+    assert record['history_gap'] is not gap
+    invalid=[gap | {'PRIVATE_FIELD':'PRIVATE_VALUE'}, {key:value for key,value in gap.items() if key!='season'},
+        gap | {'missing_games':0},gap | {'admitted_games':3},gap | {'invalid_date_rows':True},
+        gap | {'missing_games':2**53},gap | {'season':True},gap | {'window_start':'2026-11-1'},
+        gap | {'oldest_missing_date':None},gap | {'oldest_missing_date':'2026-10-23'},
+        gap | {'newest_missing_date':'2026-11-01'},gap | {'schedule_asset_sha256':'A'*64},
+        gap | {'oldest_missing_date':None,'newest_missing_date':None}]
+    for value in invalid:
+        with pytest.raises(ValueError,match='^Invalid NBA history gap diagnostic$'):
+            diagnostics.failure_record(ValueError('PRIVATE_BODY'),**options,history_gap=value)
+    for scope in [dict(operation='daily',stage='histories'),dict(operation='nba_history_validation',stage='crosswalk_season')]:
+        with pytest.raises(ValueError,match='^Invalid NBA history gap diagnostic$'):
+            diagnostics.failure_record(ValueError('PRIVATE_BODY'),**scope,history_gap=gap)
+
+
 @pytest.mark.parametrize('kind', ['schedule', 'player', 'team'])
 def test_crosswalk_kind_is_finite_scoped_metadata(kind):
     error = ValueError('PRIVATE_NAME /private/path source-sha256')
