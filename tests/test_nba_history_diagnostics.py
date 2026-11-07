@@ -285,7 +285,7 @@ def test_refresh_failure_snapshot_does_not_expose_implicit_provider_content(monk
 
 @pytest.mark.parametrize(('kind', 'rejection'), [
     (kind, rejection) for kind in ('schedule', 'player', 'team') for rejection in ('empty', 'confidence')
-] + [('team', 'mixed')])
+] + [('team', 'mixed'), ('team', 'game_dates_confidence'), ('schedule', 'game_dates'), ('player', 'game_dates')])
 def test_fallback_empty_crosswalk_reports_eligibility_without_database_io(monkeypatch, capsys, kind, rejection):
     sources = {
         'schedule': (
@@ -303,6 +303,10 @@ def test_fallback_empty_crosswalk_reports_eligibility_without_database_io(monkey
         sources[kind] = sources[kind].splitlines()[0] + '\n'
     elif rejection == 'confidence':
         sources[kind] = sources[kind].replace(',1\n', ',0.999999999\n')
+    elif rejection == 'game_dates_confidence':
+        sources[kind] = sources[kind].replace(',exact_name,1\n', ',game_dates,0.999999999\n')
+    elif rejection == 'game_dates':
+        sources[kind] = sources[kind].replace(',both,1\n', ',game_dates,1\n').replace(',exact_name,1\n', ',game_dates,1\n')
     else:
         sources[kind] = sources[kind].splitlines()[0] + '\n' + (
             '2027,1,101,LAL,PRIVATE_METHOD,1\n'
@@ -346,7 +350,8 @@ def test_fallback_empty_crosswalk_reports_eligibility_without_database_io(monkey
     engine.dispose.assert_called_once_with()
     expected = validation_record('crosswalk_empty') | {'crosswalk_kind': kind}
     if kind == 'team':
-        parsed, method, confidence = {'empty': (0, 0, 0), 'confidence': (1, 1, 0), 'mixed': (3, 2, 1)}[rejection]
+        parsed, method, confidence = {'empty': (0, 0, 0), 'confidence': (1, 1, 0),
+                                      'mixed': (3, 2, 1), 'game_dates_confidence': (1, 1, 0)}[rejection]
         expected.update(crosswalk_eligibility=dict(parsed=parsed, exact_method=method,
             exact_confidence=confidence, required_fields=0),
             crosswalk_asset_sha256=hashlib.sha256(sources[kind].encode()).hexdigest())
@@ -355,6 +360,82 @@ def test_fallback_empty_crosswalk_reports_eligibility_without_database_io(monkey
         dict(schema_version=1, diagnostic_kind='operation_failure',
              operation='history_refresh', stage='nba_fallback', error_type='ValueError'),
     ]
+
+
+@pytest.mark.parametrize('mismatch', [None, 'mascot', 'abbreviation', 'nba_id', 'espn_id', 'schedule_id'])
+def test_game_dates_team_crosswalk_requires_official_identity_and_final_schedule_agreement(
+        monkeypatch, capsys, final_game, mismatch):
+    data, _, players, _ = final_game
+    data['header']['season']['year'] = 2027
+    competition = data['header']['competitions'][0]
+    competition['date'] = '2026-10-30T00:00Z'
+    competition['competitors'][0]['id'] = '13'
+    data['boxscore']['players'][0]['team']['id'] = '13'
+    lakers = dict(espn='13', nba='1610612747', abbreviation='LAL', mascot='  lAkErS ')
+    if mismatch == 'mascot': lakers['mascot'] = 'Kings'
+    if mismatch == 'abbreviation': lakers['abbreviation'] = 'LAC'
+    if mismatch == 'nba_id': lakers['nba'] = '1610612738'
+    if mismatch == 'espn_id': lakers['espn'] = '013'
+    schedule_home = '1610612738' if mismatch == 'schedule_id' else '1610612747'
+    sources = {
+        'schedule': ('season,espn_game_id,nba_game_id,game_date,home_espn_team_id,away_espn_team_id,'
+            'nba_home_team_id,nba_away_team_id,match_method,match_confidence\n'
+            f'2027,123,0022600001,2026-10-29,13,2,{schedule_home},1610612738,both,1.0\n'),
+        'player': ('season,espn_athlete_id,nba_player_id,nba_player_name,match_method,match_confidence\n'
+            + ''.join(f"2027,{espn},{row['nba_player_id']},{row['nba_player_name']},exact_name,1.0\n"
+                      for espn, row in players.items())),
+        'team': ('season,espn_team_id,nba_team_id,nba_team_abbreviation,espn_mascot,match_method,match_confidence\n'
+            f"2027,{lakers['espn']},{lakers['nba']},{lakers['abbreviation']},{lakers['mascot']},game_dates,1.0\n"
+            '2027,2,1610612738,BOS,Celtics,game_dates,1.0\n'),
+    }
+    client = MagicMock()
+    session = client.__enter__.return_value
+
+    def response(url):
+        request = httpx.Request('GET', url)
+        if '/scoreboard?' in url:
+            events = [dict(id='123', status={'type': {'completed': True}}, season={'type': 2})] if '20261029' in url else []
+            return httpx.Response(200, json={'events': events}, request=request)
+        if '/summary?' in url:
+            return httpx.Response(200, json=data, request=request)
+        table = next(name for name in sources if f'nba_{name}_crosswalk_2027.csv' in url)
+        return httpx.Response(200, text=sources[table], request=request)
+
+    session.get.side_effect = response
+    monkeypatch.setattr(nba_espn.httpx, 'Client', lambda **kwargs: client)
+    monkeypatch.setattr(nba_espn.time, 'sleep', lambda _: None)
+    archive, store = MagicMock(return_value='fixture-archive'), MagicMock()
+    monkeypatch.setattr(nba_espn, 'write_archive', archive)
+    monkeypatch.setattr(nba_espn, 'store_rows', store)
+    engine = setup_refresh(monkeypatch, MagicMock(side_effect=RequestException('PRIVATE_PRIMARY_BODY')),
+                           MagicMock(side_effect=nba_espn.refresh_recent))
+    conn = engine.connect.return_value.__enter__.return_value
+    known, identities = MagicMock(), MagicMock()
+    known.scalars.return_value = []
+    identities.all.return_value = []
+    conn.execute.side_effect = [known, identities]
+
+    if mismatch is None:
+        report = refresh_module.refresh('nba', date(2026, 10, 30))
+        assert report['games'] == 1 and report['rows'] == 10
+        assert session.get.call_count == 11  # Three crosswalks, seven scoreboards, one final box.
+        archive.assert_called_once()
+        store.assert_called_once()
+        assert {row['team_abbreviation'] for row in store.call_args.args[1]} == {'LAL', 'BOS'}
+        assert records(capsys) == []
+    else:
+        with pytest.raises(ValueError, match='^Conflicting team crosswalk$'):
+            refresh_module.refresh('nba', date(2026, 10, 30))
+        if mismatch != 'schedule_id':
+            assert session.get.call_count == 3
+            engine.connect.assert_not_called()
+        archive.assert_not_called()
+        store.assert_not_called()
+        assert records(capsys) == [validation_record('crosswalk_team_conflict'),
+            dict(schema_version=1, diagnostic_kind='operation_failure', operation='history_refresh',
+                 stage='nba_fallback', error_type='ValueError')]
+    engine.begin.assert_not_called()
+    engine.dispose.assert_called_once_with()
 
 
 def test_team_crosswalk_eligibility_rejects_wrong_scope_and_unbounded_metadata():

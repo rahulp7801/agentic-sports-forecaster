@@ -13,6 +13,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import httpx
+from nba_api.stats.static.teams import get_teams
 from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert
 
@@ -42,11 +43,15 @@ def index_rows(rows: list[dict], key: str, required: tuple[str, ...], method: st
                *, crosswalk_kind: str | None = None, crosswalk_asset_sha256: str | None = None) -> dict:
     result={}
     exact_method=exact_confidence=required_fields=0
+    allow_team_dates=(crosswalk_kind=='team' and method=='exact_name' and key=='espn_team_id'
+                      and required==('nba_team_id','nba_team_abbreviation'))
     for row in rows:
         if row.get('season')!=str(year):
             raise _validation_error('crosswalk_season','Crosswalk season mismatch')
         confidence=row.get('match_confidence')
-        if row.get('match_method')!=method:
+        row_method=row.get('match_method')
+        team_dates=allow_team_dates and row_method=='game_dates'
+        if row_method!=method and not team_dates:
             continue  # Never promote fuzzy/unmatched identifier suggestions.
         exact_method+=1
         if not isinstance(confidence,str) or re.fullmatch(r'1(?:\.0+)?',confidence) is None:
@@ -56,6 +61,16 @@ def index_rows(rows: list[dict], key: str, required: tuple[str, ...], method: st
             continue
         required_fields+=1
         identity=row[key]
+        if team_dates:
+            # Shared game dates alone do not prove team identity. Require the
+            # independent NBA directory; final box scores still bind both IDs.
+            nba_id=row['nba_team_id']
+            official=_NBA_TEAM_IDENTITIES.get(nba_id) if isinstance(nba_id,str) else None
+            mascot=row.get('espn_mascot')
+            if (not isinstance(identity,str) or re.fullmatch(r'[1-9][0-9]*',identity) is None
+                    or official is None or row['nba_team_abbreviation']!=official[0]
+                    or not isinstance(mascot,str) or normalize_name(mascot)!=official[1]):
+                raise _validation_error('crosswalk_team_conflict','Conflicting team crosswalk')
         if identity in result and any(result[identity][field]!=row[field] for field in required):
             raise _validation_error('crosswalk_identity','Ambiguous crosswalk identity')
         result[identity]=row
@@ -73,6 +88,10 @@ def index_rows(rows: list[dict], key: str, required: tuple[str, ...], method: st
 
 def normalize_name(name: str) -> str:
     return ''.join(c for c in unicodedata.normalize('NFD',name) if not unicodedata.combining(c)).casefold().strip()
+
+
+_NBA_TEAM_IDENTITIES={str(team['id']):(team['abbreviation'],normalize_name(team['nickname']))
+                      for team in get_teams()}
 
 
 def official_names(rows) -> dict:
