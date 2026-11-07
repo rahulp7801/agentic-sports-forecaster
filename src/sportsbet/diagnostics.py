@@ -1,5 +1,6 @@
 """Bounded worker diagnostics without exception messages, SQL, or credentials."""
 from contextlib import contextmanager
+from datetime import date
 import json
 import re
 import sys
@@ -57,7 +58,8 @@ def error_fields(error: Exception) -> dict:
 def failure_record(error: Exception, *, operation: str, stage: str,
                    crosswalk_kind: str | None = None,
                    crosswalk_eligibility: tuple[int, int, int, int] | None = None,
-                   crosswalk_asset_sha256: str | None = None) -> dict:
+                   crosswalk_asset_sha256: str | None = None,
+                   history_gap: dict | None = None) -> dict:
     """Allowlisted operational metadata only; never inspect exception text/notes."""
     if (type(operation) is not str or operation not in FAILURE_STAGES
             or type(stage) is not str or stage not in FAILURE_STAGES[operation]):
@@ -84,19 +86,52 @@ def failure_record(error: Exception, *, operation: str, stage: str,
         result['crosswalk_eligibility'] = dict(parsed=parsed, exact_method=method,
                                               exact_confidence=confidence, required_fields=required)
         result['crosswalk_asset_sha256'] = crosswalk_asset_sha256
+    if history_gap is not None:
+        keys={'season','window_start','missing_games','admitted_games','unadmitted_games',
+              'invalid_date_rows','oldest_missing_date','newest_missing_date','schedule_asset_sha256'}
+        counts=('missing_games','admitted_games','unadmitted_games','invalid_date_rows')
+        if (operation != 'nba_history_validation' or stage != 'history_gap'
+                or type(history_gap) is not dict or set(history_gap) != keys
+                or any(type(history_gap[key]) is not int or not 0 <= history_gap[key] <= 2**53-1 for key in counts)
+                or history_gap['missing_games'] == 0
+                or history_gap['admitted_games']+history_gap['unadmitted_games'] != history_gap['missing_games']
+                or type(history_gap['season']) is not int or not 1 <= history_gap['season'] <= 9998
+                or not _canonical_day(history_gap['window_start'])
+                or type(history_gap['schedule_asset_sha256']) is not str
+                or re.fullmatch(r'[a-f0-9]{64}',history_gap['schedule_asset_sha256']) is None):
+            raise ValueError('Invalid NBA history gap diagnostic')
+        oldest,newest=history_gap['oldest_missing_date'],history_gap['newest_missing_date']
+        if oldest is None and newest is None:
+            if history_gap['invalid_date_rows'] == 0:
+                raise ValueError('Invalid NBA history gap diagnostic')
+        elif (not _canonical_day(oldest) or not _canonical_day(newest)
+                or not oldest <= newest < history_gap['window_start']):
+            raise ValueError('Invalid NBA history gap diagnostic')
+        result['history_gap'] = dict(history_gap)
     return result
+
+
+def _canonical_day(value) -> bool:
+    if type(value) is not str or len(value) != 10:
+        return False
+    try:
+        return date.fromisoformat(value).isoformat() == value
+    except ValueError:
+        return False
 
 
 def emit_failure(error: Exception, *, operation: str, stage: str,
                  crosswalk_kind: str | None = None,
                  crosswalk_eligibility: tuple[int, int, int, int] | None = None,
-                 crosswalk_asset_sha256: str | None = None) -> None:
+                 crosswalk_asset_sha256: str | None = None,
+                 history_gap: dict | None = None) -> None:
     """Best effort: a diagnostic failure must not replace the original failure."""
     try:
         print(json.dumps(failure_record(error, operation=operation, stage=stage,
                                        crosswalk_kind=crosswalk_kind,
                                        crosswalk_eligibility=crosswalk_eligibility,
-                                       crosswalk_asset_sha256=crosswalk_asset_sha256),
+                                       crosswalk_asset_sha256=crosswalk_asset_sha256,
+                                       history_gap=history_gap),
                          separators=(',', ':'), allow_nan=False), file=sys.stderr)
     except Exception:
         pass

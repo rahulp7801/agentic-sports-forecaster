@@ -30,12 +30,13 @@ ESPN = 'https://site.api.espn.com/apis/site/v2/sports/basketball/nba'
 def _validation_error(stage: str, message: str, *,
                       crosswalk_kind: str | None = None,
                       crosswalk_eligibility: tuple[int, int, int, int] | None = None,
-                      crosswalk_asset_sha256: str | None = None) -> ValueError:
+                      crosswalk_asset_sha256: str | None = None,
+                      history_gap: dict | None = None) -> ValueError:
     """Identify an existing rejection without logging source text or identities."""
     error=ValueError(message)
     emit_failure(error,operation='nba_history_validation',stage=stage,
                  crosswalk_kind=crosswalk_kind,crosswalk_eligibility=crosswalk_eligibility,
-                 crosswalk_asset_sha256=crosswalk_asset_sha256)
+                 crosswalk_asset_sha256=crosswalk_asset_sha256,history_gap=history_gap)
     return error
 
 
@@ -233,7 +234,32 @@ def refresh_recent(season: int, today: date, engine) -> dict:
         missing=[g for g in tables['schedule'] if g.get('nba_game_id','').startswith(prefix)
             and g['game_date']<str(first) and g['nba_game_id'] not in known]
         if missing:
-            raise _validation_error('history_gap','History gap predates the seven-day fallback window; backfill required')
+            missing_ids={game['nba_game_id'] for game in missing}
+            admitted_ids={game['nba_game_id'] for game in games.values()}
+            valid_dates=[]
+            invalid_dates=0
+            for game in missing:
+                value=game.get('game_date')
+                try:
+                    if type(value) is not str or len(value)!=10 or date.fromisoformat(value).isoformat()!=value:
+                        raise ValueError('Noncanonical date')
+                except (TypeError,ValueError):
+                    invalid_dates+=1
+                else:
+                    valid_dates.append(value)
+            gap=dict(
+                season=season,
+                window_start=str(first),
+                missing_games=len(missing_ids),
+                admitted_games=len(missing_ids & admitted_ids),
+                unadmitted_games=len(missing_ids-admitted_ids),
+                invalid_date_rows=invalid_dates,
+                oldest_missing_date=min(valid_dates) if valid_dates else None,
+                newest_missing_date=max(valid_dates) if valid_dates else None,
+                schedule_asset_sha256=digests['schedule'],
+            )
+            raise _validation_error('history_gap','History gap predates the seven-day fallback window; backfill required',
+                                    history_gap=gap)
         for offset in range(7):
             day=first+timedelta(days=offset)
             board=json.loads(fetch(f'{ESPN}/scoreboard?dates={day:%Y%m%d}&limit=1000')[0])
