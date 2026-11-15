@@ -360,8 +360,8 @@ async def test_page_identity_and_duplicate_corruption_still_abort_immediately(sp
     assert result['series'][series]['status']=='invalid' and result['series'][series]['complete'] is False
     expected=[good['ticker']] if corruption=='duplicate' else []
     assert [quote['ticker'] for quote in result['quotes']]==expected
-    reason={'duplicate':'invalid_prop_market_identity','rejected_duplicate':'invalid_prop_market_identity',
-        'identity':'invalid_prop_market_identity',
+    reason={'duplicate':'duplicate_prop_market_identity','rejected_duplicate':'duplicate_prop_market_identity',
+        'identity':'non_binary_prop_market',
         'page':'invalid_market_page','cursor':'invalid_market_cursor'}[corruption]
     expected_failures=[dict(stage='prop_discovery',series=series,error_type='ValueError',reason=reason)]
     if corruption=='rejected_duplicate':
@@ -373,6 +373,76 @@ async def test_page_identity_and_duplicate_corruption_still_abort_immediately(sp
         reader.targets.assert_awaited_once()
     else:
         reader.targets.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('sport',['nfl','nba'])
+@pytest.mark.parametrize(('changes','reason'),[
+    ({'event_ticker':None,'ticker':None},'invalid_prop_event_identity'),
+    ({'ticker':None,'event_ticker':'SECRET-WRONG-EVENT'},'invalid_prop_ticker_identity'),
+    ({'event_ticker':'SECRET-WRONG-EVENT','ticker':'SECRET-WRONG-TICKER'},'prop_event_series_mismatch'),
+    ({'ticker':'SECRET-WRONG-TICKER','status':'closed'},'prop_ticker_event_mismatch'),
+    ({'status':'closed','market_type':'scalar'},'inactive_prop_market'),
+    ({'market_type':'scalar','notional_value_dollars':'SECRET-NOT-A-DECIMAL'},'non_binary_prop_market'),
+    ({'notional_value_dollars':'2'},'non_unit_prop_notional'),
+    ({},'duplicate_prop_market_identity'),
+])
+async def test_identity_reason_preserves_order_and_aborts_before_later_market(monkeypatch,sport,changes,reason):
+    series,milestone,good=sport_prop(sport,'GOOD')
+    invalid=deepcopy(good);invalid.update(changes)
+    later=deepcopy(good);later['ticker']=later['event_ticker']+'-MUST-NOT-BE-PARSED'
+    page={'markets':[good,invalid,later],'cursor':'must-not-follow'}
+    reader=sport_reader(sport,series,page)
+    parsed=[]
+    original=market_watch.kalshi_prop_quote
+    def record_quote(value,*args):
+        parsed.append(value['ticker'])
+        return original(value,*args)
+    monkeypatch.setattr(market_watch,'kalshi_prop_quote',record_quote)
+    result=await market_watch.kalshi_prop_inventory(reader,sport,[milestone])
+    assert parsed==[good['ticker']]
+    assert [quote['ticker'] for quote in result['quotes']]==[good['ticker']]
+    assert result['status']=='degraded' and result['partial_coverage'] is True
+    assert result['coverage']['discovery_complete'] is False
+    assert result['coverage']['series_observed']==len(market_watch.KALSHI_PROP_SERIES[sport])-1
+    assert result['coverage']['open_markets']==result['coverage']['linked_markets']==1
+    assert result['coverage']['structured_quote_markets']==1
+    assert result['series'][series]==dict(status='invalid',complete=False,pages=1,
+        open_markets=1,open_events=1,linked_markets=1,linked_events=1,
+        response_sha256=market_watch.digest([page]))
+    assert result['failures']==[dict(stage='prop_discovery',series=series,error_type='ValueError',reason=reason)]
+    counts=market_watch.kalshi_failure_counts({'failures':result['failures']})
+    assert counts==dict(total=1,by_stage={'prop_discovery':1},by_error_type={'ValueError':1},
+        by_reason={reason:1},by_http_status={})
+    assert 'SECRET' not in str(counts) and good['ticker'] not in str(counts)
+    assert reader.markets.await_count==len(market_watch.KALSHI_PROP_SERIES[sport])
+    reader.targets.assert_awaited_once_with(['30000000-0000-0000-0000-000000000003'])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('sport',['nfl','nba'])
+@pytest.mark.parametrize(('changes','removed','error_type'),[
+    ({},'event_ticker','KeyError'),
+    ({'event_ticker':None},'ticker','KeyError'),
+    ({},'notional_value_dollars','KeyError'),
+    ({'notional_value_dollars':'SECRET-NOT-A-DECIMAL'},None,'InvalidOperation'),
+    ({'notional_value_dollars':None},None,'TypeError'),
+])
+async def test_identity_missing_keys_and_decimal_errors_keep_original_types(sport,changes,removed,error_type):
+    series,milestone,good=sport_prop(sport,'GOOD')
+    invalid=deepcopy(good);invalid.update(changes)
+    if removed is not None:
+        del invalid[removed]
+    reader=sport_reader(sport,series,{'markets':[invalid,good],'cursor':'must-not-follow'})
+    result=await market_watch.kalshi_prop_inventory(reader,sport,[milestone])
+    assert result['status']=='degraded' and result['partial_coverage'] is True
+    assert result['coverage']['discovery_complete'] is False and result['quotes']==[]
+    assert result['coverage']['open_markets']==result['coverage']['linked_markets']==0
+    assert result['series'][series]['status']=='invalid' and result['series'][series]['complete'] is False
+    assert result['failures']==[dict(stage='prop_discovery',series=series,error_type=error_type)]
+    assert 'SECRET' not in str(result)
+    assert reader.markets.await_count==len(market_watch.KALSHI_PROP_SERIES[sport])
+    reader.targets.assert_not_awaited()
 
 
 @pytest.mark.asyncio

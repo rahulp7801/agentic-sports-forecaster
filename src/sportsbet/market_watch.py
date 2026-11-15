@@ -39,6 +39,9 @@ KALSHI_FAILURE_TYPES=frozenset(('KalshiReadError','RuntimeError','ValueError','K
     'PageLimitExceeded'))
 KALSHI_VALIDATION_REASONS=frozenset(('invalid_market_page','invalid_market_cursor',
     'invalid_prop_market_identity','repeated_market_cursor','invalid_structured_target_page',
+    'invalid_prop_event_identity','invalid_prop_ticker_identity','prop_event_series_mismatch',
+    'prop_ticker_event_mismatch','inactive_prop_market','non_binary_prop_market',
+    'non_unit_prop_notional','duplicate_prop_market_identity',
     'incomplete_structured_target_page','structured_target_mismatch','invalid_structured_prop_evidence',
     'prop_series_mismatch','prop_participant_mismatch','prop_team_mismatch','prop_strike_type_mismatch',
     'invalid_prop_line','invalid_prop_observation_window','invalid_prop_page_commitment',
@@ -292,11 +295,22 @@ async def kalshi_prop_inventory(reader: KalshiReader, sport: str, games: list[di
                 invalid_quotes=False
                 for market in page['markets']:
                     event=market['event_ticker'];ticker=market['ticker']
-                    if (not isinstance(event,str) or not isinstance(ticker,str)
-                            or not event.startswith(series+'-') or not ticker.startswith(event+'-')
-                            or market.get('status')!='active' or market.get('market_type')!='binary'
-                            or Decimal(market['notional_value_dollars'])!=1 or ticker in tickers):
-                        raise _PropValidationError('invalid_prop_market_identity','Invalid prop market identity')
+                    if not isinstance(event,str):
+                        raise _PropValidationError('invalid_prop_event_identity','Invalid prop event identity')
+                    if not isinstance(ticker,str):
+                        raise _PropValidationError('invalid_prop_ticker_identity','Invalid prop ticker identity')
+                    if not event.startswith(series+'-'):
+                        raise _PropValidationError('prop_event_series_mismatch','Prop event series mismatch')
+                    if not ticker.startswith(event+'-'):
+                        raise _PropValidationError('prop_ticker_event_mismatch','Prop ticker event mismatch')
+                    if market.get('status')!='active':
+                        raise _PropValidationError('inactive_prop_market','Inactive prop market')
+                    if market.get('market_type')!='binary':
+                        raise _PropValidationError('non_binary_prop_market','Non-binary prop market')
+                    if Decimal(market['notional_value_dollars'])!=1:
+                        raise _PropValidationError('non_unit_prop_notional','Non-unit prop notional')
+                    if ticker in tickers:
+                        raise _PropValidationError('duplicate_prop_market_identity','Duplicate prop market identity')
                     tickers.add(ticker);events.add(event)
                     if event in linked_games:
                         linked.add(ticker);linked_event_set.add(event)
