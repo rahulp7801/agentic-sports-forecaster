@@ -120,6 +120,36 @@ def test_summary_counts_have_finite_categories_and_do_not_duplicate_prop_failure
         by_reason={},by_http_status={})
 
 
+def test_prop_identity_reason_counts_preserve_legacy_and_exclude_provider_values():
+    reasons=('invalid_prop_market_identity','invalid_prop_event_identity',
+        'invalid_prop_ticker_identity','prop_event_series_mismatch','prop_ticker_event_mismatch',
+        'inactive_prop_market','non_binary_prop_market','non_unit_prop_notional',
+        'duplicate_prop_market_identity')
+    failures=[]
+    for reason in (*reasons,'invalid_prop_event_identity','duplicate_prop_market_identity'):
+        error=market_watch._PropValidationError(reason,SECRET)
+        error.event_ticker=SECRET;error.ticker=SECRET;error.body=SECRET;error.http_status=401
+        fields=market_watch.kalshi_error_fields(error)
+        assert fields=={'error_type':'ValueError','reason':reason}
+        failures.append(dict(stage='prop_discovery',**fields,series=SECRET,
+            event_ticker=SECRET,ticker=SECRET,body=SECRET))
+    poisoned=market_watch._PropValidationError('invalid_prop_event_identity',SECRET)
+    poisoned.reason=SECRET
+    fields=market_watch.kalshi_error_fields(poisoned)
+    assert fields=={'error_type':'ValueError'}
+    failures.append(dict(stage='prop_discovery',**fields,body=SECRET))
+    result=market_watch.kalshi_failure_counts(dict(failures=failures,
+        prop_inventory=dict(failures=failures)))
+    assert result==dict(total=12,by_stage={'prop_discovery':12},by_error_type={'ValueError':12},
+        by_reason=dict(invalid_prop_market_identity=1,invalid_prop_event_identity=2,
+            invalid_prop_ticker_identity=1,prop_event_series_mismatch=1,
+            prop_ticker_event_mismatch=1,inactive_prop_market=1,non_binary_prop_market=1,
+            non_unit_prop_notional=1,duplicate_prop_market_identity=2),by_http_status={})
+    serialized=json.dumps(result,sort_keys=True)
+    assert SECRET not in serialized
+    assert json.loads(serialized)==result
+
+
 @pytest.mark.asyncio
 async def test_original_reader_failure_reaches_logged_summary_without_new_requests(monkeypatch,tmp_path):
     client=httpx.AsyncClient;calls=[]
