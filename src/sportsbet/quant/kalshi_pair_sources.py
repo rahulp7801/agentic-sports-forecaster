@@ -84,6 +84,15 @@ def stage(root: Path, *, now: datetime, client: httpx.Client) -> dict:
     return manifest
 
 
+def _failure_message(error: Exception) -> str:
+    message = f"Pinned free NFL source staging unavailable ({type(error).__name__})"
+    if isinstance(error, httpx.HTTPStatusError):
+        status = error.response.status_code
+        if type(status) is int and 100 <= status <= 599:
+            message += f" http_status={status}"
+    return message + "\n"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -92,7 +101,7 @@ def main() -> None:
         with httpx.Client(timeout=20, follow_redirects=False) as client:
             stage(args.output_dir, now=datetime.now(timezone.utc), client=client)
     except (OSError, ValueError, httpx.HTTPError) as exc:
-        parser.exit(2, f"Pinned free NFL source staging unavailable ({type(exc).__name__})\n")
+        parser.exit(2, _failure_message(exc))
     print("Staged 6 hash-pinned free NFL source assets for a private pregame audit")
 
 
