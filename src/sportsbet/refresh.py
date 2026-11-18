@@ -50,7 +50,11 @@ def refresh(sport: str, today: date, backfill: bool = False):
                         raise  # Bounded recent updates cannot substitute for a full backfill.
                     from sportsbet.ingestion.nba_espn import refresh_recent
                     with failure_stage('history_refresh','nba_fallback'):
-                        return refresh_recent(season,today,engine)
+                        try:
+                            return refresh_recent(season,today,engine)
+                        except Exception:
+                            emit_failure(exc,operation='history_refresh',stage='nba_primary')
+                            raise
                 except Exception as exc:
                     emit_failure(exc,operation='history_refresh',stage='nba_primary')
                     raise

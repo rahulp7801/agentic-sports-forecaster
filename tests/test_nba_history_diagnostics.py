@@ -227,8 +227,13 @@ def test_terminal_implicit_errors_preserve_identity_and_redact_untrusted_content
     assert str(failure) == private_text and failure.__notes__ == ['PRIVATE_NOTE']
     assert primary.call_count == 1 and fallback.call_count == (phase == 'nba_fallback')
     engine.dispose.assert_called_once_with()
-    assert records(capsys) == [dict(schema_version=1, diagnostic_kind='operation_failure',
-        operation='history_refresh', stage=phase, error_type='ValueError')]
+    expected = []
+    if phase == 'nba_fallback':
+        expected.append(dict(schema_version=1, diagnostic_kind='operation_failure',
+            operation='history_refresh', stage='nba_primary', error_type='RequestException'))
+    expected.append(dict(schema_version=1, diagnostic_kind='operation_failure',
+        operation='history_refresh', stage=phase, error_type='ValueError'))
+    assert records(capsys) == expected
 
 
 def test_failed_guard_in_fallback_retains_validation_and_terminal_phase(monkeypatch, final_game, capsys):
@@ -241,6 +246,8 @@ def test_failed_guard_in_fallback_retains_validation_and_terminal_phase(monkeypa
     assert type(raised.value) is ValueError and fallback.call_count == primary.call_count == 1
     engine.dispose.assert_called_once_with()
     assert records(capsys) == [validation_record('game_season'), dict(
+        schema_version=1, diagnostic_kind='operation_failure', operation='history_refresh',
+        stage='nba_primary', error_type='RequestException'), dict(
         schema_version=1, diagnostic_kind='operation_failure', operation='history_refresh',
         stage='nba_fallback', error_type='ValueError')]
 
@@ -358,6 +365,8 @@ def test_fallback_empty_crosswalk_reports_eligibility_without_database_io(monkey
     assert records(capsys) == [
         expected,
         dict(schema_version=1, diagnostic_kind='operation_failure',
+             operation='history_refresh', stage='nba_primary', error_type='RequestException'),
+        dict(schema_version=1, diagnostic_kind='operation_failure',
              operation='history_refresh', stage='nba_fallback', error_type='ValueError'),
     ]
 
@@ -433,6 +442,8 @@ def test_game_dates_team_crosswalk_requires_official_identity_and_final_schedule
         store.assert_not_called()
         assert records(capsys) == [validation_record('crosswalk_team_conflict'),
             dict(schema_version=1, diagnostic_kind='operation_failure', operation='history_refresh',
+                 stage='nba_primary', error_type='RequestException'),
+            dict(schema_version=1, diagnostic_kind='operation_failure', operation='history_refresh',
                  stage='nba_fallback', error_type='ValueError')]
     engine.begin.assert_not_called()
     engine.dispose.assert_called_once_with()
@@ -448,6 +459,41 @@ def test_team_crosswalk_eligibility_rejects_wrong_scope_and_unbounded_metadata()
                   {'crosswalk_asset_sha256': 'A'*64}, {'crosswalk_asset_sha256': 'https://private.example'}]:
         with pytest.raises(ValueError, match='^Invalid team crosswalk diagnostic$'):
             diagnostics.failure_record(ValueError('PRIVATE_BODY'), **(options | patch))
+
+
+@pytest.mark.parametrize('primary_type', [
+    RequestException, requests.exceptions.ReadTimeout, requests.exceptions.HTTPError,
+])
+def test_terminal_fallback_reports_primary_class_without_changing_failure_snapshot(monkeypatch, capsys, primary_type):
+    private_text = 'https://private-provider.invalid/?key=PRIVATE_KEY SELECT PRIVATE_SQL PRIVATE_BODY'
+    primary_failure = primary_type(private_text)
+    primary_failure.add_note('PRIVATE_PRIMARY_NOTE')
+    fallback_failure = ValueError('PRIVATE_FALLBACK_BODY')
+    fallback_failure.add_note('PRIVATE_FALLBACK_NOTE')
+    primary = MagicMock(side_effect=primary_failure)
+    fallback = MagicMock(side_effect=fallback_failure)
+    engine = setup_refresh(monkeypatch, primary, fallback)
+    stored = []
+    monkeypatch.setattr(refresh_module, 'publish_snapshot', lambda key, value: stored.append((key, value)))
+
+    result = refresh_module.refresh_history('nba', date(2026, 1, 30))
+
+    assert result['status'] == 'failed' and result['error_type'] == 'ValueError'
+    assert set(result) == {'status', 'finished_at', 'error_type'}
+    assert [(key, value['status']) for key, value in stored] == [
+        ('refresh:nba', 'running'), ('refresh:nba', 'failed')]
+    primary.assert_called_once_with(2025, engine)
+    fallback.assert_called_once_with(2025, date(2026, 1, 30), engine)
+    engine.dispose.assert_called_once_with()
+    emitted = records(capsys)
+    assert emitted == [dict(schema_version=1, diagnostic_kind='operation_failure',
+        operation='history_refresh', stage='nba_primary', error_type=primary_type.__name__),
+        dict(schema_version=1, diagnostic_kind='operation_failure',
+        operation='history_refresh', stage='nba_fallback', error_type='ValueError')]
+    serialized = json.dumps({'snapshots': stored, 'diagnostics': emitted})
+    assert 'PRIVATE_' not in serialized and 'private-provider' not in serialized
+    assert str(primary_failure) == private_text and primary_failure.__notes__ == ['PRIVATE_PRIMARY_NOTE']
+    assert fallback_failure.__notes__ == ['PRIVATE_FALLBACK_NOTE']
 
 
 @pytest.mark.parametrize('scope', ['admitted', 'unadmitted', 'invalid_date'])
@@ -496,6 +542,8 @@ def test_old_history_gap_reports_unique_scope_without_more_requests_or_writes(mo
         newest_missing_date=None if scope=='invalid_date' else old_date,
         schedule_asset_sha256=hashlib.sha256(sources['schedule'].encode()).hexdigest())
     assert records(capsys)==[validation_record('history_gap') | {'history_gap':expected},
+        dict(schema_version=1,diagnostic_kind='operation_failure',operation='history_refresh',
+             stage='nba_primary',error_type='RequestException'),
         dict(schema_version=1,diagnostic_kind='operation_failure',operation='history_refresh',
              stage='nba_fallback',error_type='ValueError')]
 
