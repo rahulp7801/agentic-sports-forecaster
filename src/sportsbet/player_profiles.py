@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import UUID
 from sportsbet.db.connection import create_async_pool
 from sportsbet.dashboard import publish_snapshot
+from sportsbet.diagnostics import emit_profile_unavailable
 from sportsbet.prop.availability import fetch_event_availability, player_availability
 from sportsbet.prop.cross_venue import InvalidHandoff, _evidence, _game, _digest, _name, _sha256, _timestamp
 from sportsbet.model_contract import PROP_MARKETS
@@ -58,18 +59,25 @@ WHERE jsonb_typeof(signal)='object'
 ORDER BY game_id,player LIMIT 1000'''
 
 
-def profile(context, player, player_id, now, *, sport='nfl', expected_team=None):
+def profile(context, player, player_id, now, *, sport='nfl', expected_team=None, diagnostics=False):
     evidence, _ = player_availability(context, player, now, player_id=player_id,sport=sport)
-    if (evidence['status'] != 'observed' or not evidence.get('player_id')
-            or not evidence.get('player_image_url')):
+    def unavailable(reason):
+        if diagnostics is True:
+            emit_profile_unavailable(reason, sport=sport)
         return None
+    if evidence['status'] != 'observed':
+        return unavailable('availability_not_observed')
+    if not evidence.get('player_id'):
+        return unavailable('player_id_missing')
+    if not evidence.get('player_image_url'):
+        return unavailable('image_missing')
     if expected_team is not None:
         abbreviation,name = expected_team
         matches=[team for team in context.get('teams',[]) if team.get('abbreviation')==abbreviation]
         canonical=lambda value:'LA Clippers' if sport=='nba' and value=='Los Angeles Clippers' else value
         if (evidence['team']!=abbreviation or len(matches)!=1
                 or canonical(matches[0].get('name'))!=canonical(name)):
-            return None
+            return unavailable('expected_team_mismatch')
     return dict(player=player, name=evidence.get('roster_player_name', player),
         team=evidence['team'], player_id=evidence['player_id'],
         image_url=evidence['player_image_url'], captured_at=evidence['captured_at'],
@@ -339,7 +347,7 @@ async def run(sports, *, expected_public_captures=None):
                         matches=player_ids.get(player.lower(),[])
                         if len(matches)==1: player_id=matches[0]
                     value=profile(context,player,player_id,datetime.now(timezone.utc),sport=sport,
-                                  expected_team=row.get('expected_team'))
+                                  expected_team=row.get('expected_team'),diagnostics=True)
                     if value and row.get('identity_context'): value['identity_context']=row['identity_context']
                     if value: profiles.setdefault(player,value)
                     else: failures+=1

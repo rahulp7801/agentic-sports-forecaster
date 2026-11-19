@@ -6,6 +6,12 @@ import re
 import sys
 
 
+PROFILE_DIAGNOSTIC_SPORTS = frozenset({'nfl', 'nba'})
+PROFILE_UNAVAILABLE_REASONS = frozenset({
+    'availability_not_observed', 'player_id_missing', 'image_missing', 'expected_team_mismatch',
+})
+
+
 FAILURE_STAGES = {
     'waitlist_provision': frozenset({'arguments', 'context', 'credential_prepare', 'provider_setup',
         'provider_attest', 'provider_team', 'provider_project', 'provider_identity',
@@ -133,6 +139,24 @@ def emit_failure(error: Exception, *, operation: str, stage: str,
                                        crosswalk_asset_sha256=crosswalk_asset_sha256,
                                        history_gap=history_gap),
                          separators=(',', ':'), allow_nan=False), file=sys.stderr)
+    except Exception:
+        pass
+
+
+def profile_unavailable_record(reason: str, *, sport: str) -> dict:
+    """Fixed presentation refusal only; no identity or provider evidence."""
+    if (type(reason) is not str or reason not in PROFILE_UNAVAILABLE_REASONS
+            or type(sport) is not str or sport not in PROFILE_DIAGNOSTIC_SPORTS):
+        raise ValueError('Invalid profile unavailable diagnostic')
+    return {'schema_version': 1, 'diagnostic_kind': 'profile_unavailable',
+            'operation': 'player_profiles', 'sport': sport, 'reason': reason}
+
+
+def emit_profile_unavailable(reason: str, *, sport: str) -> None:
+    """Best effort: presentation diagnostics never change the profile result."""
+    try:
+        print(json.dumps(profile_unavailable_record(reason, sport=sport), separators=(',', ':'),
+                         allow_nan=False), file=sys.stderr)
     except Exception:
         pass
 
