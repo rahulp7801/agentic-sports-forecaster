@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from copy import deepcopy
+import json
 from sportsbet.player_profiles import profile
 from sportsbet.player_profiles import run, PUBLIC_IDENTITIES_QUERY
 import pytest
@@ -38,7 +39,7 @@ def test_alias_requires_captured_crosswalk_and_uses_canonical_roster_profile():
 
 
 @pytest.mark.asyncio
-async def test_scheduled_profile_refresh_uses_recorded_slate_without_new_quotes(monkeypatch):
+async def test_scheduled_profile_refresh_uses_recorded_slate_without_new_quotes(monkeypatch, capsys):
     now,data=context(); publications=[]; events=[]
     class Connection:
         async def fetch(self,sql,*args):
@@ -70,9 +71,13 @@ async def test_scheduled_profile_refresh_uses_recorded_slate_without_new_quotes(
     assert events==[dict(id='game',home_team='Home',away_team='Away')]
     assert publications[0][0]=='player-profiles:nfl'
     assert publications[0][1]['profiles'][0]['jersey']=='0' and pool.closed
+    assert capsys.readouterr().err==''
     publications.clear();data['status']='unavailable'
     assert (await run(['nfl']))['nfl']==dict(profiles=0,unavailable=1,**expected)
     assert publications==[]  # Provider failure cannot overwrite the last capture.
+    assert json.loads(capsys.readouterr().err)==dict(schema_version=1,diagnostic_kind='profile_unavailable',
+        operation='player_profiles',sport='nfl',reason='availability_not_observed')
+    assert events==[dict(id='game',home_team='Home',away_team='Away')]*2
 
 
 @pytest.mark.asyncio
