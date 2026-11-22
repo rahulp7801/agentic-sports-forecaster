@@ -97,7 +97,11 @@ def failure_record(error: Exception, *, operation: str, stage: str,
               'invalid_date_rows','oldest_missing_date','newest_missing_date','schedule_asset_sha256'}
         counts=('missing_games','admitted_games','unadmitted_games','invalid_date_rows')
         if (operation != 'nba_history_validation' or stage != 'history_gap'
-                or type(history_gap) is not dict or set(history_gap) != keys
+                or type(history_gap) is not dict
+                or set(history_gap) not in (keys, keys | {'missing_game_ids_sha256'})
+                or ('missing_game_ids_sha256' in history_gap and (
+                    type(history_gap['missing_game_ids_sha256']) is not str
+                    or re.fullmatch(r'[a-f0-9]{64}',history_gap['missing_game_ids_sha256']) is None))
                 or any(type(history_gap[key]) is not int or not 0 <= history_gap[key] <= 2**53-1 for key in counts)
                 or history_gap['missing_games'] == 0
                 or history_gap['admitted_games']+history_gap['unadmitted_games'] != history_gap['missing_games']

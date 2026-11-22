@@ -257,6 +257,9 @@ def refresh_recent(season: int, today: date, engine) -> dict:
                 oldest_missing_date=min(valid_dates) if valid_dates else None,
                 newest_missing_date=max(valid_dates) if valid_dates else None,
                 schedule_asset_sha256=digests['schedule'],
+                missing_game_ids_sha256=hashlib.sha256(json.dumps(
+                    sorted(missing_ids),ensure_ascii=True,separators=(',', ':')
+                ).encode('utf-8')).hexdigest(),
             )
             raise _validation_error('history_gap','History gap predates the seven-day fallback window; backfill required',
                                     history_gap=gap)

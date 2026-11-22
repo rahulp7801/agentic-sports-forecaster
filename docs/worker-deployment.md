@@ -108,6 +108,17 @@ The daily profile worker reads its own bounded stored signal identities after
 configuration and schema checks pass. It can run when a market source degrades;
 empty inputs retain the original profile capture and timestamps.
 
+The NBA history-gap diagnostic includes a hash of the exact unique game IDs
+missing from its qualifying history set (at least ten rows and exactly two distinct
+teams per game). Missing here does not mean the database contains zero rows.
+`missing_game_ids_sha256` is SHA-256 of the UTF-8 encoding of a sorted JSON ID
+array, with ASCII escapes and compact separators (`(',', ':')`). Compare it
+alongside the season, window and schedule-asset hash to distinguish missing
+sets with the same counts and dates. Raw IDs are not emitted. Legacy receipts
+without this field remain valid. This adds no collection or writes and does
+not establish complete history, correct team binding, source provenance or
+permission to backfill; the existing history refusal and model gates still apply.
+
 Kalshi summaries retain bounded categorical failure diagnostics for the next
 scheduled capture. They expose controlled stages, error categories and HTTP
 status counts without provider bodies, authenticated URLs, player or event IDs.
